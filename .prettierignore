@@ -1,0 +1,9 @@
+dist/
+node_modules/
+coverage/
+.minesweeper/
+*.log
+*.md
+plans/
+.github/
+.claude/

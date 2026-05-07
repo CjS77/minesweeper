@@ -1,6 +1,7 @@
 # Minesweeper
 
-An agentic bughunter.
+An agentic bughunter. It uses Claude Code as a harness in order to automatically identify, screen, evaluate, and fix issues in a 
+repository's github repo. 
 
 Minesweeper periodically:
 * Pulls a lists of issues from Github.
@@ -10,6 +11,11 @@ Minesweeper periodically:
 * If assess mode decides the plan is too complex, it enters refine mode.
 * Once execution mode is complete, a new pull request is made on Github.
 * Once refine mode is complete, the issue is updated with a checklist of all the sub-issues that were created.
+
+# Requirements
+
+* Claude Code
+* Github command line tool
 
 ## Issue eligibility
 
@@ -125,18 +131,19 @@ settings in `.claude`, including default permissions.
 
 ### Environment variables
 
-| Environment Variable                   | Meaning                                               | Default               |
-|----------------------------------------|-------------------------------------------------------|-----------------------|
-| `MINESWEEPER_DEFAULT_ELIGIBLE`         | Issues are eligible by default                        | `false`               |
-| `MINESWEEPER_ALWAYS_FIX_LABEL`         | Issues labelled with this value are _always_ eligible | `"autofix"`           |
-| `MINESWEEPER_NEVER_FIX_LABEL`          | Issues labelled with this value are _never_ eligible  | `"manual"`            |
-| `MINESWEEPER_POSSIBLY_DANGEROUS_LABEL` | Issue might be malicious. Needs manual review         | `"possiblyDangerous"` |
-| `MINESWEEPER_MANUALLY_APPROVED_LABEL`  | Issue has been manually reviewed and is ok.           | `"manuallyReviewed"`  |
-| `MINESWEEPER_MAX_PLANNING_ITERATIONS`  | Maximum number of planning iterations                 | 5                     |
-| `MINESWEEPER_MAX_REVIEW_ROUNDS`        | Maximum number of review rounds during execution      | 3                     |
-| `MINESWEEPER_SUBTASK_LABEL`            | Issues created by Minesweeper are labelled with this  | `"subtask"`           |
-| `MINESWEEPER_ELIGIBILITY_AGENT`        | The model used to assess issue eligibility            | `"haiku"`             |
-| `MINESWEEPER_PLANNING_AGENT`           | The model used to run in planning mode                | `"opus"`              |
-| `MINESWEEPER_REVIEW_AGENT`             | The model used to run in review mode                  | `"codex"`             |
-| `MINESWEEPER_EXECUTION_AGENT`          | The model used to run in execute mode                 | `"opus"`              |
+| Environment Variable                   | Meaning                                                            | Default                 |
+|----------------------------------------|--------------------------------------------------------------------|-------------------------|
+| `MINESWEEPER_DEFAULT_ELIGIBLE`         | Issues are eligible by default                                     | `false`                 |
+| `MINESWEEPER_ALWAYS_FIX_LABEL`         | Issues labelled with this value are _always_ eligible              | `"autofix"`             |
+| `MINESWEEPER_NEVER_FIX_LABEL`          | Issues labelled with this value are _never_ eligible               | `"manual"`              |
+| `MINESWEEPER_POSSIBLY_DANGEROUS_LABEL` | Issue might be malicious. Needs manual review                      | `"possiblyDangerous"`   |
+| `MINESWEEPER_MANUALLY_APPROVED_LABEL`  | Issue has been manually reviewed and is ok.                        | `"manuallyReviewed"`    |
+| `MINESWEEPER_MAX_PLANNING_ITERATIONS`  | Maximum number of planning iterations                              | 5                       |
+| `MINESWEEPER_MAX_REVIEW_ROUNDS`        | Maximum number of review rounds during execution                   | 3                       |
+| `MINESWEEPER_SUBTASK_LABEL`            | Issues created by Minesweeper are labelled with this               | `"subtask"`             |
+| `MINESWEEPER_ELIGIBILITY_AGENT`        | The model used to assess issue eligibility                         | `"haiku"`               |
+| `MINESWEEPER_PLANNING_AGENT`           | The model used to run in planning mode                             | `"opus"`                |
+| `MINESWEEPER_REVIEW_AGENT`             | The model used to run in review mode                               | `"codex"`               |
+| `MINESWEEPER_EXECUTION_AGENT`          | The model used to run in execute mode                              | `"opus"`                |
+| `MINESWEEPER_WORKTREE_PATH`            | Absolute path, or path relative to main repo, for storing woktrees | `"../{repo}-worktrees"` |
 
