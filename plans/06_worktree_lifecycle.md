@@ -1,5 +1,5 @@
 # 06 — Worktree lifecycle helpers
-## Status: Not started
+## Status: done
 
 ## Context
 Each issue gets its own `git worktree` under `MINESWEEPER_WORKTREE_PATH`.

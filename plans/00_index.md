@@ -7,6 +7,8 @@ the high-level architecture plan at
 The plans are sequenced. Each one is a single PR's worth of work and is
 designed to be reviewed and merged before the next is started.
 
+When writing new code, be sure to properly document all functions and classes.
+
 ## Milestones
 
 - **M0** — manual scaffold: 01–03
