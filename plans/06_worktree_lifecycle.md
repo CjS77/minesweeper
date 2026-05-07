@@ -23,7 +23,7 @@ well-tested helper module for the three operations we'll do.
     Scans the worktrees root, reads `.minesweeper/state.json` from each,
     returns a list. Used at daemon startup to detect crashes.
   - `sanitiseBranchName(input): string` — exported helper, used here and
-    re-used in plan 07 for picking the branch name from the issue title.
+    re-used in plan 07 for picking the branch name from the issue title. Check that the name matches the pattern `{repo slug}-issue{\d+}`
 - Unit tests using a temp git repo created in `beforeEach` (real `git init`,
   not mocks — `execa` against a real temp dir).
 

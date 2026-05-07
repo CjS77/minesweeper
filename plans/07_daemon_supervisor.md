@@ -22,8 +22,7 @@ per-issue child processes whose cwd is the issue's worktree.
   - Maintains a `Map<issueNumber, Child>` of in-flight children.
   - `dispatch(issue)`:
     1. If already in-flight or worktree exists, skip.
-    2. Compute `branchName = sanitiseBranchName(issue.title) +
-       "-" + issue.number` (issue number always appended for uniqueness).
+    2. Compute `branchName = \`{repo slug}-issue${issue number padded to 4 places}\`, e.g. minesweeper-issue0001, minesweeper-issue0099 etc.
     3. `addWorktree(...)` and `initState(...)`.
     4. `execa.node("dist/cli.js", ["handle", String(issue.number)], {
        cwd: worktreePath, stdio: "inherit", detached: false })`.
