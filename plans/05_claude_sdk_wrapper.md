@@ -1,5 +1,5 @@
 # 05 — Claude Agent SDK wrapper (`src/claude/`)
-## Status: Not started
+## Status: done
 
 ## Context
 Every "subagent" in the README spec (planner, critic, assessor, refiner,
