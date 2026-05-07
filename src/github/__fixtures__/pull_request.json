@@ -1,0 +1,13 @@
+{
+  "author": { "login": "octocat", "id": "MDQ6VXNlcjEyMzQ1" },
+  "baseRefName": "main",
+  "body": "Closes #17.",
+  "headRefName": "fix/crash-on-empty-input",
+  "isDraft": false,
+  "number": 42,
+  "state": "OPEN",
+  "title": "Fix crash on empty input",
+  "url": "https://github.com/example/repo/pull/42",
+  "additions": 12,
+  "deletions": 3
+}

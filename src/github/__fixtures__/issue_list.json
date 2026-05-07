@@ -1,0 +1,48 @@
+[
+  {
+    "author": {
+      "id": "MDQ6VXNlcjEyMzQ1",
+      "is_bot": false,
+      "login": "octocat",
+      "name": "The Octocat"
+    },
+    "body": "This is a sample bug report describing an issue.\n\nSteps to reproduce:\n1. Do thing.\n2. Observe failure.",
+    "createdAt": "2026-04-12T09:14:23Z",
+    "labels": [
+      {
+        "id": "LA_kwDOAbcDef",
+        "name": "bug",
+        "description": "Something isn't working",
+        "color": "d73a4a"
+      },
+      {
+        "id": "LA_kwDOXyzAbc",
+        "name": "autofix",
+        "description": "Eligible for automated fix",
+        "color": "0e8a16"
+      }
+    ],
+    "number": 17,
+    "state": "OPEN",
+    "title": "Crash when input is empty",
+    "updatedAt": "2026-05-02T17:42:00Z",
+    "url": "https://github.com/example/repo/issues/17"
+  },
+  {
+    "author": {
+      "id": "MDQ6VXNlcjk5OTk5",
+      "is_bot": true,
+      "login": "dependabot[bot]",
+      "name": null
+    },
+    "body": "Bumps a dependency.",
+    "createdAt": "2026-05-01T03:11:09Z",
+    "labels": [],
+    "number": 22,
+    "state": "OPEN",
+    "title": "chore(deps): bump foo from 1.0.0 to 1.1.0",
+    "updatedAt": "2026-05-01T03:11:09Z",
+    "url": "https://github.com/example/repo/issues/22",
+    "extraFutureField": "tolerated by passthrough"
+  }
+]

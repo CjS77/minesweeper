@@ -1,0 +1,159 @@
+import { IssueListSchema, IssueSchema, type Issue } from "./models.js";
+import { runGh, type RunGhOptions } from "./process.js";
+
+export {
+  GhError,
+  GhMissingError,
+  GhNotARepoError,
+  runGh,
+  type RunGhOptions,
+} from "./process.js";
+export {
+  CommentSchema,
+  IssueListSchema,
+  IssueSchema,
+  IssueStateSchema,
+  LabelSchema,
+  PrStateSchema,
+  PullRequestSchema,
+  UserSchema,
+  type Comment,
+  type Issue,
+  type IssueState,
+  type Label,
+  type PrState,
+  type PullRequest,
+  type User,
+} from "./models.js";
+
+const ISSUE_LIST_FIELDS = "number,title,body,labels,author,state,url,createdAt,updatedAt";
+const ISSUE_VIEW_FIELDS = `${ISSUE_LIST_FIELDS},comments`;
+
+interface CwdOnly {
+  cwd?: string;
+}
+
+interface GhOverridable extends CwdOnly {
+  /** Override the gh binary (tests). */
+  bin?: string;
+}
+
+function ghOpts(opts: GhOverridable): RunGhOptions {
+  return { cwd: opts.cwd, bin: opts.bin };
+}
+
+export interface ListIssuesOptions extends GhOverridable {
+  state?: "open" | "closed" | "all";
+  /** Hard cap on rows returned by `gh issue list --limit`. Default 30. */
+  limit?: number;
+}
+
+export async function listIssues(opts: ListIssuesOptions = {}): Promise<Issue[]> {
+  const args = [
+    "issue",
+    "list",
+    "--state",
+    opts.state ?? "open",
+    "--limit",
+    String(opts.limit ?? 30),
+    "--json",
+    ISSUE_LIST_FIELDS,
+  ];
+  const raw = await runGh(args, { ...ghOpts(opts), json: true });
+  return IssueListSchema.parse(raw);
+}
+
+export async function getIssue(number: number, opts: GhOverridable = {}): Promise<Issue> {
+  const raw = await runGh(
+    ["issue", "view", String(number), "--json", ISSUE_VIEW_FIELDS],
+    { ...ghOpts(opts), json: true },
+  );
+  return IssueSchema.parse(raw);
+}
+
+export async function addLabel(number: number, label: string, opts: GhOverridable = {}): Promise<void> {
+  await runGh(["issue", "edit", String(number), "--add-label", label], ghOpts(opts));
+}
+
+export async function removeLabel(
+  number: number,
+  label: string,
+  opts: GhOverridable = {},
+): Promise<void> {
+  await runGh(["issue", "edit", String(number), "--remove-label", label], ghOpts(opts));
+}
+
+export interface CreateIssueOptions extends GhOverridable {
+  title: string;
+  body: string;
+  labels?: readonly string[];
+}
+
+export async function createIssue(opts: CreateIssueOptions): Promise<{ number: number; url: string }> {
+  const args = ["issue", "create", "--title", opts.title, "--body", opts.body];
+  if (opts.labels && opts.labels.length > 0) {
+    args.push("--label", opts.labels.join(","));
+  }
+  const stdout = await runGh<string>(args, ghOpts(opts));
+  const url = lastUrl(stdout);
+  return { number: parseIssueNumber(url), url };
+}
+
+export async function comment(
+  number: number,
+  body: string,
+  opts: GhOverridable = {},
+): Promise<void> {
+  await runGh(["issue", "comment", String(number), "--body", body], ghOpts(opts));
+}
+
+export interface CreatePrOptions extends GhOverridable {
+  base: string;
+  head: string;
+  title: string;
+  body: string;
+  draft?: boolean;
+}
+
+export async function createPr(opts: CreatePrOptions): Promise<{ number: number; url: string }> {
+  const args = [
+    "pr",
+    "create",
+    "--base",
+    opts.base,
+    "--head",
+    opts.head,
+    "--title",
+    opts.title,
+    "--body",
+    opts.body,
+  ];
+  if (opts.draft) args.push("--draft");
+  const stdout = await runGh<string>(args, ghOpts(opts));
+  const url = lastUrl(stdout);
+  return { number: parsePrNumber(url), url };
+}
+
+const URL_RE = /https?:\/\/\S+/g;
+
+function lastUrl(stdout: string): string {
+  const matches = stdout.match(URL_RE);
+  if (!matches || matches.length === 0) {
+    throw new Error(`gh did not return a URL on stdout:\n${stdout}`);
+  }
+  // Trim trailing punctuation that some shells/output may include.
+  return (matches[matches.length - 1] ?? "").replace(/[.,)\]]+$/, "");
+}
+
+function parseIssueNumber(url: string): number {
+  const m = url.match(/\/issues\/(\d+)/);
+  if (!m) throw new Error(`could not parse issue number from URL: ${url}`);
+  return Number(m[1]);
+}
+
+function parsePrNumber(url: string): number {
+  const m = url.match(/\/pull\/(\d+)/);
+  if (!m) throw new Error(`could not parse pull-request number from URL: ${url}`);
+  return Number(m[1]);
+}
+

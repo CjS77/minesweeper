@@ -1,5 +1,5 @@
 # 04 — GitHub wrapper (`src/github/`)
-## Status: Not started
+## Status: done
 
 ## Context
 Per the architecture plan, the orchestrator owns all GitHub interactions

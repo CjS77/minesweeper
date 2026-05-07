@@ -1,0 +1,36 @@
+{
+  "author": {
+    "id": "MDQ6VXNlcjEyMzQ1",
+    "is_bot": false,
+    "login": "octocat",
+    "name": "The Octocat"
+  },
+  "body": "Detailed reproduction notes go here.",
+  "comments": [
+    {
+      "id": "IC_kwDOAbcDef",
+      "author": {
+        "login": "maintainer",
+        "id": "MDQ6VXNlcjU1NTU1",
+        "is_bot": false,
+        "name": "Repo Maintainer"
+      },
+      "body": "Triaged. PRs welcome.",
+      "createdAt": "2026-04-13T10:00:00Z"
+    }
+  ],
+  "createdAt": "2026-04-12T09:14:23Z",
+  "labels": [
+    {
+      "id": "LA_kwDOAbcDef",
+      "name": "bug",
+      "description": "Something isn't working",
+      "color": "d73a4a"
+    }
+  ],
+  "number": 17,
+  "state": "OPEN",
+  "title": "Crash when input is empty",
+  "updatedAt": "2026-05-02T17:42:00Z",
+  "url": "https://github.com/example/repo/issues/17"
+}
