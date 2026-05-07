@@ -1,5 +1,5 @@
 # 03 — Logging & pretty output
-## Status: Not started
+## Status: done
 
 ## Context
 The daemon needs to be **glanceable**: an operator should be able to look
