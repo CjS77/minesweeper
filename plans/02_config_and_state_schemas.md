@@ -1,5 +1,5 @@
 # 02 — Config + state schemas
-## Status: Not started
+## Status: done
 
 ## Context
 Minesweeper is configured entirely via `MINESWEEPER_*` env vars (per the
