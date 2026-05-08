@@ -24,11 +24,17 @@ function makeDeps(
   overrides: Partial<PollerDeps> = {},
 ): PollerDeps & { listIssuesMock: ReturnType<typeof vi.fn>; emitMock: ReturnType<typeof vi.fn> } {
   const listIssuesMock = vi.fn(async () => [] as Issue[]);
+  const addLabelMock = vi.fn(async () => undefined);
+  const commentMock = vi.fn(async () => undefined);
   const emitMock = vi.fn();
   return {
     config,
     cwd: "/tmp/repo",
-    github: { listIssues: listIssuesMock as unknown as typeof ghModule.listIssues },
+    github: {
+      listIssues: listIssuesMock as unknown as typeof ghModule.listIssues,
+      addLabel: addLabelMock as unknown as typeof ghModule.addLabel,
+      comment: commentMock as unknown as typeof ghModule.comment,
+    },
     emit: emitMock,
     listIssuesMock,
     emitMock,
@@ -60,6 +66,53 @@ describe("pollOnce", () => {
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2), makeIssue(3), makeIssue(4)]);
     const eligible = await pollOnce(deps);
     expect(eligible.map((i) => i.number)).toEqual([2, 4]);
+  });
+
+  it("supports an async custom isEligible predicate", async () => {
+    const deps = makeDeps({ isEligible: async (issue) => issue.number > 1 });
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2), makeIssue(3)]);
+    const eligible = await pollOnce(deps);
+    expect(eligible.map((i) => i.number)).toEqual([2, 3]);
+  });
+
+  it("invokes the injected screener for default-eligible unlabelled issues", async () => {
+    const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" });
+    const deps = makeDeps({
+      config: permissive,
+      screenIssue: vi.fn(async (issue) => ({
+        verdict: "safe" as const,
+        reason: "fine",
+        issueUpdatedAt: issue.updatedAt,
+        screenedAt: "2026-05-08T12:00:00.000Z",
+      })),
+    });
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2, [permissive.alwaysFixLabel])]);
+    const eligible = await pollOnce(deps);
+    expect(eligible.map((i) => i.number).sort()).toEqual([1, 2]);
+    // Only the unlabelled issue went through the screener; the alwaysFix one
+    // short-circuited.
+    expect((deps.screenIssue as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect((deps.screenIssue as ReturnType<typeof vi.fn>).mock.calls[0]?.[0].number).toBe(1);
+  });
+
+  it("the screener can flag an issue as dangerous and the poller drops it", async () => {
+    const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" });
+    const deps = makeDeps({
+      config: permissive,
+      screenIssue: vi.fn(async (issue) => ({
+        verdict: "dangerous" as const,
+        reason: "obvious injection",
+        issueUpdatedAt: issue.updatedAt,
+        screenedAt: "2026-05-08T12:00:00.000Z",
+      })),
+    });
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(7)]);
+    const eligible = await pollOnce(deps);
+    expect(eligible).toEqual([]);
+    const addLabel = deps.github!.addLabel as unknown as ReturnType<typeof vi.fn>;
+    const comment = deps.github!.comment as unknown as ReturnType<typeof vi.fn>;
+    expect(addLabel).toHaveBeenCalledWith(7, permissive.possiblyDangerousLabel, { cwd: "/tmp/repo" });
+    expect(comment).toHaveBeenCalledTimes(1);
   });
 });
 
