@@ -24,6 +24,9 @@ const FAKE_CONFIG: Config = {
   prBaseBranch: "main",
   pollIntervalSeconds: 60,
   pollIntervalMs: 60_000,
+  schedule: [],
+  pollCooldownSeconds: 120,
+  pollCooldownMs: 120_000,
   maxConcurrency: 1,
 };
 

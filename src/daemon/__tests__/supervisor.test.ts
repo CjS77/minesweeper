@@ -95,7 +95,7 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   const emitMock = vi.fn();
 
   const deps: SupervisorDeps = {
-    config: loadConfig({}),
+    config: loadConfig({}, { configFile: null }),
     repoRoot: "/tmp/repos/minesweeper",
     worktreesRoot: "/tmp/wt",
     archiveRoot: "/tmp/archive",
@@ -230,7 +230,7 @@ describe("createSupervisor.dispatch", () => {
   });
 
   it("enforces maxConcurrency by queueing extra work", async () => {
-    const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "1" }) });
+    const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "1" }, { configFile: null }) });
     const sup = createSupervisor(ctx.deps);
 
     await sup.dispatch(makeIssue(1));
@@ -254,7 +254,7 @@ describe("createSupervisor.dispatch", () => {
   });
 
   it("starts both children at once when maxConcurrency=2", async () => {
-    const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "2" }) });
+    const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "2" }, { configFile: null }) });
     const sup = createSupervisor(ctx.deps);
 
     await sup.dispatch(makeIssue(1));
@@ -412,7 +412,7 @@ describe("createSupervisor.drain", () => {
   });
 
   it("waits for every in-flight child to exit before resolving", async () => {
-    const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "2" }) });
+    const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "2" }, { configFile: null }) });
     const sup = createSupervisor(ctx.deps);
     await sup.dispatch(makeIssue(1));
     await sup.dispatch(makeIssue(2));

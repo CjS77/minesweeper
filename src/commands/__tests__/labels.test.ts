@@ -70,11 +70,14 @@ afterEach(async () => {
 
 describe("buildLabelSpecs", () => {
   it("uses the configured label names from env", () => {
-    const config = loadConfig({
-      MINESWEEPER_ALWAYS_FIX_LABEL: "fix-me",
-      MINESWEEPER_NEVER_FIX_LABEL: "hands-off",
-      MINESWEEPER_SUBTASK_LABEL: "child-of",
-    });
+    const config = loadConfig(
+      {
+        MINESWEEPER_ALWAYS_FIX_LABEL: "fix-me",
+        MINESWEEPER_NEVER_FIX_LABEL: "hands-off",
+        MINESWEEPER_SUBTASK_LABEL: "child-of",
+      },
+      { configFile: null },
+    );
     const byKey = Object.fromEntries(buildLabelSpecs(config).map((s) => [s.key, s]));
     expect(byKey["alwaysFix"]?.name).toBe("fix-me");
     expect(byKey["neverFix"]?.name).toBe("hands-off");
@@ -82,19 +85,19 @@ describe("buildLabelSpecs", () => {
   });
 
   it("covers every Minesweeper label exactly once", () => {
-    const specs = buildLabelSpecs(loadConfig({}));
+    const specs = buildLabelSpecs(loadConfig({}, { configFile: null }));
     const keys = specs.map((s) => s.key).sort();
     expect(keys).toEqual(["alwaysFix", "failed", "manuallyApproved", "neverFix", "possiblyDangerous", "subtask"]);
   });
 
   it("uses 6-char hex colours without a leading hash", () => {
-    for (const spec of buildLabelSpecs(loadConfig({}))) {
+    for (const spec of buildLabelSpecs(loadConfig({}, { configFile: null }))) {
       expect(spec.color).toMatch(/^[0-9A-Fa-f]{6}$/);
     }
   });
 
   it("gives every label a non-empty description", () => {
-    for (const spec of buildLabelSpecs(loadConfig({}))) {
+    for (const spec of buildLabelSpecs(loadConfig({}, { configFile: null }))) {
       expect(spec.description.length).toBeGreaterThan(0);
     }
   });
@@ -132,7 +135,7 @@ describe("runLabelsCommand --list", () => {
 
     const out = makeStdout();
     const result = await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       list: true,
       stdout: out.stream,
     });
@@ -159,7 +162,7 @@ describe("runLabelsCommand --list", () => {
   it("forwards cwd to gh label list", async () => {
     mockExeca.mockResolvedValueOnce(ok("[]") as never);
     await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       list: true,
       cwd: "/some/repo",
       stdout: makeStdout().stream,
@@ -171,7 +174,7 @@ describe("runLabelsCommand --list", () => {
     mockExeca.mockResolvedValueOnce(ok("[]") as never);
     const out = makeStdout();
     const result = await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       list: true,
       stdout: out.stream,
     });
@@ -183,7 +186,7 @@ describe("runLabelsCommand --list", () => {
     mockExeca.mockResolvedValueOnce(ok(JSON.stringify([{ name: "bug", color: "d73a4a", description: "x" }])) as never);
     const out = makeStdout();
     await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       list: true,
       stdout: out.stream,
     });
@@ -198,7 +201,7 @@ describe("runLabelsCommand confirmation flow", () => {
 
     const out = makeStdout();
     const result = await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       cwd: "/repo",
       force: true,
       stdout: out.stream,
@@ -225,7 +228,7 @@ describe("runLabelsCommand confirmation flow", () => {
     mockExeca.mockResolvedValueOnce(ok("[]") as never);
     mockExeca.mockResolvedValue(ok("") as never);
     await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       cwd: "/some/repo",
       force: true,
       stdout: makeStdout().stream,
@@ -242,7 +245,7 @@ describe("runLabelsCommand confirmation flow", () => {
     const prompt = vi.fn().mockResolvedValue("abort" as const);
 
     const result = await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       stdout: out.stream,
       prompt,
     });
@@ -265,7 +268,7 @@ describe("runLabelsCommand confirmation flow", () => {
     const prompt = vi.fn().mockResolvedValue("overwrite" as const);
 
     const result = await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       stdout: makeStdout().stream,
       prompt,
     });
@@ -289,7 +292,7 @@ describe("runLabelsCommand confirmation flow", () => {
     mockExeca.mockResolvedValue(ok("") as never);
 
     const result = await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       stdout: makeStdout().stream,
       prompt: async () => "new-only",
     });
@@ -315,7 +318,7 @@ describe("runLabelsCommand confirmation flow", () => {
 
     const out = makeStdout();
     const result = await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       stdout: out.stream,
       prompt: async () => "new-only",
     });
@@ -338,7 +341,7 @@ describe("runLabelsCommand confirmation flow", () => {
     );
     const out = makeStdout();
     await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       stdout: out.stream,
       prompt: async () => "abort",
     });
@@ -357,7 +360,7 @@ describe("runLabelsCommand confirmation flow", () => {
     mockExeca.mockResolvedValueOnce(ok("[]") as never);
     const out = makeStdout();
     await runLabelsCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       stdout: out.stream,
       prompt: async () => "abort",
     });
@@ -373,7 +376,7 @@ describe("runLabelsCommand confirmation flow", () => {
 
     await expect(
       runLabelsCommand({
-        config: loadConfig({}),
+        config: loadConfig({}, { configFile: null }),
         force: true,
         stdout: makeStdout().stream,
       }),

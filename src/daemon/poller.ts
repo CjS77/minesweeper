@@ -5,16 +5,22 @@
  * the eligibility filter, and returns the survivors. It has no side effects
  * — the caller decides what to do with the list.
  *
- * `runPollLoop` schedules one `setInterval` per spec (each spec is a poll
- * interval in milliseconds, parsed from config by the CLI). On every tick it
- * calls `pollOnce` and forwards each eligible issue to the supplied
- * `onIssue` callback (typically `supervisor.dispatch`), then invokes the
- * optional `onTickEnd` hook (typically `supervisor.sweepClosedIssues`). The
- * first tick fires immediately so operators see "polled (N eligible)"
- * without waiting out the interval; subsequent ticks fire every `intervalMs`.
+ * `runPollLoop` accepts a list of {@link Schedule}s and arranges for `tick()`
+ * to fire on each. Two flavours are supported:
  *
- * Errors in a tick are logged and swallowed — a transient `gh` failure
- * should not take down the daemon.
+ * - `{ kind: "interval", intervalMs }` — the legacy fixed-interval driver.
+ *   On startup an interval-bearing schedule list also fires one immediate
+ *   tick so operators see "polled (N eligible)" without waiting out the
+ *   interval (preserved from the original poller).
+ * - `{ kind: "cron", expression }` — parsed via `cron-parser`. The next
+ *   match is computed once and re-computed after each fire (no
+ *   `setInterval`). Cron-only configurations do **not** fire an immediate
+ *   tick on startup; the first poll happens at the first cron match.
+ *
+ * A single global cooldown (`pollCooldownMs`) gates every tick: when two
+ * schedules align, the second is dropped with a "skipped poll: within
+ * cooldown" log line. Errors in a tick are logged and swallowed — a
+ * transient `gh` failure should not take down the daemon.
  */
 
 import * as defaultGithub from "../github/index.js";
@@ -23,6 +29,7 @@ import type { Config } from "../config.js";
 import { event as defaultEvent, type Logger } from "../logging.js";
 import { decideEligibility as defaultDecideEligibility, type EligibilityDecision } from "./eligibility.js";
 import type { ScreenIssueFn } from "./eligibility.js";
+import cronParser from "cron-parser";
 
 /**
  * Predicate the poller uses to filter issues. Async because the
@@ -31,6 +38,15 @@ import type { ScreenIssueFn } from "./eligibility.js";
  * are accepted.
  */
 export type EligibilityFn = (issue: Issue, config: Config) => boolean | Promise<boolean>;
+
+/**
+ * One entry in the poll-loop schedule list.
+ *
+ * `interval` reproduces the legacy `setInterval(intervalMs)` driver;
+ * `cron` is a 5-field cron expression evaluated in the daemon's local
+ * timezone.
+ */
+export type Schedule = { kind: "interval"; intervalMs: number } | { kind: "cron"; expression: string };
 
 export interface PollerDeps {
   /** Loaded config; passed to the eligibility predicate. */
@@ -45,6 +61,10 @@ export interface PollerDeps {
   screenIssue?: ScreenIssueFn;
   /** Override the logger event sink. */
   emit?: Logger["event"];
+  /** Override the cooldown window (defaults to `config.pollCooldownMs`). */
+  cooldownMs?: number;
+  /** Inject a clock (defaults to `Date.now`). Used for both cooldown maths and as the cron anchor. */
+  now?: () => number;
 }
 
 /**
@@ -101,13 +121,18 @@ export interface PollLoopHandle {
 }
 
 /**
- * Schedule polling. Each `intervalMs` in `specs` gets its own
- * `setInterval` timer. The loop fires once immediately on startup so the
- * daemon's first poll happens before the interval elapses (plan 07
- * acceptance criterion).
+ * Schedule polling against `schedules`. Every schedule shares one cooldown
+ * window — when a tick is currently within `cooldownMs` of the previous one,
+ * it is skipped and an `INFO` event is emitted.
+ *
+ * Interval-mode schedules fire an extra immediate tick on startup; cron-mode
+ * schedules wait for the first match.
  */
-export function runPollLoop(deps: PollerDeps, specs: readonly number[], opts: PollLoopOptions): PollLoopHandle {
+export function runPollLoop(deps: PollerDeps, schedules: readonly Schedule[], opts: PollLoopOptions): PollLoopHandle {
   const emit = deps.emit ?? defaultEvent;
+  const now = deps.now ?? Date.now;
+  const cooldownMs = deps.cooldownMs ?? deps.config.pollCooldownMs;
+
   const tick = async (): Promise<void> => {
     try {
       const eligible = await pollOnce(deps);
@@ -123,19 +148,76 @@ export function runPollLoop(deps: PollerDeps, specs: readonly number[], opts: Po
     }
   };
 
-  void tick();
-  const timers = specs.map((intervalMs) =>
-    setInterval(() => {
-      void tick();
-    }, intervalMs),
-  );
+  let lastTickStartedAt: number | null = null;
+  let cancelled = false;
+  const timers: NodeJS.Timeout[] = [];
 
-  let stopped = false;
+  const gatedTick = async (): Promise<void> => {
+    if (cancelled) return;
+    if (cooldownMs > 0 && lastTickStartedAt !== null) {
+      const elapsed = now() - lastTickStartedAt;
+      if (elapsed < cooldownMs) {
+        const elapsedSeconds = Math.round(elapsed / 1000);
+        emit("daemon", "INFO", null, `skipped poll: within cooldown (${elapsedSeconds}s since last)`);
+        return;
+      }
+    }
+    // Stamp before awaiting so concurrent callers see the latest start time.
+    lastTickStartedAt = now();
+    await tick();
+  };
+
+  const scheduleCron = (expression: string): void => {
+    if (cancelled) return;
+    let nextAt: number;
+    try {
+      nextAt = cronParser
+        .parseExpression(expression, { currentDate: new Date(now()) })
+        .next()
+        .getTime();
+    } catch (err) {
+      emit("daemon", "ERROR", null, `cron schedule ${JSON.stringify(expression)} failed: ${(err as Error).message}`);
+      return;
+    }
+    const delay = Math.max(0, nextAt - now());
+    const timer = setTimeout(() => {
+      void (async () => {
+        await gatedTick();
+        scheduleCron(expression);
+      })();
+    }, delay);
+    timers.push(timer);
+  };
+
+  const hasInterval = schedules.some((s) => s.kind === "interval");
+
+  for (const schedule of schedules) {
+    if (schedule.kind === "interval") {
+      timers.push(
+        setInterval(() => {
+          void gatedTick();
+        }, schedule.intervalMs),
+      );
+    } else {
+      scheduleCron(schedule.expression);
+    }
+  }
+
+  // Preserve the legacy "first tick fires immediately" behaviour for any
+  // interval-bearing schedule list. Cron-only configurations wait for the
+  // first match instead.
+  if (hasInterval) {
+    void gatedTick();
+  }
+
   return {
     stop() {
-      if (stopped) return;
-      stopped = true;
-      timers.forEach((t) => clearInterval(t));
+      if (cancelled) return;
+      cancelled = true;
+      timers.forEach((t) => {
+        clearTimeout(t);
+        clearInterval(t);
+      });
     },
   };
 }

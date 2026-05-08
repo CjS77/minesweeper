@@ -7,7 +7,7 @@ import { Command, Option } from "commander";
 
 import { loadConfig } from "./config.js";
 import { createLogger, event, getActiveLogger } from "./logging.js";
-import { createSupervisor, defaultSpawnChild, runPollLoop, type Supervisor } from "./daemon/index.js";
+import { createSupervisor, defaultSpawnChild, runPollLoop, type Schedule, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
 import { runIssueListCommand, runIssueNewCommand } from "./commands/issues.js";
 import { runLabelsCommand } from "./commands/labels.js";
@@ -168,7 +168,12 @@ async function runDaemon(): Promise<void> {
 
   await recoverOrphans(supervisor, worktreesRoot);
 
-  const loop = runPollLoop({ config, cwd: repoRoot }, [config.pollIntervalMs], {
+  const schedules: Schedule[] =
+    config.schedule.length > 0
+      ? config.schedule.map((expression) => ({ kind: "cron" as const, expression }))
+      : [{ kind: "interval" as const, intervalMs: config.pollIntervalMs }];
+
+  const loop = runPollLoop({ config, cwd: repoRoot }, schedules, {
     onIssue: async (issue) => {
       await supervisor.dispatch(issue);
     },
@@ -177,11 +182,13 @@ async function runDaemon(): Promise<void> {
     },
   });
 
+  const pollDescription =
+    config.schedule.length > 0 ? `cron[${config.schedule.join(", ")}]` : `${config.pollIntervalSeconds}s`;
   event(
     "daemon",
     "INFO",
     null,
-    `minesweeper run started (poll=${config.pollIntervalSeconds}s, concurrency=${config.maxConcurrency})`,
+    `minesweeper run started (poll=${pollDescription}, cooldown=${config.pollCooldownSeconds}s, concurrency=${config.maxConcurrency})`,
   );
 
   await waitForShutdown();

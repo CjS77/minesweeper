@@ -80,7 +80,7 @@ describe("runIssueListCommand — gh argument shape (Strategy A: execa boundary)
     mockExeca.mockResolvedValueOnce(ok("[]") as never);
 
     await runIssueListCommand({
-      config: loadConfig({ MINESWEEPER_WORKTREE_PATH: tmp }),
+      config: loadConfig({ MINESWEEPER_WORKTREE_PATH: tmp }, { configFile: null }),
       cwd: tmp,
       stdout: makeStdout().stream,
     });
@@ -95,7 +95,7 @@ describe("runIssueListCommand — gh argument shape (Strategy A: execa boundary)
     mockExeca.mockResolvedValueOnce(ok("[]") as never);
 
     await runIssueListCommand({
-      config: loadConfig({ MINESWEEPER_WORKTREE_PATH: tmp }),
+      config: loadConfig({ MINESWEEPER_WORKTREE_PATH: tmp }, { configFile: null }),
       cwd: "/some/repo",
       stdout: makeStdout().stream,
     });
@@ -113,7 +113,7 @@ describe("runIssueListCommand — eligibility tagging (Strategy B: module overri
     ];
     const out = makeStdout();
     const result = await runIssueListCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       github: fakeGithub(issues),
       worktree: fakeWorktree([]),
       stdout: out.stream,
@@ -137,7 +137,7 @@ describe("runIssueListCommand — eligibility tagging (Strategy B: module overri
       }),
     ];
     const result = await runIssueListCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       github: fakeGithub(issues),
       worktree: fakeWorktree([]),
       stdout: makeStdout().stream,
@@ -165,7 +165,7 @@ describe("runIssueListCommand — eligibility tagging (Strategy B: module overri
     };
     const out = makeStdout();
     const result = await runIssueListCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       github: fakeGithub(issues),
       worktree: fakeWorktree([orphan]),
       stdout: out.stream,
@@ -197,7 +197,7 @@ describe("runIssueListCommand — eligibility tagging (Strategy B: module overri
     };
     const out = makeStdout();
     const result = await runIssueListCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       github: fakeGithub(issues),
       worktree: fakeWorktree([orphan]),
       stdout: out.stream,
@@ -220,7 +220,7 @@ describe("runIssueListCommand — eligibility tagging (Strategy B: module overri
   it("prints 'No open issues.' and returns rows: [] when the list is empty", async () => {
     const out = makeStdout();
     const result = await runIssueListCommand({
-      config: loadConfig({}),
+      config: loadConfig({}, { configFile: null }),
       github: fakeGithub([]),
       worktree: fakeWorktree([]),
       stdout: out.stream,
@@ -234,7 +234,7 @@ describe("runIssueListCommand — eligibility tagging (Strategy B: module overri
   it("uses the worktree.listOrphans override and never touches the filesystem", async () => {
     const wt = fakeWorktree([]);
     await runIssueListCommand({
-      config: loadConfig({ MINESWEEPER_WORKTREE_PATH: "/definitely/does/not/exist" }),
+      config: loadConfig({ MINESWEEPER_WORKTREE_PATH: "/definitely/does/not/exist" }, { configFile: null }),
       github: fakeGithub([]),
       worktree: wt,
       stdout: makeStdout().stream,

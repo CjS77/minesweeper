@@ -16,7 +16,7 @@ import {
   type ScreenResult,
 } from "../screen.js";
 
-const config: Config = loadConfig({});
+const config: Config = loadConfig({}, { configFile: null });
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
   return {
