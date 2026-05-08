@@ -1,6 +1,6 @@
 {
   "name": "minesweeper",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "An agentic bughunter that drives Claude Code to triage and fix GitHub issues.",
   "type": "module",
   "bin": {
