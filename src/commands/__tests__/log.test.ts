@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import chalk from "chalk";
 
-import { LogViewError, runLogViewCommand } from "../log.js";
+import { LogViewError, findTranscriptsForIssue, runLogViewCommand } from "../log.js";
 
 chalk.level = 3;
 
@@ -74,6 +74,15 @@ describe("runLogViewCommand", () => {
     expect(bashLine!.length).toBeLessThanOrEqual(140);
   });
 
+  it("uses the universal robot/silhouette emoji pair", () => {
+    writeFixture(".minesweeper/planning_history/planner-01.jsonl");
+    const out = strip(runWithFixtureAt("planner-01"));
+    expect(out).toMatch(/🤖 ASSISTANT/);
+    expect(out).toMatch(/👤 USER/);
+    expect(out).not.toMatch(/👩‍🏫/);
+    expect(out).not.toMatch(/👨 USER/);
+  });
+
   it("renders thinking blocks under an Assistant header", () => {
     writeFixture(".minesweeper/planning_history/planner-01.jsonl");
     const out = strip(runWithFixtureAt("planner-01"));
@@ -81,55 +90,73 @@ describe("runLogViewCommand", () => {
     expect(out).toContain("considering the task");
   });
 
+  it("suppresses thinking blocks whose body is empty (API-redacted)", () => {
+    writeFixture(".minesweeper/planning_history/planner-01.jsonl");
+    const out = strip(runWithFixtureAt("planner-01"));
+    // The fixture contains exactly one non-empty thinking ("considering the task")
+    // and one redacted thinking ({thinking: "", signature: "..."}). Only the first
+    // produces a header.
+    const thinkingHeaders = out.split("\n").filter((l) => /ASSISTANT.* — thinking$/.test(l));
+    expect(thinkingHeaders).toHaveLength(1);
+  });
+
   it("renders --:--:-- when no timestamp is available, then formatted time once seen", () => {
     writeFixture(".minesweeper/planning_history/planner-01.jsonl");
     const out = strip(runWithFixtureAt("planner-01"));
     const lines = out.split("\n");
-    // The assistant tool_use line for Bash precedes the first user line — should still be --:--:--
     const bashLine = lines.find((l) => l.includes("Bash("));
     expect(bashLine).toMatch(/^--:--:--/);
-    // The user tool_result that follows has a real timestamp
     const userToolResult = lines.find((l) => l.includes("tool_result (3 lines)"));
     expect(userToolResult).toMatch(/^\d{2}:\d{2}:\d{2}/);
   });
 
-  it("renders user tool_result with file content as `tool_result <path> (N lines)` plus body", () => {
+  it("renders user tool_result with file content as a header-only `tool_result <path> (N lines)` line", () => {
     writeFixture(".minesweeper/planning_history/planner-01.jsonl");
     const out = strip(runWithFixtureAt("planner-01"));
     expect(out).toContain("tool_result /tmp/work/prompts/executor.md (63 lines)");
-    expect(out).toContain("    line 1");
-    expect(out).toContain("    line 5");
+    // Body is intentionally omitted now.
+    expect(out).not.toContain("    line 1");
+    expect(out).not.toContain("    line 5");
   });
 
-  it("respects --max-lines by capping the body and emitting a truncated footer", () => {
+  it("shows the full input for tool_use blocks, indented under the header", () => {
     writeFixture(".minesweeper/planning_history/planner-01.jsonl");
-    const out = strip(runWithFixtureAt("planner-01", { maxLines: 2 }));
-    expect(out).toContain("    line 1");
-    expect(out).toContain("    line 2");
-    expect(out).not.toContain("    line 3");
+    const out = strip(runWithFixtureAt("planner-01"));
+    // The Write call in the fixture has multi-line content; verify both the
+    // header and the body show up.
+    expect(out).toMatch(/Write\(\/tmp\/work\/note\.md\)/);
+    expect(out).toContain("    file_path: /tmp/work/note.md");
+    expect(out).toContain("    content:");
+    expect(out).toContain("      hello");
+    expect(out).toContain("      world");
+  });
+
+  it("respects --max-lines by capping the body and emitting a truncated footer for tool_use input", () => {
+    writeFixture(".minesweeper/planning_history/planner-01.jsonl");
+    const out = strip(runWithFixtureAt("planner-01", { maxLines: 1 }));
+    // The Write tool_use input has 4 body lines; with maxLines=1 we keep
+    // only the first and emit a truncation footer.
+    expect(out).toContain("    file_path: /tmp/work/note.md");
     expect(out).toContain("(truncated 3 more lines)");
   });
 
-  it("--max-lines 0 means unlimited", () => {
+  it("--max-lines 0 means unlimited (no truncation in tool_use bodies)", () => {
     writeFixture(".minesweeper/planning_history/planner-01.jsonl");
     const out = strip(runWithFixtureAt("planner-01", { maxLines: 0 }));
-    expect(out).toContain("    line 1");
-    expect(out).toContain("    line 2");
-    expect(out).toContain("    line 3");
-    expect(out).toContain("    line 4");
-    expect(out).toContain("    line 5");
+    expect(out).toContain("    file_path: /tmp/work/note.md");
+    expect(out).toContain("      hello");
+    expect(out).toContain("      world");
     expect(out).not.toMatch(/truncated/);
   });
 
-  it("renders is_error tool_result in red while the stripped header still says tool_result", () => {
+  it("renders is_error tool_result in red, header notes stderr line count", () => {
     writeFixture(".minesweeper/planning_history/planner-01.jsonl");
     const raw = runWithFixtureAt("planner-01");
     const stripped = strip(raw);
-    // The error tool_result has an empty stdout (0 lines)
-    expect(stripped).toContain("tool_result (0 lines)");
-    // Stderr block should appear with command not found
-    expect(stripped).toContain("command not found");
-    // Red ANSI escape present somewhere in the unstripped output
+    expect(stripped).toContain("tool_result (0 lines, stderr=1 lines)");
+    // Body is no longer printed, even for errors.
+    expect(stripped).not.toContain("    command not found");
+    // Red ANSI escape present somewhere in the unstripped output (the error header).
     expect(raw).toContain(`${ESC}[31m`);
   });
 
@@ -143,7 +170,6 @@ describe("runLogViewCommand", () => {
     writeFixture(".minesweeper/planning_history/planner-01.jsonl");
     const out = strip(runWithFixtureAt("planner-01"));
     expect(out).toMatch(/⚠️ line 8 unparseable/);
-    // The result line is still rendered after the malformed line
     expect(out).toMatch(/🏁 RESULT/);
   });
 
@@ -184,6 +210,10 @@ describe("runLogViewCommand", () => {
     expect((caught as Error).message).toMatch(/no transcripts yet/);
   });
 
+  it("throws when neither name nor issueNumber is given", () => {
+    expect(() => runLogViewCommand({ cwd: tmp, stdout: makeStdout().stream })).toThrow(LogViewError);
+  });
+
   it("renders the result line with stop_reason, turns, and duration", () => {
     writeFixture(".minesweeper/planning_history/planner-01.jsonl");
     const out = strip(runWithFixtureAt("planner-01"));
@@ -203,4 +233,117 @@ describe("runLogViewCommand", () => {
     const out = strip(runWithFixtureAt("weird-01"));
     expect(out).toContain("❓ frobnicate");
   });
+
+  it("with --issue, concatenates matched files and emits a banner per file", () => {
+    // tmp acts as worktreePath: build worktrees/<dir>/.minesweeper/... and
+    // archive/<issue>-<ts>/planning_history/...
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl"]);
+    seedArchive(tmp, "5-2026-05-08T12:14:58.270Z", ["planner-01.jsonl"]);
+
+    const { stream, text } = makeStdout();
+    runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: stream });
+    const out = strip(text());
+
+    // Three banners (basenames may collide; just count banner lines).
+    const banners = out.split("\n").filter((l) => /═{6} .+\.jsonl {2}\(/.test(l));
+    expect(banners).toHaveLength(3);
+    // Ordered lexically by absolute path: archive/5-… comes before worktrees/…
+    expect(banners[0]).toContain("/archive/5-");
+    expect(banners[1]).toContain("/worktrees/issue-5-foo");
+    expect(banners[2]).toContain("/worktrees/issue-5-foo");
+    // Each transcript's content rendered.
+    expect(out.match(/🏛️ SYSTEM/g)?.length).toBe(3);
+  });
+
+  it("with --issue + regex, filters basenames", () => {
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl"]);
+
+    const { stream, text } = makeStdout();
+    runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: stream, name: "^critic" });
+    const out = strip(text());
+
+    const banners = out.split("\n").filter((l) => /═{6} .+\.jsonl {2}\(/.test(l));
+    // Only one file matches and it is the only file, so no banners (single-file path).
+    expect(banners).toHaveLength(0);
+    expect(out).toMatch(/🏛️ SYSTEM/);
+  });
+
+  it("with --issue, throws when no matching transcripts exist", () => {
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl"]);
+    expect(() => runLogViewCommand({ issueNumber: 999, worktreePath: tmp, stdout: makeStdout().stream })).toThrow(
+      /no transcripts found for issue 999/,
+    );
+  });
+
+  it("with --issue, throws an explanatory error when regex matches nothing", () => {
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl"]);
+    expect(() =>
+      runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: makeStdout().stream, name: "^reviewer" }),
+    ).toThrow(/no transcripts for issue 5 match/);
+  });
+
+  it("with --issue, ignores worktrees whose state.json belongs to other issues", () => {
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl"]);
+    seedActiveWorktree(tmp, "issue-8-bar", 8, ["planner-01.jsonl"]);
+
+    const paths = findTranscriptsForIssue(5, tmp);
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).toContain("issue-5-foo");
+    expect(paths[0]).not.toContain("issue-8-bar");
+  });
 });
+
+describe("findTranscriptsForIssue", () => {
+  it("finds transcripts in active worktrees and archive for one issue", () => {
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl"]);
+    seedArchive(tmp, "5-2026-05-08T12:14:58.270Z", ["planner-01.jsonl"]);
+    seedArchive(tmp, "8-2026-05-08T01:00:00.000Z", ["planner-01.jsonl"]);
+
+    const paths = findTranscriptsForIssue(5, tmp);
+    expect(paths).toHaveLength(3);
+    expect(paths.every((p) => !p.includes("8-2026-05-08T01:00:00.000Z"))).toBe(true);
+    expect(paths).toEqual([...paths].sort());
+  });
+
+  it("filters by basename regex", () => {
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl"]);
+    const paths = findTranscriptsForIssue(5, tmp, /^critic/);
+    expect(paths).toHaveLength(1);
+    expect(paths[0]).toMatch(/critic-01\.jsonl$/);
+  });
+
+  it("throws when no transcripts exist for the issue", () => {
+    expect(() => findTranscriptsForIssue(7, tmp)).toThrow(LogViewError);
+  });
+});
+
+function seedActiveWorktree(root: string, dirName: string, issueNumber: number, files: string[]): void {
+  const wt = join(root, "worktrees", dirName);
+  const stateDir = join(wt, ".minesweeper");
+  const planningDir = join(stateDir, "planning_history");
+  mkdirSync(planningDir, { recursive: true });
+  const now = "2026-05-08T12:00:00.000Z";
+  writeFileSync(
+    join(stateDir, "state.json"),
+    JSON.stringify({
+      version: 2,
+      issueNumber,
+      branchName: dirName,
+      mode: "Planning",
+      status: "InProgress",
+      iterations: 0,
+      maxIterations: 5,
+      assessment: null,
+      assessmentReason: null,
+      startedAt: now,
+      updatedAt: now,
+    }),
+  );
+  for (const f of files) writeFileSync(join(planningDir, f), FIXTURE_TEXT);
+}
+
+function seedArchive(root: string, dirName: string, files: string[]): void {
+  const planningDir = join(root, "archive", dirName, "planning_history");
+  mkdirSync(planningDir, { recursive: true });
+  for (const f of files) writeFileSync(join(planningDir, f), FIXTURE_TEXT);
+}

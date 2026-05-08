@@ -7,4 +7,6 @@
 {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_b","type":"tool_result","content":"omitted","is_error":false}]},"timestamp":"2026-05-08T13:45:31.000Z","tool_use_result":{"type":"text","file":{"filePath":"/tmp/work/prompts/executor.md","content":"line 1\nline 2\nline 3\nline 4\nline 5","numLines":63}}}
 { deliberately malformed json
 {"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_c","type":"tool_result","content":"command not found","is_error":true}]},"timestamp":"2026-05-08T13:45:32.000Z","tool_use_result":{"stdout":"","stderr":"command not found","interrupted":false}}
+{"type":"assistant","message":{"model":"claude-opus-4-7","content":[{"type":"thinking","thinking":"","signature":"opaque-signature-bytes"}]}}
+{"type":"assistant","message":{"model":"claude-opus-4-7","content":[{"type":"tool_use","id":"toolu_d","name":"Write","input":{"file_path":"/tmp/work/note.md","content":"hello\nworld"}}]}}
 {"type":"result","subtype":"success","stop_reason":"end_turn","num_turns":3,"duration_ms":12345}
