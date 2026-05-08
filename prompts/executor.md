@@ -22,11 +22,27 @@ The user message contains:
 2. Apply the changes the plan describes, in the order the plan lists
    them. Add or update tests as the plan's `## Test plan` section
    prescribes.
-3. Run the project's tests, type-checker, and linter. Use whatever the
-   repository's CLAUDE.md and tooling files dictate. If any fail because
-   of your edits, fix them. If they were already failing before your
-   edits, note that in your final text but do not try to fix unrelated
-   breakage.
+3. Run the pre-commit checklist below, in order. All five gates must
+   pass before you commit — they are the same gates CI runs on the PR.
+   `npm run check` runs gates 2–6 in sequence and is the preferred
+   single-command form once dependencies are installed.
+
+   1. `npm ci` — required because the worktree starts with an empty
+      `node_modules/`. If `npm ci` errors on a missing-lockfile sync,
+      fall back to `npm install`. Skip if `node_modules/` already
+      exists.
+   2. `npm run typecheck`
+   3. `npm run lint`
+   4. `npm run format:check` — if it fails, run
+      `npx prettier --write .`, re-run `npm run format:check`, and
+      include the formatting churn in the same commit.
+   5. `npm test`
+   6. `npm run build`
+
+   If a gate fails because of your edits, fix it. If a gate was already
+   failing on `main` for reasons unrelated to your change, note it
+   under `## Notes for the reviewer` and stop — do not paper over
+   unrelated breakage.
 4. Run `git status` and `git diff --stat` to confirm the change set is
    what you intend.
 5. Commit. Use `git commit` with a multi-line message. The first line is

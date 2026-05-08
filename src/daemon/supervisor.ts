@@ -84,10 +84,7 @@ export interface SupervisorDeps {
   /** Override the github carve-out (tests). */
   github?: Pick<typeof defaultGithub, "addLabel" | "getIssue">;
   /** Override worktree helpers (tests). */
-  worktree?: Pick<
-    typeof defaultWorktree,
-    "addWorktree" | "archiveWorktreeState" | "removeWorktree" | "listOrphans"
-  >;
+  worktree?: Pick<typeof defaultWorktree, "addWorktree" | "archiveWorktreeState" | "removeWorktree" | "listOrphans">;
   /** Override `child/state.initState` (tests). */
   initState?: typeof defaultState.initState;
   /** Override the logger event sink. */
@@ -207,12 +204,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     const branchName = branchNameFor(deps.repoRoot, issue.number);
     const worktreePath = join(deps.worktreesRoot, branchName);
     if (await exists(worktreePath)) {
-      emit(
-        "daemon",
-        "WARN",
-        issue.number,
-        `worktree already exists at ${worktreePath}; skipping dispatch`,
-      );
+      emit("daemon", "WARN", issue.number, `worktree already exists at ${worktreePath}; skipping dispatch`);
       return false;
     }
 
@@ -274,19 +266,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
           issueNumber,
         });
         await wt.removeWorktree(orphan.path);
-        emit(
-          "daemon",
-          "OK",
-          issueNumber,
-          `issue closed; archived to ${archiveDir} and removed worktree`,
-        );
+        emit("daemon", "OK", issueNumber, `issue closed; archived to ${archiveDir} and removed worktree`);
       } catch (err) {
-        emit(
-          "daemon",
-          "ERROR",
-          issueNumber,
-          `sweep: cleanup failed for ${orphan.path}: ${(err as Error).message}`,
-        );
+        emit("daemon", "ERROR", issueNumber, `sweep: cleanup failed for ${orphan.path}: ${(err as Error).message}`);
       }
     }
   };
@@ -320,12 +302,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         emit("daemon", "WORK", entry.issueNumber, `dispatching → ${worktreePath}`);
       }
     } catch (err) {
-      emit(
-        "daemon",
-        "ERROR",
-        entry.issueNumber,
-        `failed to set up worktree: ${(err as Error).message}`,
-      );
+      emit("daemon", "ERROR", entry.issueNumber, `failed to set up worktree: ${(err as Error).message}`);
       return;
     }
 
@@ -337,19 +314,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     inflight.set(entry.issueNumber, { issueNumber: entry.issueNumber, worktreePath, done });
   };
 
-  const handleChildExit = async (
-    issueNumber: number,
-    worktreePath: string,
-    child: ChildHandle,
-  ): Promise<void> => {
+  const handleChildExit = async (issueNumber: number, worktreePath: string, child: ChildHandle): Promise<void> => {
     const code = await child.exit;
     if (code === 0) {
-      emit(
-        "daemon",
-        "OK",
-        issueNumber,
-        `child exited 0; worktree at ${worktreePath} kept until issue is closed`,
-      );
+      emit("daemon", "OK", issueNumber, `child exited 0; worktree at ${worktreePath} kept until issue is closed`);
       return;
     }
 
@@ -364,12 +332,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       );
       // fall through and still log the worktree path below
     }
-    emit(
-      "daemon",
-      "ERROR",
-      issueNumber,
-      `child exited ${code}; left worktree at ${worktreePath} for post-mortem`,
-    );
+    emit("daemon", "ERROR", issueNumber, `child exited ${code}; left worktree at ${worktreePath} for post-mortem`);
   };
 
   return {

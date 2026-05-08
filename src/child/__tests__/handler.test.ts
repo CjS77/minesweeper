@@ -89,8 +89,7 @@ describe("handleChild", () => {
     });
 
     const runPlanning = vi.fn(
-      async (deps: { state: State; cwd: string }): Promise<State> =>
-        writeState(deps.cwd, deps.state),
+      async (deps: { state: State; cwd: string }): Promise<State> => writeState(deps.cwd, deps.state),
     );
 
     await expect(

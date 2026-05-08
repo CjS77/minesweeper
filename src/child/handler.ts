@@ -128,8 +128,6 @@ async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
         state: deps.state,
       });
     case "Delegated":
-      throw new Error(
-        `child handler: mode=${mode} not implemented in this build (plan 12 will land assess/refine)`,
-      );
+      throw new Error(`child handler: mode=${mode} not implemented in this build (plan 12 will land assess/refine)`);
   }
 }

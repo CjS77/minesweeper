@@ -84,14 +84,7 @@ describe("buildLabelSpecs", () => {
   it("covers every Minesweeper label exactly once", () => {
     const specs = buildLabelSpecs(loadConfig({}));
     const keys = specs.map((s) => s.key).sort();
-    expect(keys).toEqual([
-      "alwaysFix",
-      "failed",
-      "manuallyApproved",
-      "neverFix",
-      "possiblyDangerous",
-      "subtask",
-    ]);
+    expect(keys).toEqual(["alwaysFix", "failed", "manuallyApproved", "neverFix", "possiblyDangerous", "subtask"]);
   });
 
   it("uses 6-char hex colours without a leading hash", () => {
@@ -187,9 +180,7 @@ describe("runLabelsCommand --list", () => {
   });
 
   it("emits ANSI colour for label names", async () => {
-    mockExeca.mockResolvedValueOnce(
-      ok(JSON.stringify([{ name: "bug", color: "d73a4a", description: "x" }])) as never,
-    );
+    mockExeca.mockResolvedValueOnce(ok(JSON.stringify([{ name: "bug", color: "d73a4a", description: "x" }])) as never);
     const out = makeStdout();
     await runLabelsCommand({
       config: loadConfig({}),
@@ -305,12 +296,7 @@ describe("runLabelsCommand confirmation flow", () => {
 
     expect(result.newOnly).toBe(true);
     const created = upsertCalls().map((a) => a[2]);
-    expect(created).toEqual([
-      "manual",
-      "possiblyDangerous",
-      "manuallyReviewed",
-      "minesweeperFailed",
-    ]);
+    expect(created).toEqual(["manual", "possiblyDangerous", "manuallyReviewed", "minesweeperFailed"]);
     // autofix and subtask must NOT be re-upserted.
     expect(created).not.toContain("autofix");
     expect(created).not.toContain("subtask");

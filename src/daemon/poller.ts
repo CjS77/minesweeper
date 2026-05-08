@@ -74,11 +74,7 @@ export interface PollLoopHandle {
  * daemon's first poll happens before the interval elapses (plan 07
  * acceptance criterion).
  */
-export function runPollLoop(
-  deps: PollerDeps,
-  specs: readonly number[],
-  opts: PollLoopOptions,
-): PollLoopHandle {
+export function runPollLoop(deps: PollerDeps, specs: readonly number[], opts: PollLoopOptions): PollLoopHandle {
   const emit = deps.emit ?? defaultEvent;
   const tick = async (): Promise<void> => {
     try {

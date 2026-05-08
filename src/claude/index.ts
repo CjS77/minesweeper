@@ -1,26 +1,14 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import {
-  query as defaultQuery,
-  type Options as SdkOptions,
-  type SDKMessage,
-} from "@anthropic-ai/claude-agent-sdk";
+import { query as defaultQuery, type Options as SdkOptions, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 import type { Config } from "../config.js";
 import { event as defaultEvent, type Logger } from "../logging.js";
 import { getRole, modelFor, type Role, type RoleName } from "./roles.js";
 import { openTranscript } from "./transcript.js";
 
-export {
-  ROLES,
-  ROLE_NAMES,
-  getRole,
-  modelFor,
-  type Role,
-  type RoleName,
-  type RolePermissionMode,
-} from "./roles.js";
+export { ROLES, ROLE_NAMES, getRole, modelFor, type Role, type RoleName, type RolePermissionMode } from "./roles.js";
 export {
   openTranscript,
   transcriptPathFor,
@@ -128,12 +116,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   }
 
   const durationMs = Date.now() - startedAt;
-  emit(
-    opts.role,
-    "OK",
-    opts.issueNumber,
-    `done (${events} events, stop=${stopReason}, ${durationMs}ms)`,
-  );
+  emit(opts.role, "OK", opts.issueNumber, `done (${events} events, stop=${stopReason}, ${durationMs}ms)`);
 
   return { finalText, events, durationMs, stopReason, transcriptPath: transcript.path };
 }
@@ -142,12 +125,7 @@ function readSystemPrompt(role: Role, promptRoot: string): string {
   return readFileSync(resolve(promptRoot, role.systemPromptPath), "utf-8");
 }
 
-function forwardToLogger(
-  message: SDKMessage,
-  role: RoleName,
-  issueNumber: number | null,
-  emit: EventFn,
-): void {
+function forwardToLogger(message: SDKMessage, role: RoleName, issueNumber: number | null, emit: EventFn): void {
   if (message.type !== "assistant") return;
   const blocks = extractContentBlocks(message);
   blocks.forEach((block) => {
@@ -173,9 +151,7 @@ function extractContentBlocks(message: SDKMessage): MaybeContentBlock[] {
   if (message.type !== "assistant") return [];
   const content = (message.message as { content?: unknown } | undefined)?.content;
   if (!Array.isArray(content)) return [];
-  return content.filter(
-    (block): block is MaybeContentBlock => typeof block === "object" && block !== null,
-  );
+  return content.filter((block): block is MaybeContentBlock => typeof block === "object" && block !== null);
 }
 
 export type { SDKMessage };

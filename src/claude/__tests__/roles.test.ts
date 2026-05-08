@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { Config } from "../../config.js";
@@ -49,6 +52,21 @@ describe("ROLES registry", () => {
     for (const name of ["planner", "critic", "assessor", "refiner", "reviewer"] as const) {
       expect(ROLES[name].allowedTools).not.toContain("Edit");
       expect(ROLES[name].allowedTools).not.toContain("Write");
+    }
+  });
+
+  it("executor prompt names every CI gate so the prompt-content contract holds", () => {
+    const promptPath = resolve(process.cwd(), getRole("executor").systemPromptPath);
+    const content = readFileSync(promptPath, "utf-8");
+    for (const needle of [
+      "npm run typecheck",
+      "npm run lint",
+      "npm run format:check",
+      "npm test",
+      "npm run build",
+      "prettier",
+    ]) {
+      expect(content).toContain(needle);
     }
   });
 

@@ -165,9 +165,7 @@ describe("runSubagent", () => {
       emit: vi.fn(),
     });
 
-    expect(result.transcriptPath).toBe(
-      join(tempCwd, ".minesweeper/planning_history/critic-04.jsonl"),
-    );
+    expect(result.transcriptPath).toBe(join(tempCwd, ".minesweeper/planning_history/critic-04.jsonl"));
     const lines = readFileSync(result.transcriptPath, "utf8")
       .split("\n")
       .filter((l) => l.length > 0);
@@ -209,9 +207,7 @@ describe("runSubagent", () => {
   });
 
   it("returns finalText='' and stopReason='unknown' when no result message arrives", async () => {
-    mockedQuery.mockReturnValue(
-      makeStream([assistantMessage([{ type: "text", text: "..." }])]) as never,
-    );
+    mockedQuery.mockReturnValue(makeStream([assistantMessage([{ type: "text", text: "..." }])]) as never);
 
     const result = await runSubagent({
       role: "reviewer",

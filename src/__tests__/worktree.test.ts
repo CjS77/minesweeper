@@ -4,13 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  addWorktree,
-  archiveWorktreeState,
-  listOrphans,
-  removeWorktree,
-  sanitiseBranchName,
-} from "../worktree.js";
+import { addWorktree, archiveWorktreeState, listOrphans, removeWorktree, sanitiseBranchName } from "../worktree.js";
 import { initState, statePath } from "../child/state.js";
 
 let scratch: string;

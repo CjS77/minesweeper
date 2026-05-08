@@ -4,13 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  LEVEL_EMOJI,
-  ROLES,
-  createLogger,
-  resetLoggerForTest,
-  type Logger,
-} from "../logging.js";
+import { LEVEL_EMOJI, ROLES, createLogger, resetLoggerForTest, type Logger } from "../logging.js";
 
 const ESC = String.fromCharCode(0x1b);
 const ANSI = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
@@ -23,9 +17,10 @@ let logger: Logger;
 
 const FIXED_NOW = new Date("2026-05-07T13:24:08.000Z");
 // HH:MM:SS in local time of the test runner.
-const FIXED_TIME = `${String(FIXED_NOW.getHours()).padStart(2, "0")}:${String(
-  FIXED_NOW.getMinutes(),
-).padStart(2, "0")}:${String(FIXED_NOW.getSeconds()).padStart(2, "0")}`;
+const FIXED_TIME = `${String(FIXED_NOW.getHours()).padStart(2, "0")}:${String(FIXED_NOW.getMinutes()).padStart(
+  2,
+  "0",
+)}:${String(FIXED_NOW.getSeconds()).padStart(2, "0")}`;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "minesweeper-logging-"));
@@ -141,16 +136,13 @@ describe("--quiet behaviour", () => {
     expect(record).toMatchObject({ tag: "INFO", msg: "muted" });
   });
 
-  it.each(["WARN", "ERROR", "OK", "SHIP", "WORK"] as const)(
-    "still emits %s lines to stdout when quiet",
-    (level) => {
-      makeLogger({ quiet: true });
-      logger.event("daemon", level, null, "loud");
-      const stdoutLine = strip(stdoutChunks.join(""));
-      expect(stdoutLine).toContain(LEVEL_EMOJI[level]);
-      expect(stdoutLine).toContain("loud");
-    },
-  );
+  it.each(["WARN", "ERROR", "OK", "SHIP", "WORK"] as const)("still emits %s lines to stdout when quiet", (level) => {
+    makeLogger({ quiet: true });
+    logger.event("daemon", level, null, "loud");
+    const stdoutLine = strip(stdoutChunks.join(""));
+    expect(stdoutLine).toContain(LEVEL_EMOJI[level]);
+    expect(stdoutLine).toContain("loud");
+  });
 });
 
 describe("ANSI handling", () => {

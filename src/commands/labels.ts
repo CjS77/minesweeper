@@ -26,13 +26,7 @@ import { event } from "../logging.js";
 /** Specification for a single Minesweeper label. */
 export interface LabelSpec {
   /** Stable handle used in logs and tests; not the GitHub label name. */
-  key:
-    | "alwaysFix"
-    | "neverFix"
-    | "possiblyDangerous"
-    | "manuallyApproved"
-    | "failed"
-    | "subtask";
+  key: "alwaysFix" | "neverFix" | "possiblyDangerous" | "manuallyApproved" | "failed" | "subtask";
   /** The actual label name shown on GitHub, sourced from config. */
   name: string;
   /** GitHub label colour — 6-char hex, no leading `#`. */
@@ -122,9 +116,7 @@ export interface RunLabelsCommandResult {
 }
 
 /** Apply the operator's intent — either show, or upsert with confirmation. */
-export async function runLabelsCommand(
-  opts: RunLabelsCommandOptions,
-): Promise<RunLabelsCommandResult> {
+export async function runLabelsCommand(opts: RunLabelsCommandOptions): Promise<RunLabelsCommandResult> {
   const stdout = opts.stdout ?? process.stdout;
   const specs = buildLabelSpecs(opts.config);
 
@@ -171,10 +163,7 @@ export async function runLabelsCommand(
   return await upsertAll(specs, opts);
 }
 
-async function upsertAll(
-  specs: LabelSpec[],
-  opts: RunLabelsCommandOptions,
-): Promise<RunLabelsCommandResult> {
+async function upsertAll(specs: LabelSpec[], opts: RunLabelsCommandOptions): Promise<RunLabelsCommandResult> {
   let firstError: unknown = null;
   for (const spec of specs) {
     try {
@@ -201,9 +190,7 @@ function renderClashes(stdout: NodeJS.WritableStream, clashes: Label[]): void {
     stdout.write(`${chalk.dim("No clashes — none of the proposed labels exist on the repo yet.")}\n\n`);
     return;
   }
-  stdout.write(
-    `${chalk.bold(`Clashing labels already on this repo (${clashes.length} — would be overwritten):`)}\n`,
-  );
+  stdout.write(`${chalk.bold(`Clashing labels already on this repo (${clashes.length} — would be overwritten):`)}\n`);
   writeLabelRows(stdout, clashes);
   stdout.write("\n");
 }

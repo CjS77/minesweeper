@@ -59,9 +59,7 @@ export class ModelsCommandError extends Error {
 export async function runModelsCommand(opts: ModelsOptions): Promise<void> {
   const apiKey = opts.apiKey ?? process.env["ANTHROPIC_API_KEY"];
   if (!apiKey) {
-    throw new ModelsCommandError(
-      "missing ANTHROPIC_API_KEY: set it in your environment to call the Anthropic API",
-    );
+    throw new ModelsCommandError("missing ANTHROPIC_API_KEY: set it in your environment to call the Anthropic API");
   }
   const fetchImpl = opts.fetchImpl ?? fetch;
   const stdout = opts.stdout ?? process.stdout;
@@ -69,11 +67,7 @@ export async function runModelsCommand(opts: ModelsOptions): Promise<void> {
   const models = await fetchAllModels(apiKey, fetchImpl);
 
   const output =
-    opts.format === "json"
-      ? formatJson(models)
-      : opts.verbose
-        ? formatTextVerbose(models)
-        : formatTextSimple(models);
+    opts.format === "json" ? formatJson(models) : opts.verbose ? formatTextVerbose(models) : formatTextSimple(models);
   stdout.write(`${output}\n`);
 }
 
@@ -116,9 +110,7 @@ async function buildHttpError(res: Response): Promise<ModelsCommandError> {
       `Anthropic API rate-limited the request (HTTP 429). Wait a moment and retry. ${snippet}`,
     );
   }
-  return new ModelsCommandError(
-    `Anthropic API call failed: HTTP ${res.status} ${res.statusText}. ${snippet}`,
-  );
+  return new ModelsCommandError(`Anthropic API call failed: HTTP ${res.status} ${res.statusText}. ${snippet}`);
 }
 
 function formatJson(models: ModelInfo[]): string {
@@ -160,14 +152,7 @@ function formatTextSimple(models: ModelInfo[]): string {
 }
 
 function formatTextVerbose(models: ModelInfo[]): string {
-  const headers = [
-    "ID",
-    "Display Name",
-    "Created",
-    "MaxIn",
-    "MaxOut",
-    ...CAPABILITY_COLUMNS.map((c) => c.header),
-  ];
+  const headers = ["ID", "Display Name", "Created", "MaxIn", "MaxOut", ...CAPABILITY_COLUMNS.map((c) => c.header)];
   const rows = models.map((m) => [
     m.id,
     m.display_name,
@@ -180,14 +165,9 @@ function formatTextVerbose(models: ModelInfo[]): string {
 }
 
 function renderLegend(): string {
-  const entries = [
-    ...NON_CAPABILITY_LEGEND,
-    ...CAPABILITY_COLUMNS.map((c) => ({ header: c.header, label: c.label })),
-  ];
+  const entries = [...NON_CAPABILITY_LEGEND, ...CAPABILITY_COLUMNS.map((c) => ({ header: c.header, label: c.label }))];
   const headerWidth = Math.max(...entries.map((e) => e.header.length));
-  const lines = entries.map(
-    (e) => `  ${chalk.bold(padRight(e.header, headerWidth))}  ${e.label}`,
-  );
+  const lines = entries.map((e) => `  ${chalk.bold(padRight(e.header, headerWidth))}  ${e.label}`);
   const marks = `  ${chalk.green("✓")} supported   ${chalk.red("✗")} not supported   – unknown (capabilities omitted)`;
   return [chalk.bold("Key:"), ...lines, "", marks].join("\n");
 }
@@ -198,14 +178,10 @@ function renderLegend(): string {
  * skew alignment.
  */
 function renderTable(headers: string[], rows: string[][]): string {
-  const widths = headers.map((h, i) =>
-    Math.max(visibleLen(h), ...rows.map((r) => visibleLen(r[i] ?? ""))),
-  );
+  const widths = headers.map((h, i) => Math.max(visibleLen(h), ...rows.map((r) => visibleLen(r[i] ?? ""))));
   const sep = "  ";
   const headerLine = headers.map((h, i) => chalk.bold(padRight(h, widths[i] ?? 0))).join(sep);
-  const bodyLines = rows.map((r) =>
-    r.map((cell, i) => padRight(cell, widths[i] ?? 0)).join(sep),
-  );
+  const bodyLines = rows.map((r) => r.map((cell, i) => padRight(cell, widths[i] ?? 0)).join(sep));
   return [headerLine, ...bodyLines].join("\n");
 }
 

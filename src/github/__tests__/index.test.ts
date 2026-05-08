@@ -167,17 +167,13 @@ describe("upsertLabel", () => {
 
   it("propagates gh errors", async () => {
     mockExeca.mockResolvedValueOnce(fail("HTTP 422: validation failed") as never);
-    await expect(
-      upsertLabel({ name: "x", color: "ffffff", description: "y" }),
-    ).rejects.toBeInstanceOf(GhError);
+    await expect(upsertLabel({ name: "x", color: "ffffff", description: "y" })).rejects.toBeInstanceOf(GhError);
   });
 });
 
 describe("createIssue", () => {
   it("includes labels when provided", async () => {
-    mockExeca.mockResolvedValueOnce(
-      ok("https://github.com/example/repo/issues/123\n") as never,
-    );
+    mockExeca.mockResolvedValueOnce(ok("https://github.com/example/repo/issues/123\n") as never);
     const result = await createIssue({
       title: "Track me",
       body: "Body",
@@ -193,9 +189,7 @@ describe("createIssue", () => {
   });
 
   it("omits --label when no labels are passed", async () => {
-    mockExeca.mockResolvedValueOnce(
-      ok("https://github.com/example/repo/issues/9\n") as never,
-    );
+    mockExeca.mockResolvedValueOnce(ok("https://github.com/example/repo/issues/9\n") as never);
     await createIssue({ title: "x", body: "y" });
     expect(lastCall().args).not.toContain("--label");
   });
@@ -210,21 +204,13 @@ describe("comment", () => {
   it("invokes gh issue comment", async () => {
     mockExeca.mockResolvedValueOnce(ok("") as never);
     await comment(17, "Looks great!");
-    expect(lastCall().args).toEqual([
-      "issue",
-      "comment",
-      "17",
-      "--body",
-      "Looks great!",
-    ]);
+    expect(lastCall().args).toEqual(["issue", "comment", "17", "--body", "Looks great!"]);
   });
 });
 
 describe("createPr", () => {
   it("parses the PR number from the returned URL", async () => {
-    mockExeca.mockResolvedValueOnce(
-      ok("https://github.com/example/repo/pull/42\n") as never,
-    );
+    mockExeca.mockResolvedValueOnce(ok("https://github.com/example/repo/pull/42\n") as never);
     const result = await createPr({
       base: "main",
       head: "fix/x",
@@ -235,17 +221,13 @@ describe("createPr", () => {
   });
 
   it("appends --draft when requested", async () => {
-    mockExeca.mockResolvedValueOnce(
-      ok("https://github.com/example/repo/pull/2\n") as never,
-    );
+    mockExeca.mockResolvedValueOnce(ok("https://github.com/example/repo/pull/2\n") as never);
     await createPr({ base: "main", head: "x", title: "t", body: "b", draft: true });
     expect(lastCall().args).toContain("--draft");
   });
 
   it("omits --draft otherwise", async () => {
-    mockExeca.mockResolvedValueOnce(
-      ok("https://github.com/example/repo/pull/3\n") as never,
-    );
+    mockExeca.mockResolvedValueOnce(ok("https://github.com/example/repo/pull/3\n") as never);
     await createPr({ base: "main", head: "x", title: "t", body: "b" });
     expect(lastCall().args).not.toContain("--draft");
   });
