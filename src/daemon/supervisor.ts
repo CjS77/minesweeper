@@ -1,0 +1,349 @@
+/**
+ * Per-issue child supervisor.
+ *
+ * Owns the lifecycle around `minesweeper handle <issue#>`:
+ *
+ *   1. Compute the per-issue branch name (`{repo-slug}-issue{NNNN}`),
+ *   2. Create the worktree and seed `state.json`,
+ *   3. Spawn the child with `cwd` set to the worktree,
+ *   4. On exit:
+ *        exit 0 → archive `.minesweeper/`, remove the worktree,
+ *        exit ≠ 0 → label the issue with `failedLabel`, leave the worktree
+ *                   alone for post-mortem.
+ *
+ * Concurrency is bounded by `config.maxConcurrency` (v0 default 1, i.e.
+ * strictly serial). Extra work goes onto an in-memory queue and starts as
+ * slots free up. Re-entrancy is prevented two ways:
+ *   - the inflight `Map<issueNumber, …>` short-circuits dispatches for
+ *     issues that already have a child running, and
+ *   - the worktree-existence check short-circuits dispatches whose worktree
+ *     dir is already on disk (e.g. a previous run was killed mid-flight —
+ *     orphan recovery handles those via `resume`, not `dispatch`).
+ *
+ * `drain` is the shutdown handle: it stops accepting new work, drops the
+ * queue, and resolves once every in-flight child has exited.
+ */
+
+import { promises as fs } from "node:fs";
+import { basename, join } from "node:path";
+
+import { execaNode } from "execa";
+
+import type { Config } from "../config.js";
+import * as defaultGithub from "../github/index.js";
+import type { Issue } from "../github/index.js";
+import { event as defaultEvent, type Logger } from "../logging.js";
+import * as defaultWorktree from "../worktree.js";
+import * as defaultState from "../child/state.js";
+import type { State } from "../child/state.js";
+
+const ISSUE_NUMBER_PAD = 4;
+const FAILED_EXIT_CODE = -1;
+
+/** Lifecycle handle returned by the spawn function. */
+export interface ChildHandle {
+  /** Resolves with the child's exit code (or {@link FAILED_EXIT_CODE} if spawn failed). */
+  exit: Promise<number>;
+  /** Best-effort signal delivery. Used during shutdown. */
+  kill(signal?: NodeJS.Signals): void;
+}
+
+export interface SpawnChildOptions {
+  issueNumber: number;
+  worktreePath: string;
+}
+
+export type SpawnChild = (opts: SpawnChildOptions) => ChildHandle;
+
+export interface OrphanedWorktree {
+  path: string;
+  state: State;
+}
+
+export interface SupervisorDeps {
+  config: Config;
+  /** Absolute path of the parent repo. Used as the slug source and worktree owner. */
+  repoRoot: string;
+  /** Where new worktrees are created (one subdir per branch). */
+  worktreesRoot: string;
+  /** Where archived `.minesweeper/` directories land after a successful run. */
+  archiveRoot: string;
+  /** Test/dev seam: how to spawn the per-issue child. Defaults to {@link defaultSpawnChild}. */
+  spawnChild?: SpawnChild;
+  /** Override `github.addLabel` (tests). */
+  github?: Pick<typeof defaultGithub, "addLabel">;
+  /** Override worktree helpers (tests). */
+  worktree?: Pick<
+    typeof defaultWorktree,
+    "addWorktree" | "archiveWorktreeState" | "removeWorktree"
+  >;
+  /** Override `child/state.initState` (tests). */
+  initState?: typeof defaultState.initState;
+  /** Override the logger event sink. */
+  emit?: Logger["event"];
+  /** Test seam for the worktree-exists pre-flight check. */
+  pathExists?: (path: string) => Promise<boolean>;
+}
+
+export interface Supervisor {
+  /**
+   * Take ownership of an issue: queue (or start immediately) a fresh
+   * dispatch. Returns `false` if already in flight, already queued, the
+   * worktree exists, or the supervisor has been drained.
+   */
+  dispatch(issue: Issue): Promise<boolean>;
+  /**
+   * Re-spawn a child against an existing worktree (used at startup for
+   * orphan recovery). Skips orphans whose state is `Failed`.
+   */
+  resume(orphan: OrphanedWorktree): Promise<boolean>;
+  /** Issue numbers of currently in-flight children. */
+  inFlight(): readonly number[];
+  /** Number of items waiting for a free slot. */
+  queueLength(): number;
+  /** Stop accepting new work; drop the queue; await every running child. */
+  drain(): Promise<void>;
+}
+
+export interface DefaultSpawnChildOptions {
+  /** Absolute path to the compiled CLI script the child runs. */
+  childScript: string;
+}
+
+/**
+ * Production spawner: `execa.node(childScript, ["handle", N], { cwd: worktreePath, stdio: "inherit" })`.
+ * Tests pass a stub via {@link SupervisorDeps.spawnChild}.
+ *
+ * `reject: false` is set so a non-zero exit returns a result object rather
+ * than rejecting — the supervisor needs to inspect `exitCode` to decide
+ * between the success and failure paths.
+ */
+export function defaultSpawnChild(opts: DefaultSpawnChildOptions): SpawnChild {
+  return ({ issueNumber, worktreePath }: SpawnChildOptions): ChildHandle => {
+    const sub = execaNode(opts.childScript, ["handle", String(issueNumber)], {
+      cwd: worktreePath,
+      stdio: "inherit",
+      detached: false,
+      reject: false,
+    });
+    const exit = sub.then(
+      (r) => r.exitCode ?? FAILED_EXIT_CODE,
+      () => FAILED_EXIT_CODE,
+    );
+    return {
+      exit,
+      kill(signal: NodeJS.Signals = "SIGTERM") {
+        sub.kill(signal);
+      },
+    };
+  };
+}
+
+/**
+ * Format the canonical per-issue branch name: `{slug}-issue{NNNN}`. Slug
+ * is the basename of the repo root; numbers are zero-padded to four
+ * digits (so 1 → "0001", 99 → "0099", 12345 → "12345" — pad does not
+ * truncate).
+ */
+export function branchNameFor(repoRoot: string, issueNumber: number): string {
+  const slug = basename(repoRoot);
+  return `${slug}-issue${String(issueNumber).padStart(ISSUE_NUMBER_PAD, "0")}`;
+}
+
+interface QueueEntry {
+  issueNumber: number;
+  branchName: string;
+  /** Set for resume entries; absent for fresh dispatches. */
+  worktreePath?: string;
+  resume: boolean;
+}
+
+interface InFlight {
+  issueNumber: number;
+  worktreePath: string;
+  /** Resolves when the child has exited AND post-exit cleanup has run. */
+  done: Promise<void>;
+}
+
+export function createSupervisor(deps: SupervisorDeps): Supervisor {
+  const emit = deps.emit ?? defaultEvent;
+  const gh = deps.github ?? defaultGithub;
+  const wt = deps.worktree ?? defaultWorktree;
+  const initState = deps.initState ?? defaultState.initState;
+  const exists = deps.pathExists ?? pathExistsImpl;
+  const spawn = deps.spawnChild ?? defaultSpawnChild({ childScript: requiredChildScript() });
+
+  const queue: QueueEntry[] = [];
+  const inflight = new Map<number, InFlight>();
+  let accepting = true;
+
+  /** Already known to the supervisor (running or queued)? */
+  const isKnown = (issueNumber: number): boolean =>
+    inflight.has(issueNumber) || queue.some((q) => q.issueNumber === issueNumber);
+
+  const dispatch = async (issue: Issue): Promise<boolean> => {
+    if (!accepting) return false;
+    if (isKnown(issue.number)) return false;
+
+    const branchName = branchNameFor(deps.repoRoot, issue.number);
+    const worktreePath = join(deps.worktreesRoot, branchName);
+    if (await exists(worktreePath)) {
+      emit(
+        "daemon",
+        "WARN",
+        issue.number,
+        `worktree already exists at ${worktreePath}; skipping dispatch`,
+      );
+      return false;
+    }
+
+    queue.push({ issueNumber: issue.number, branchName, resume: false });
+    void drain();
+    return true;
+  };
+
+  const resume = async (orphan: OrphanedWorktree): Promise<boolean> => {
+    if (!accepting) return false;
+    if (orphan.state.status === "Failed") return false;
+    if (isKnown(orphan.state.issueNumber)) return false;
+
+    queue.push({
+      issueNumber: orphan.state.issueNumber,
+      branchName: orphan.state.branchName,
+      worktreePath: orphan.path,
+      resume: true,
+    });
+    emit(
+      "daemon",
+      "INFO",
+      orphan.state.issueNumber,
+      `recovering orphan worktree ${orphan.path} (mode=${orphan.state.mode}, status=${orphan.state.status})`,
+    );
+    void drain();
+    return true;
+  };
+
+  /** Move queue entries into the inflight map until at capacity. */
+  const drain = async (): Promise<void> => {
+    while (inflight.size < deps.config.maxConcurrency && queue.length > 0) {
+      const next = queue.shift();
+      if (!next) break;
+      await start(next);
+    }
+  };
+
+  const start = async (entry: QueueEntry): Promise<void> => {
+    let worktreePath: string;
+    try {
+      if (entry.resume && entry.worktreePath) {
+        worktreePath = entry.worktreePath;
+      } else {
+        const added = await wt.addWorktree({
+          repoRoot: deps.repoRoot,
+          worktreesRoot: deps.worktreesRoot,
+          branchName: entry.branchName,
+        });
+        worktreePath = added.path;
+        await initState(worktreePath, "Planning", {
+          issueNumber: entry.issueNumber,
+          branchName: added.branch,
+          maxIterations: deps.config.maxPlanningIterations,
+        });
+        emit("daemon", "WORK", entry.issueNumber, `dispatching → ${worktreePath}`);
+      }
+    } catch (err) {
+      emit(
+        "daemon",
+        "ERROR",
+        entry.issueNumber,
+        `failed to set up worktree: ${(err as Error).message}`,
+      );
+      return;
+    }
+
+    const child = spawn({ issueNumber: entry.issueNumber, worktreePath });
+    const done = handleChildExit(entry.issueNumber, worktreePath, child).finally(() => {
+      inflight.delete(entry.issueNumber);
+      void drain();
+    });
+    inflight.set(entry.issueNumber, { issueNumber: entry.issueNumber, worktreePath, done });
+  };
+
+  const handleChildExit = async (
+    issueNumber: number,
+    worktreePath: string,
+    child: ChildHandle,
+  ): Promise<void> => {
+    const code = await child.exit;
+    if (code === 0) {
+      try {
+        const archiveDir = await wt.archiveWorktreeState({
+          worktreePath,
+          archiveRoot: deps.archiveRoot,
+          issueNumber,
+        });
+        await wt.removeWorktree(worktreePath);
+        emit("daemon", "OK", issueNumber, `child exited 0; archived to ${archiveDir}`);
+      } catch (err) {
+        emit(
+          "daemon",
+          "ERROR",
+          issueNumber,
+          `child exited 0 but post-exit cleanup failed: ${(err as Error).message}`,
+        );
+      }
+      return;
+    }
+
+    try {
+      await gh.addLabel(issueNumber, deps.config.failedLabel, { cwd: deps.repoRoot });
+    } catch (err) {
+      emit(
+        "daemon",
+        "ERROR",
+        issueNumber,
+        `child exited ${code}; could not apply ${deps.config.failedLabel}: ${(err as Error).message}`,
+      );
+      // fall through and still log the worktree path below
+    }
+    emit(
+      "daemon",
+      "ERROR",
+      issueNumber,
+      `child exited ${code}; left worktree at ${worktreePath} for post-mortem`,
+    );
+  };
+
+  return {
+    dispatch,
+    resume,
+    inFlight: () => [...inflight.keys()],
+    queueLength: () => queue.length,
+    async drain(): Promise<void> {
+      accepting = false;
+      queue.length = 0;
+      if (inflight.size === 0) return;
+      await Promise.all([...inflight.values()].map((i) => i.done));
+    },
+  };
+}
+
+async function pathExistsImpl(path: string): Promise<boolean> {
+  try {
+    await fs.access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function requiredChildScript(): string {
+  // The CLI is responsible for plumbing an absolute childScript path; the
+  // default supervisor never reaches this branch in tests because tests
+  // always inject `spawnChild`. If someone constructs a supervisor without
+  // a spawn function in production, fail loudly rather than running the
+  // wrong binary.
+  throw new Error(
+    "createSupervisor: pass deps.spawnChild (e.g. defaultSpawnChild({ childScript })) — no default child script available",
+  );
+}

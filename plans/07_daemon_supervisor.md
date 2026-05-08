@@ -1,5 +1,5 @@
 # 07 — Daemon: poller + supervisor
-## Status: Not started
+## Status: done
 
 ## Context
 The parent daemon is the long-running process the operator launches. It
@@ -15,9 +15,8 @@ per-issue child processes whose cwd is the issue's worktree.
 - `src/daemon/poller.ts`:
   - `pollOnce(deps): Promise<Issue[]>` — calls `github.listIssues`,
     filters with `isEligible`, returns the list (no side effects).
-  - `runPollLoop(deps, intervalMs)` — `setInterval`-style loop using
-    `setTimeout` so we can cleanly cancel; emits each eligible issue to
-    the supervisor.
+  - `runPollLoop(deps, specs)` — `specs` is an array of cronjob-compatible strings; Each one sets up a setInterval timer which 
+    emits each eligible issue to the supervisor when triggered. The `spec` are passed in after being parsed from the config file.
 - `src/daemon/supervisor.ts`:
   - Maintains a `Map<issueNumber, Child>` of in-flight children.
   - `dispatch(issue)`:

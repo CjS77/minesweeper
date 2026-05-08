@@ -1,6 +1,18 @@
 #!/usr/bin/env node
+import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { Command } from "commander";
-import { createLogger, event } from "./logging.js";
+
+import { loadConfig } from "./config.js";
+import { createLogger, event, getActiveLogger } from "./logging.js";
+import {
+  createSupervisor,
+  defaultSpawnChild,
+  runPollLoop,
+  type Supervisor,
+} from "./daemon/index.js";
+import { listOrphans } from "./worktree.js";
 
 const program = new Command();
 
@@ -17,8 +29,8 @@ program
 program
   .command("run")
   .description("Start the long-running daemon: poll GitHub and dispatch eligible issues.")
-  .action(() => {
-    event("daemon", "INFO", null, "minesweeper run — daemon not yet implemented");
+  .action(async () => {
+    await runDaemon();
   });
 
 program
@@ -26,7 +38,12 @@ program
   .argument("<issue>", "issue number to handle (cwd must be the issue's worktree)")
   .description("Child worker entry: drive the state machine for a single issue from the worktree.")
   .action((issue: string) => {
-    event("daemon", "INFO", Number(issue), `minesweeper handle — child handler not yet implemented`);
+    event(
+      "daemon",
+      "INFO",
+      Number(issue),
+      `minesweeper handle — child handler not yet implemented`,
+    );
   });
 
 program
@@ -34,10 +51,83 @@ program
   .argument("<issue>", "issue number to process once")
   .description("Debug helper: run a single issue end-to-end without the daemon loop.")
   .action((issue: string) => {
-    event("daemon", "INFO", Number(issue), `minesweeper once — one-shot driver not yet implemented`);
+    event(
+      "daemon",
+      "INFO",
+      Number(issue),
+      `minesweeper once — one-shot driver not yet implemented`,
+    );
   });
 
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err);
   process.exit(1);
 });
+
+async function runDaemon(): Promise<void> {
+  const config = loadConfig();
+  const repoRoot = process.cwd();
+  const worktreesRoot = resolve(config.worktreePath, "worktrees");
+  const archiveRoot = resolve(config.worktreePath, "archive");
+  const childScript = fileURLToPath(import.meta.url);
+
+  const supervisor = createSupervisor({
+    config,
+    repoRoot,
+    worktreesRoot,
+    archiveRoot,
+    spawnChild: defaultSpawnChild({ childScript }),
+  });
+
+  await recoverOrphans(supervisor, worktreesRoot);
+
+  const loop = runPollLoop({ config, cwd: repoRoot }, [config.pollIntervalMs], {
+    onIssue: async (issue) => {
+      await supervisor.dispatch(issue);
+    },
+  });
+
+  event(
+    "daemon",
+    "INFO",
+    null,
+    `minesweeper run started (poll=${config.pollIntervalSeconds}s, concurrency=${config.maxConcurrency})`,
+  );
+
+  await waitForShutdown();
+  event("daemon", "INFO", null, "shutdown signal received; draining in-flight children");
+  loop.stop();
+  await supervisor.drain();
+  event("daemon", "OK", null, "daemon stopped cleanly");
+  await getActiveLogger()?.flush();
+}
+
+async function recoverOrphans(supervisor: Supervisor, worktreesRoot: string): Promise<void> {
+  const orphans = await listOrphans(worktreesRoot);
+  for (const orphan of orphans) {
+    if (!orphan.state) continue;
+    if (orphan.state.status === "Failed") {
+      event(
+        "daemon",
+        "WARN",
+        orphan.state.issueNumber,
+        `orphan worktree ${orphan.path} is in Failed state; leaving for inspection`,
+      );
+      continue;
+    }
+    await supervisor.resume({ path: orphan.path, state: orphan.state });
+  }
+}
+
+function waitForShutdown(): Promise<void> {
+  return new Promise<void>((resolveShutdown) => {
+    const onSignal = (sig: NodeJS.Signals): void => {
+      process.off("SIGINT", onSignal);
+      process.off("SIGTERM", onSignal);
+      event("daemon", "INFO", null, `caught ${sig}`);
+      resolveShutdown();
+    };
+    process.on("SIGINT", onSignal);
+    process.on("SIGTERM", onSignal);
+  });
+}
