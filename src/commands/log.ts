@@ -3,22 +3,33 @@
  * `runSubagent` (`src/claude/transcript.ts`).
  *
  * Renders each SDK message as a single emoji-tagged line in the same style
- * as the structured logger (`src/logging.ts`). Tool uses are summarised, tool
- * results are folded with a per-line cap, and unrecognised event types fall
- * through to a `❓ <type>` line so future SDK additions are visible rather
- * than silently dropped.
+ * as the structured logger (`src/logging.ts`). Tool uses show their full
+ * input (so `Write`/`Edit` content is visible); tool results collapse to a
+ * one-line header (so a `Read` of a 200-line file does not dominate the
+ * output). Unrecognised event types fall through to a `❓ <type>` line so
+ * future SDK additions are visible rather than silently dropped.
  *
- * Pure renderer (`renderTranscriptLine`) is exported for tests; the
- * top-level `runLogViewCommand` wires up file reading, name resolution, and
- * stdout writing.
+ * Two entry shapes:
+ *
+ *   - Single transcript: caller passes `name` (bare like `planner-01` or an
+ *     explicit `.jsonl` path).
+ *   - By issue: caller passes `issueNumber` + `worktreePath`. We walk
+ *     `<worktreePath>/worktrees/` (matching against `state.json.issueNumber`)
+ *     and `<worktreePath>/archive/` (matching the `${issueNumber}-…` prefix
+ *     written by `archiveWorktreeState`), apply an optional regex filter on
+ *     basenames, and render each match in turn separated by a banner.
+ *
+ * Pure renderer (`renderTranscriptLine`) and resolver (`findTranscriptsForIssue`)
+ * are exported for tests.
  */
 
 import { readFileSync, readdirSync } from "node:fs";
-import { join, isAbsolute, dirname } from "node:path";
+import { basename, join, isAbsolute, dirname } from "node:path";
 
 import chalk from "chalk";
 
 import { TRANSCRIPT_DIR } from "../claude/transcript.js";
+import { STATE_DIR, STATE_FILE, StateSchema } from "../child/state.js";
 
 /** Thrown by `runLogViewCommand` when the requested transcript can't be located. */
 export class LogViewError extends Error {
@@ -29,8 +40,22 @@ export class LogViewError extends Error {
 }
 
 export interface RunLogViewCommandOptions {
-  /** Bare transcript name (`planner-01`), explicit `.jsonl` filename, or path. */
-  name: string;
+  /**
+   * Bare transcript name (`planner-01`), explicit `.jsonl` filename, or path.
+   * Mutually exclusive with `issueNumber` — when `issueNumber` is set, this
+   * field (if present) is treated as a regex filter on transcript basenames.
+   */
+  name?: string;
+  /**
+   * If set, resolve transcripts by issue number rather than by name. Requires
+   * `worktreePath`.
+   */
+  issueNumber?: number;
+  /**
+   * Root under which `worktrees/` and `archive/` live (i.e.
+   * `Config.worktreePath`). Required when `issueNumber` is set.
+   */
+  worktreePath?: string;
   /** Working directory used to resolve a bare name. Default: `process.cwd()`. */
   cwd?: string;
   /** Stream to render into. Default: `process.stdout`. */
@@ -38,8 +63,8 @@ export interface RunLogViewCommandOptions {
   /** When false, suppress all ANSI escapes. Default: `true`. */
   color?: boolean;
   /**
-   * Maximum number of body lines emitted per message (text/thinking/tool result).
-   * `0` means unlimited. Default: `40`.
+   * Maximum number of body lines emitted per message (text/thinking/tool
+   * input). `0` means unlimited. Default: `40`.
    */
   maxLines?: number;
 }
@@ -96,8 +121,8 @@ interface ToolUseResult {
 }
 
 /**
- * Read a JSONL transcript and write a pretty rendering to stdout. Tolerates
- * malformed lines (records the line number and continues).
+ * Read one or more JSONL transcripts and write a pretty rendering to stdout.
+ * Tolerates malformed lines (records the line number and continues).
  */
 export function runLogViewCommand(opts: RunLogViewCommandOptions): void {
   const cwd = opts.cwd ?? process.cwd();
@@ -105,7 +130,7 @@ export function runLogViewCommand(opts: RunLogViewCommandOptions): void {
   const wantColor = opts.color ?? true;
   const maxLines = opts.maxLines ?? 40;
 
-  const path = resolveTranscriptPath(opts.name, cwd);
+  const paths = resolveAllPaths(opts, cwd);
 
   const previousLevel = chalk.level;
   if (wantColor) {
@@ -115,24 +140,62 @@ export function runLogViewCommand(opts: RunLogViewCommandOptions): void {
   }
 
   try {
-    const text = readTranscript(path, cwd);
-    const lines = text.split("\n");
-    const ctx: RenderContext = { lastTimestamp: null, lastModel: null, maxLines };
-    lines.forEach((raw, idx) => {
-      if (raw.length === 0) return;
-      const lineNumber = idx + 1;
-      let parsed: SdkMessage;
-      try {
-        parsed = JSON.parse(raw) as SdkMessage;
-      } catch {
-        stdout.write(`${chalk.yellow(`⚠️ line ${lineNumber} unparseable`)}\n`);
-        return;
+    paths.forEach((path, idx) => {
+      if (paths.length > 1) {
+        if (idx > 0) stdout.write("\n");
+        stdout.write(`${renderBanner(path)}\n`);
       }
-      const rendered = renderTranscriptLine(parsed, ctx);
-      if (rendered.length > 0) stdout.write(`${rendered}\n`);
+      renderOne(path, cwd, stdout, maxLines);
     });
   } finally {
     chalk.level = previousLevel;
+  }
+}
+
+function renderBanner(path: string): string {
+  const bar = "═".repeat(6);
+  return chalk.dim(`${bar} ${basename(path)}  (${path}) ${bar}`);
+}
+
+function renderOne(path: string, cwd: string, stdout: NodeJS.WritableStream, maxLines: number): void {
+  const text = readTranscript(path, cwd);
+  const lines = text.split("\n");
+  const ctx: RenderContext = { lastTimestamp: null, lastModel: null, maxLines };
+  lines.forEach((raw, idx) => {
+    if (raw.length === 0) return;
+    const lineNumber = idx + 1;
+    let parsed: SdkMessage;
+    try {
+      parsed = JSON.parse(raw) as SdkMessage;
+    } catch {
+      stdout.write(`${chalk.yellow(`⚠️ line ${lineNumber} unparseable`)}\n`);
+      return;
+    }
+    const rendered = renderTranscriptLine(parsed, ctx);
+    if (rendered.length > 0) stdout.write(`${rendered}\n`);
+  });
+}
+
+function resolveAllPaths(opts: RunLogViewCommandOptions, cwd: string): string[] {
+  if (opts.issueNumber !== undefined) {
+    if (!opts.worktreePath) {
+      throw new LogViewError("--issue requires worktreePath (loaded from MINESWEEPER_WORKTREE_PATH)");
+    }
+    const filter = compileFilter(opts.name);
+    return findTranscriptsForIssue(opts.issueNumber, opts.worktreePath, filter);
+  }
+  if (!opts.name) {
+    throw new LogViewError("either --issue <n> or a transcript name is required");
+  }
+  return [resolveTranscriptPath(opts.name, cwd)];
+}
+
+function compileFilter(raw: string | undefined): RegExp | undefined {
+  if (raw === undefined || raw === "") return undefined;
+  try {
+    return new RegExp(raw);
+  } catch (err) {
+    throw new LogViewError(`invalid regex ${JSON.stringify(raw)}: ${(err as Error).message}`);
   }
 }
 
@@ -184,19 +247,25 @@ function renderAssistant(message: SdkMessage, ctx: RenderContext, time: string):
   if (typeof innerModel === "string") ctx.lastModel = innerModel;
   const blocks = extractBlocks(message.message?.content);
   if (blocks.length === 0) return assistantHeader(ctx, time, "message");
-  return blocks.map((block) => renderAssistantBlock(block, ctx, time)).join("\n");
+  return blocks
+    .map((block) => renderAssistantBlock(block, ctx, time))
+    .filter((s) => s.length > 0)
+    .join("\n");
 }
 
 function renderAssistantBlock(block: ContentBlock, ctx: RenderContext, time: string): string {
   if (block.type === "thinking") {
-    const header = assistantHeader(ctx, time, "thinking");
     const body = typeof block.thinking === "string" ? block.thinking.trim() : "";
-    return body.length > 0 ? `${header}\n${indentBody(body, ctx.maxLines)}` : header;
+    if (body.length === 0) return "";
+    const header = assistantHeader(ctx, time, "thinking");
+    return `${header}\n${indentBody(body, ctx.maxLines)}`;
   }
   if (block.type === "tool_use") {
     const name = block.name ?? "Tool";
     const summary = summariseToolInput(name, block.input);
-    return assistantHeader(ctx, time, `${name}(${summary})`);
+    const header = assistantHeader(ctx, time, `${name}(${summary})`);
+    const inputBody = formatToolInputBody(block.input);
+    return inputBody ? `${header}\n${indentBody(inputBody, ctx.maxLines)}` : header;
   }
   if (block.type === "text") {
     const header = assistantHeader(ctx, time, "text");
@@ -209,7 +278,7 @@ function renderAssistantBlock(block: ContentBlock, ctx: RenderContext, time: str
 function assistantHeader(ctx: RenderContext, time: string, suffix: string): string {
   const label = chalk.cyan.bold("ASSISTANT");
   const modelTag = ctx.lastModel ? ` (${ctx.lastModel})` : "";
-  return `${time} 👩‍🏫 ${label}${modelTag} — ${suffix}`;
+  return `${time} 🤖 ${label}${modelTag} — ${suffix}`;
 }
 
 function renderUser(message: SdkMessage, ctx: RenderContext, time: string, isError: boolean): string {
@@ -229,6 +298,12 @@ function renderUser(message: SdkMessage, ctx: RenderContext, time: string, isErr
   return renderToolResult(result, toolBlock, ctx, time, errorFlag);
 }
 
+/**
+ * Header-only rendering for tool results — body of the called tool's output
+ * is intentionally omitted. The headline carries the file path (for `Read`)
+ * or stdout/stderr line counts so a reader can scan the conversation without
+ * a 200-line file body landing in the middle of it.
+ */
 function renderToolResult(
   result: ToolUseResult | null,
   toolBlock: ContentBlock,
@@ -239,30 +314,25 @@ function renderToolResult(
   if (result?.file?.content !== undefined) {
     const path = result.file.filePath ?? "<file>";
     const numLines = result.file.numLines ?? countLines(result.file.content);
-    const header = userHeader(ctx, time, `tool_result ${path} (${numLines} lines)`, isError);
-    return `${header}\n${indentBody(result.file.content, ctx.maxLines)}`;
+    return userHeader(ctx, time, `tool_result ${path} (${numLines} lines)`, isError);
   }
   if (typeof result?.stdout === "string") {
     const numLines = countLines(result.stdout);
-    const header = userHeader(ctx, time, `tool_result (${numLines} lines)`, isError);
-    const body = indentBody(result.stdout, ctx.maxLines);
-    if (typeof result.stderr === "string" && result.stderr.length > 0) {
-      const stderrLabel = chalk.dim("    stderr:");
-      const stderrBody = indentBody(result.stderr, ctx.maxLines);
-      return `${header}\n${body}\n${stderrLabel}\n${stderrBody}`;
-    }
-    return `${header}\n${body}`;
+    const stderrSuffix =
+      typeof result.stderr === "string" && result.stderr.length > 0
+        ? `, stderr=${countLines(result.stderr)} lines`
+        : "";
+    return userHeader(ctx, time, `tool_result (${numLines} lines${stderrSuffix})`, isError);
   }
   const inlineContent = typeof toolBlock.content === "string" ? toolBlock.content : "";
   const numLines = countLines(inlineContent);
-  const header = userHeader(ctx, time, `tool_result (${numLines} lines)`, isError);
-  return inlineContent.length > 0 ? `${header}\n${indentBody(inlineContent, ctx.maxLines)}` : header;
+  return userHeader(ctx, time, `tool_result (${numLines} lines)`, isError);
 }
 
 function userHeader(ctx: RenderContext, time: string, suffix: string, isError: boolean): string {
   const label = chalk.green.bold("USER");
   const modelTag = ctx.lastModel ? ` (${ctx.lastModel})` : "";
-  const head = `${time} 👨 ${label}${modelTag} — ${suffix}`;
+  const head = `${time} 👤 ${label}${modelTag} — ${suffix}`;
   return isError ? chalk.red(head) : head;
 }
 
@@ -311,6 +381,33 @@ function pickSummaryField(name: string, input: Record<string, unknown>): string 
     if (typeof v === "string" && v.length > 0) return v;
   }
   return null;
+}
+
+/**
+ * Pretty-printed JSON of a tool's input for display under its header. Long
+ * string fields (e.g. `Write.content`) keep their newlines so they render
+ * one line per line. `null`/empty input collapses to no body so the header
+ * stands alone.
+ */
+function formatToolInputBody(input: Record<string, unknown> | undefined): string | null {
+  if (!input) return null;
+  const keys = Object.keys(input);
+  if (keys.length === 0) return null;
+  const lines: string[] = [];
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === "string") {
+      if (value.includes("\n")) {
+        lines.push(`${key}:`);
+        for (const ln of value.split("\n")) lines.push(`  ${ln}`);
+      } else {
+        lines.push(`${key}: ${value}`);
+      }
+    } else {
+      lines.push(`${key}: ${JSON.stringify(value)}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 function extractBlocks(content: unknown): ContentBlock[] {
@@ -362,6 +459,75 @@ function resolveTranscriptPath(name: string, cwd: string): string {
   if (isAbsolute(name)) return name;
   if (name.includes("/") || name.endsWith(".jsonl")) return join(cwd, name);
   return join(cwd, TRANSCRIPT_DIR, `${name}.jsonl`);
+}
+
+/**
+ * Find every JSONL transcript belonging to `issueNumber` under `worktreePath`.
+ * Searches both active worktrees (matched by `state.json.issueNumber`) and
+ * archives (matched by the `${issueNumber}-…` directory prefix written by
+ * `archiveWorktreeState`). Optionally filters by basename regex. Returns
+ * absolute paths in lexical order; throws `LogViewError` on no match.
+ */
+export function findTranscriptsForIssue(issueNumber: number, worktreePath: string, filter?: RegExp): string[] {
+  const matches = [
+    ...listFromActiveWorktrees(issueNumber, worktreePath),
+    ...listFromArchive(issueNumber, worktreePath),
+  ].sort();
+
+  if (matches.length === 0) {
+    throw new LogViewError(`no transcripts found for issue ${issueNumber} under ${worktreePath}`);
+  }
+  if (!filter) return matches;
+  const filtered = matches.filter((p) => filter.test(basename(p)));
+  if (filtered.length === 0) {
+    throw new LogViewError(
+      `no transcripts for issue ${issueNumber} match /${filter.source}/. candidates:\n  ${matches.join("\n  ")}`,
+    );
+  }
+  return filtered;
+}
+
+function listFromActiveWorktrees(issueNumber: number, worktreePath: string): string[] {
+  const root = join(worktreePath, "worktrees");
+  const dirs = readdirOrEmpty(root);
+  const out: string[] = [];
+  for (const dir of dirs) {
+    const wt = join(root, dir);
+    const state = readStateOrNull(join(wt, STATE_DIR, STATE_FILE));
+    if (state?.issueNumber !== issueNumber) continue;
+    out.push(...listJsonlFiles(join(wt, STATE_DIR, "planning_history")));
+  }
+  return out;
+}
+
+function listFromArchive(issueNumber: number, worktreePath: string): string[] {
+  const root = join(worktreePath, "archive");
+  const prefix = `${issueNumber}-`;
+  const dirs = readdirOrEmpty(root).filter((name) => name.startsWith(prefix));
+  return dirs.flatMap((dir) => listJsonlFiles(join(root, dir, "planning_history")));
+}
+
+function readStateOrNull(path: string): { issueNumber: number } | null {
+  try {
+    const raw = readFileSync(path, "utf8");
+    return StateSchema.parse(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function readdirOrEmpty(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
+
+function listJsonlFiles(dir: string): string[] {
+  return readdirOrEmpty(dir)
+    .filter((n) => n.endsWith(".jsonl"))
+    .map((n) => join(dir, n));
 }
 
 function readTranscript(path: string, cwd: string): string {

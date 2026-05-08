@@ -97,13 +97,18 @@ const log = program.command("log").description("Inspect Minesweeper log and tran
 
 log
   .command("view")
-  .argument("<name>", "transcript name (e.g. planner-01) or path to a .jsonl file")
+  .argument("[name]", "transcript name (e.g. planner-01), .jsonl path, or — with --issue — a basename regex filter")
   .description("Pretty-print a JSONL transcript captured during a planning or execution run.")
+  .option("--issue <n>", "issue number; finds matching transcripts under MINESWEEPER_WORKTREE_PATH")
   .option("--no-color", "disable ANSI colour escapes")
   .option("--max-lines <n>", "max body lines per message (0 = unlimited)", "40")
-  .action((name: string, opts: { color?: boolean; maxLines?: string }) => {
+  .action((name: string | undefined, opts: { issue?: string; color?: boolean; maxLines?: string }) => {
+    const issueNumber = opts.issue !== undefined ? parseIssueArg(opts.issue) : undefined;
+    const worktreePath = issueNumber !== undefined ? loadConfig().worktreePath : undefined;
     runLogViewCommand({
       name,
+      issueNumber,
+      worktreePath,
       cwd: process.cwd(),
       color: opts.color !== false,
       maxLines: parseMaxLines(opts.maxLines),
