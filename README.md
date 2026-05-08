@@ -224,6 +224,21 @@ node dist/cli.js run
 The daemon prints a pretty stream of events: `polled (N eligible) → dispatching → planning → executing → reviewing
 → PR opened`. Stop it with `Ctrl+C`; it drains in-flight children before exiting.
 
+## Inspecting transcripts
+
+`minesweeper log view <name>` pretty-prints a JSONL transcript captured by the planner / critic / executor / reviewer
+under `<worktree>/.minesweeper/planning_history/`. Pass a bare name (`planner-01`) and the command resolves it
+relative to the current worktree; pass an explicit path (or one ending in `.jsonl`) to view archived runs.
+
+```sh
+# Inside an active worktree, page through the first planning round:
+minesweeper log view planner-01 | less -R
+# Strip colour for grep / sed pipelines:
+minesweeper log view planner-01 --no-color | grep tool_result
+# Show full bodies (default caps each message body at 40 lines):
+minesweeper log view executor-01 --max-lines 0
+```
+
 ## Logs and post-mortem
 
 * **Structured logs** — JSON, one line per event, in `.minesweeper/logs/daemon.log` (rotated by Minesweeper). Useful

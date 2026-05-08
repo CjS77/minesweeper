@@ -10,6 +10,7 @@ import { createLogger, event, getActiveLogger } from "./logging.js";
 import { createSupervisor, defaultSpawnChild, runPollLoop, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
 import { runLabelsCommand } from "./commands/labels.js";
+import { runLogViewCommand } from "./commands/log.js";
 import { runModelsCommand } from "./commands/models.js";
 import { listOrphans } from "./worktree.js";
 
@@ -21,12 +22,25 @@ program
   .version("0.0.0")
   .option("-q, --quiet", "suppress INFO output on stdout (file logs are unaffected)")
   .hook("preAction", (thisCommand, actionCommand) => {
-    // `models` is a read-only utility; it writes its own output and shouldn't
-    // spin up a pino file destination just to be torn down.
-    if (actionCommand.name() === "models") return;
+    // Read-only utilities write their own output; spinning up pino's file
+    // destination just to tear it down would also create `.minesweeper/logs/`
+    // in whatever cwd the user happens to be in.
+    if (LOGGER_FREE_COMMANDS.has(commandPath(actionCommand))) return;
     const opts = thisCommand.optsWithGlobals();
     createLogger({ quiet: Boolean(opts.quiet) });
   });
+
+const LOGGER_FREE_COMMANDS = new Set(["models", "log view"]);
+
+function commandPath(cmd: Command): string {
+  const parts: string[] = [];
+  let cursor: Command | null = cmd;
+  while (cursor && cursor.parent) {
+    parts.unshift(cursor.name());
+    cursor = cursor.parent;
+  }
+  return parts.join(" ");
+}
 
 program
   .command("run")
@@ -76,6 +90,23 @@ program
   .action(async (opts: { verbose?: boolean; format?: string }) => {
     const format = parseFormatArg(opts.format);
     await runModelsCommand({ verbose: Boolean(opts.verbose), format });
+  });
+
+const log = program.command("log").description("Inspect Minesweeper log and transcript files.");
+
+log
+  .command("view")
+  .argument("<name>", "transcript name (e.g. planner-01) or path to a .jsonl file")
+  .description("Pretty-print a JSONL transcript captured during a planning or execution run.")
+  .option("--no-color", "disable ANSI colour escapes")
+  .option("--max-lines <n>", "max body lines per message (0 = unlimited)", "40")
+  .action((name: string, opts: { color?: boolean; maxLines?: string }) => {
+    runLogViewCommand({
+      name,
+      cwd: process.cwd(),
+      color: opts.color !== false,
+      maxLines: parseMaxLines(opts.maxLines),
+    });
   });
 
 program.parseAsync(process.argv).catch(handleFatal);
@@ -176,6 +207,15 @@ function parseFormatArg(raw: string | undefined): "text" | "json" {
   if (raw === undefined || raw === "text") return "text";
   if (raw === "json") return "json";
   throw new Error(`invalid --format: ${JSON.stringify(raw)} (expected "text" or "json")`);
+}
+
+function parseMaxLines(raw: string | undefined): number {
+  if (raw === undefined) return 40;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`invalid --max-lines: ${JSON.stringify(raw)} (expected a non-negative integer)`);
+  }
+  return n;
 }
 
 function waitForShutdown(): Promise<void> {
