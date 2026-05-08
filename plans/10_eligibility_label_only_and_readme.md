@@ -1,5 +1,5 @@
 # 10 — Label-only eligibility + README spec deltas
-## Status: Not started
+## Status: done
 
 ## Context
 This is the M1 capstone. Before we dogfood Minesweeper, we need 
