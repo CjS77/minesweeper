@@ -185,6 +185,8 @@ copy-pasteable template.
 | `MINESWEEPER_WORKTREE_PATH`            | Where per-issue worktrees are materialised                           | `"/tmp/minesweeper"`  |
 | `MINESWEEPER_PR_BASE_BRANCH`           | Base branch for pull requests opened by Minesweeper                  | `"main"`              |
 | `MINESWEEPER_POLL_INTERVAL_SECONDS`    | How often the daemon polls GitHub for new issues                     | `300`                 |
+| `MINESWEEPER_POLL_COOLDOWN`            | Minimum seconds between successive ticks; `0` disables the gate      | `120`                 |
+| `MINESWEEPER_CONFIG_FILE`              | Path to the JSON config file that supplies file-level defaults       | `~/.minesweeper/config.json` |
 | `MINESWEEPER_MAX_CONCURRENCY`          | Maximum issue children running in parallel (v0 is single-threaded)   | `1`                   |
 
 # Operating Minesweeper
@@ -223,6 +225,38 @@ node dist/cli.js run
 
 The daemon prints a pretty stream of events: `polled (N eligible) → dispatching → planning → executing → reviewing
 → PR opened`. Stop it with `Ctrl+C`; it drains in-flight children before exiting.
+
+## Cron schedules and the JSON config file
+
+The daemon's poll cadence is configurable in two ways. By default it polls every
+`MINESWEEPER_POLL_INTERVAL_SECONDS` seconds (the legacy fixed interval). For
+operators who want polling concentrated into known windows — say, every fifteen
+minutes during business hours plus one nightly sweep — the config file at
+`~/.minesweeper/config.json` accepts a list of cron expressions:
+
+```json
+{
+  "schedule": ["*/15 * * * *", "0 2 * * *"],
+  "pollCooldownSeconds": 120
+}
+```
+
+Notes:
+
+- Configuration precedence is `env > file > defaults`. Anything in the JSON file
+  is overridable from the environment. The path is overridable via
+  `MINESWEEPER_CONFIG_FILE`.
+- `schedule` is **file-only** — cron list fields contain commas, which can't
+  round-trip through a comma-delimited env var.
+- Schedules are interpreted in the daemon process's local timezone.
+- A single global `pollCooldownSeconds` (default 120) gates every tick. Two
+  schedules that align cannot both fire inside the cooldown window — the second
+  is logged as `skipped poll: within cooldown (Ns since last)` and dropped.
+  Set `pollCooldownSeconds: 0` to disable the gate.
+- **Cron-only configurations do not fire an immediate poll at startup.** The
+  first poll happens at the first cron match. Interval mode (no `schedule`
+  configured) keeps the legacy "fire one tick immediately on startup" behaviour
+  so operators see `polled (N eligible)` without waiting out the interval.
 
 ## Inspecting transcripts
 

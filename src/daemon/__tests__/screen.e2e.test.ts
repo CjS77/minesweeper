@@ -275,7 +275,7 @@ const ATTACK_CASES: readonly Row[] = [
 
 const ALL_CASES: readonly Row[] = [...SAFE_CASES, ...ATTACK_CASES];
 
-const config = loadConfig({});
+const config = loadConfig({}, { configFile: null });
 
 let tmp: string;
 

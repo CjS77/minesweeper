@@ -4,7 +4,7 @@ import type * as ghModule from "../../github/index.js";
 import type { Issue } from "../../github/index.js";
 import { pollOnce, runPollLoop, type PollerDeps } from "../poller.js";
 
-const config = loadConfig({});
+const config = loadConfig({}, { configFile: null });
 
 function makeIssue(number: number, labels: readonly string[] = []): Issue {
   return {
@@ -76,7 +76,7 @@ describe("pollOnce", () => {
   });
 
   it("invokes the injected screener for default-eligible unlabelled issues", async () => {
-    const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" });
+    const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" }, { configFile: null });
     const deps = makeDeps({
       config: permissive,
       screenIssue: vi.fn(async (issue) => ({
@@ -96,7 +96,7 @@ describe("pollOnce", () => {
   });
 
   it("the screener can flag an issue as dangerous and the poller drops it", async () => {
-    const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" });
+    const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" }, { configFile: null });
     const deps = makeDeps({
       config: permissive,
       screenIssue: vi.fn(async (issue) => ({
@@ -133,7 +133,7 @@ describe("runPollLoop", () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"]), makeIssue(2, ["bug"])]);
     const onIssue = vi.fn();
-    const handle = runPollLoop(deps, [3_600_000], { onIssue });
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onIssue });
     await flushMicrotasks();
     expect(onIssue).toHaveBeenCalledTimes(1);
     expect((onIssue.mock.calls[0]?.[0] as Issue).number).toBe(1);
@@ -141,10 +141,10 @@ describe("runPollLoop", () => {
   });
 
   it("polls again after each interval", async () => {
-    const deps = makeDeps();
+    const deps = makeDeps({ cooldownMs: 0 });
     deps.listIssuesMock.mockResolvedValue([makeIssue(1, ["autofix"])]);
     const onIssue = vi.fn();
-    const handle = runPollLoop(deps, [25], { onIssue });
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 25 }], { onIssue });
     await sleep(80);
     handle.stop();
     expect(onIssue.mock.calls.length).toBeGreaterThanOrEqual(2);
@@ -153,7 +153,7 @@ describe("runPollLoop", () => {
   it("logs the eligible count via emit", async () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"]), makeIssue(2, ["autofix"])]);
-    const handle = runPollLoop(deps, [3_600_000], { onIssue: vi.fn() });
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onIssue: vi.fn() });
     await flushMicrotasks();
     expect(deps.emitMock).toHaveBeenCalledWith("daemon", "INFO", null, "polled (2 eligible)");
     handle.stop();
@@ -169,7 +169,7 @@ describe("runPollLoop", () => {
     const onTickEnd = vi.fn(async () => {
       order.push("tick-end");
     });
-    const handle = runPollLoop(deps, [3_600_000], { onIssue, onTickEnd });
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onIssue, onTickEnd });
     await flushMicrotasks();
     handle.stop();
     expect(onTickEnd).toHaveBeenCalledTimes(1);
@@ -179,21 +179,110 @@ describe("runPollLoop", () => {
   it("logs an ERROR but does not throw when listIssues rejects", async () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockRejectedValueOnce(new Error("gh down"));
-    const handle = runPollLoop(deps, [3_600_000], { onIssue: vi.fn() });
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onIssue: vi.fn() });
     await flushMicrotasks();
     expect(deps.emitMock).toHaveBeenCalledWith("daemon", "ERROR", null, "poll failed: gh down");
     handle.stop();
   });
 
   it("stop() clears all timers so no more ticks fire", async () => {
-    const deps = makeDeps();
+    const deps = makeDeps({ cooldownMs: 0 });
     deps.listIssuesMock.mockResolvedValue([]);
     const onIssue = vi.fn();
-    const handle = runPollLoop(deps, [25], { onIssue });
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 25 }], { onIssue });
     await flushMicrotasks();
     handle.stop();
     deps.listIssuesMock.mockClear();
     await sleep(80);
     expect(deps.listIssuesMock).not.toHaveBeenCalled();
+  });
+
+  it("cron-only schedules do not fire an immediate tick on startup", async () => {
+    const deps = makeDeps();
+    // 2026-05-08T00:00:00Z; "0 0 * * *" matches once a day at midnight UTC,
+    // so the next match is well into the future from this anchor.
+    const anchor = new Date("2026-05-08T00:00:01Z").getTime();
+    deps.now = () => anchor;
+    deps.listIssuesMock.mockResolvedValue([]);
+    const onIssue = vi.fn();
+    const handle = runPollLoop(deps, [{ kind: "cron", expression: "0 0 * * *" }], { onIssue });
+    // No immediate tick.
+    await flushMicrotasks();
+    expect(deps.listIssuesMock).not.toHaveBeenCalled();
+    handle.stop();
+  });
+
+  it("cron schedule fires once at the computed delay", async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = makeDeps({ cooldownMs: 0 });
+      const anchor = new Date("2026-05-08T00:00:00Z").getTime();
+      deps.now = () => Date.now();
+      vi.setSystemTime(anchor);
+      deps.listIssuesMock.mockResolvedValue([]);
+      const onIssue = vi.fn();
+      // "* * * * *" matches every minute. The first match after anchor is at
+      // anchor + 60_000 ms.
+      const handle = runPollLoop(deps, [{ kind: "cron", expression: "* * * * *" }], { onIssue });
+      // Just before the first match.
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(deps.listIssuesMock).not.toHaveBeenCalled();
+      // Cross the threshold.
+      await vi.advanceTimersByTimeAsync(2);
+      expect(deps.listIssuesMock).toHaveBeenCalledTimes(1);
+      handle.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cooldown gate skips overlapping interval ticks", async () => {
+    const deps = makeDeps({ cooldownMs: 60_000 });
+    deps.listIssuesMock.mockResolvedValue([]);
+    const onIssue = vi.fn();
+    const handle = runPollLoop(
+      deps,
+      [
+        { kind: "interval", intervalMs: 5 },
+        { kind: "interval", intervalMs: 5 },
+      ],
+      { onIssue },
+    );
+    await sleep(40);
+    handle.stop();
+    // Immediate tick + each subsequent tick should be gated by the 60s cooldown.
+    expect(deps.listIssuesMock).toHaveBeenCalledTimes(1);
+    const skipMessages = deps.emitMock.mock.calls.filter(
+      (call) => typeof call[3] === "string" && call[3].startsWith("skipped poll: within cooldown"),
+    );
+    expect(skipMessages.length).toBeGreaterThan(0);
+  });
+
+  it("cooldown=0 disables the gate and lets every timer fire", async () => {
+    const deps = makeDeps({ cooldownMs: 0 });
+    deps.listIssuesMock.mockResolvedValue([]);
+    const onIssue = vi.fn();
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 10 }], { onIssue });
+    await sleep(50);
+    handle.stop();
+    expect(deps.listIssuesMock.mock.calls.length).toBeGreaterThan(2);
+  });
+
+  it("stop() cancels pending cron timeouts", async () => {
+    vi.useFakeTimers();
+    try {
+      const deps = makeDeps();
+      const anchor = new Date("2026-05-08T00:00:00Z").getTime();
+      deps.now = () => Date.now();
+      vi.setSystemTime(anchor);
+      deps.listIssuesMock.mockResolvedValue([]);
+      const onIssue = vi.fn();
+      const handle = runPollLoop(deps, [{ kind: "cron", expression: "* * * * *" }], { onIssue });
+      handle.stop();
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(deps.listIssuesMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

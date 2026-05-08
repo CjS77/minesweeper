@@ -4,7 +4,7 @@ import type { Issue, IssueState } from "../../github/index.js";
 import { decideEligibility, isEligible, type ScreenIssueFn } from "../eligibility.js";
 import type { ScreenResult, ScreenVerdict } from "../screen.js";
 
-const config = loadConfig({});
+const config = loadConfig({}, { configFile: null });
 
 interface IssueOverrides {
   number?: number;
@@ -42,7 +42,7 @@ describe("isEligible — label hierarchy", () => {
   });
 
   it("respects MINESWEEPER_DEFAULT_ELIGIBLE=true as the catch-all", () => {
-    const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" });
+    const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" }, { configFile: null });
     expect(isEligible(makeIssue({ labels: [] }), permissive)).toBe(true);
     expect(isEligible(makeIssue({ labels: ["bug"] }), permissive)).toBe(true);
     // Hard opt-outs still win over the permissive default.
@@ -57,17 +57,20 @@ describe("isEligible — label hierarchy", () => {
   });
 
   it("honours custom label names from env", () => {
-    const custom: Config = loadConfig({
-      MINESWEEPER_ALWAYS_FIX_LABEL: "fix-me",
-      MINESWEEPER_NEVER_FIX_LABEL: "do-not-touch",
-    });
+    const custom: Config = loadConfig(
+      {
+        MINESWEEPER_ALWAYS_FIX_LABEL: "fix-me",
+        MINESWEEPER_NEVER_FIX_LABEL: "do-not-touch",
+      },
+      { configFile: null },
+    );
     expect(isEligible(makeIssue({ labels: ["fix-me"] }), custom)).toBe(true);
     expect(isEligible(makeIssue({ labels: ["autofix"] }), custom)).toBe(false);
     expect(isEligible(makeIssue({ labels: ["fix-me", "do-not-touch"] }), custom)).toBe(false);
   });
 });
 
-const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" });
+const permissive = loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "true" }, { configFile: null });
 
 function fakeScreen(verdict: ScreenVerdict): ScreenIssueFn {
   return vi.fn(async (issue) => ({
