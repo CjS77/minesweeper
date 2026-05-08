@@ -150,6 +150,112 @@ describe("handleChild", () => {
     expect(persisted.status).toBe("Complete");
   });
 
+  it("loops Planning → Assess → Execution end-to-end (Execute verdict)", async () => {
+    await initState(tmp, "Planning", {
+      issueNumber: 7,
+      branchName: "minesweeper-issue0007",
+      maxIterations: 5,
+    });
+
+    const callOrder: string[] = [];
+    const runPlanning = vi.fn(async (deps: { state: State; cwd: string }): Promise<State> => {
+      callOrder.push("planning");
+      return writeState(deps.cwd, {
+        ...deps.state,
+        mode: "Assess",
+        status: "InProgress",
+        iterations: 0,
+        maxIterations: 1,
+      });
+    });
+    const runAssess = vi.fn(async (deps: { state: State; cwd: string }): Promise<State> => {
+      callOrder.push("assess");
+      return writeState(deps.cwd, {
+        ...deps.state,
+        mode: "Execution",
+        status: "Writing",
+        iterations: 0,
+        maxIterations: 2,
+        assessment: "Execute",
+      });
+    });
+    const runExecution = vi.fn(async (deps: { state: State; cwd: string }): Promise<State> => {
+      callOrder.push("execution");
+      return writeState(deps.cwd, { ...deps.state, status: "Complete" });
+    });
+    const runRefine = vi.fn();
+
+    const result = await handleChild({
+      issueNumber: 7,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      runPlanning,
+      runAssess,
+      runExecution,
+      runRefine,
+      emit: vi.fn(),
+    });
+
+    expect(callOrder).toEqual(["planning", "assess", "execution"]);
+    expect(runRefine).not.toHaveBeenCalled();
+    expect(result.mode).toBe("Execution");
+    expect(result.status).toBe("Complete");
+    expect(result.assessment).toBe("Execute");
+  });
+
+  it("loops Planning → Assess → Refine end-to-end (Refine verdict)", async () => {
+    await initState(tmp, "Planning", {
+      issueNumber: 8,
+      branchName: "minesweeper-issue0008",
+      maxIterations: 5,
+    });
+
+    const callOrder: string[] = [];
+    const runPlanning = vi.fn(async (deps: { state: State; cwd: string }): Promise<State> => {
+      callOrder.push("planning");
+      return writeState(deps.cwd, {
+        ...deps.state,
+        mode: "Assess",
+        status: "InProgress",
+        iterations: 0,
+        maxIterations: 1,
+      });
+    });
+    const runAssess = vi.fn(async (deps: { state: State; cwd: string }): Promise<State> => {
+      callOrder.push("assess");
+      return writeState(deps.cwd, {
+        ...deps.state,
+        mode: "Refine",
+        status: "InProgress",
+        iterations: 0,
+        maxIterations: 1,
+        assessment: "Refine",
+      });
+    });
+    const runRefine = vi.fn(async (deps: { state: State; cwd: string }): Promise<State> => {
+      callOrder.push("refine");
+      return writeState(deps.cwd, { ...deps.state, mode: "Delegated", status: "Complete" });
+    });
+    const runExecution = vi.fn();
+
+    const result = await handleChild({
+      issueNumber: 8,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      runPlanning,
+      runAssess,
+      runExecution,
+      runRefine,
+      emit: vi.fn(),
+    });
+
+    expect(callOrder).toEqual(["planning", "assess", "refine"]);
+    expect(runExecution).not.toHaveBeenCalled();
+    expect(result.mode).toBe("Delegated");
+    expect(result.status).toBe("Complete");
+    expect(result.assessment).toBe("Refine");
+  });
+
   it("returns immediately when state is already terminal (Delegated/Complete)", async () => {
     await initState(tmp, "Delegated", {
       issueNumber: 11,

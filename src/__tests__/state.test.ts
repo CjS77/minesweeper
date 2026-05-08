@@ -30,7 +30,8 @@ describe("initState", () => {
     expect(state.issueNumber).toBe(42);
     expect(state.branchName).toBe("fix/foo");
     expect(state.assessment).toBeNull();
-    expect(state.version).toBe(1);
+    expect(state.assessmentReason).toBeNull();
+    expect(state.version).toBe(2);
 
     const onDisk = JSON.parse(await readFile(statePath(tmp), "utf8"));
     expect(onDisk).toEqual(state);
@@ -89,6 +90,29 @@ describe("readState / writeState", () => {
     await expect(readState(tmp)).rejects.toThrow(/not valid JSON/);
   });
 
+  it("migrates v1 state on read by adding assessmentReason: null", async () => {
+    const v1 = {
+      version: 1,
+      issueNumber: 5,
+      branchName: "feat/legacy",
+      mode: "Planning",
+      status: "InProgress",
+      iterations: 0,
+      maxIterations: 3,
+      assessment: null,
+      startedAt: "2026-05-01T00:00:00.000Z",
+      updatedAt: "2026-05-01T00:00:00.000Z",
+    };
+    await fs.mkdir(join(tmp, ".minesweeper"), { recursive: true });
+    await writeFile(statePath(tmp), JSON.stringify(v1));
+
+    const loaded = await readState(tmp);
+    expect(loaded.version).toBe(2);
+    expect(loaded.assessmentReason).toBeNull();
+    expect(loaded.issueNumber).toBe(5);
+    expect(loaded.mode).toBe("Planning");
+  });
+
   it("rejects writes that violate the schema", async () => {
     const initial = await initState(tmp, "Planning", {
       issueNumber: 1,
@@ -140,7 +164,7 @@ describe("atomic writes", () => {
       // Each snapshot must be parseable JSON matching the schema, with no
       // torn payload. JSON.parse would throw on a partial write.
       const parsed = JSON.parse(raw);
-      expect(parsed.version).toBe(1);
+      expect(parsed.version).toBe(2);
       expect(parsed.issueNumber).toBe(99);
       expect(typeof parsed.branchName).toBe("string");
       const branch = parsed.branchName as string;

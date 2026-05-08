@@ -7,14 +7,18 @@
  * matches the CLI argument, and drives the issue's state machine
  * to a terminal status inside this single process.
  *
- * As of plan 09 the `Planning` and `Execution` modes are wired up.
- * `Delegated` is still a no-op and throws — that is the assess+refine
- * exit path which lands in plan 12.
+ * Modes wired up (post-plan-12): `Planning`, `Assess`, `Execution`,
+ * `Refine`. `Delegated` is terminal — it is the post-refine resting
+ * state (`mode=Delegated`, `status=Complete`).
  *
- * Multi-mode flows (Planning → Execution, later Planning → Assess →
- * Refine|Execution) run inside one child invocation: each mode handler
+ * Multi-mode flows run inside one child invocation: each mode handler
  * persists its outgoing state to `.minesweeper/state.json` and
  * returns; the loop dispatches the next mode based on that state.
+ * The full happy-path sequence is:
+ *
+ *   Planning → Assess → Execution → (terminal Complete)
+ *                    └→ Refine    → (terminal Complete via Delegated)
+ *
  * The child only exits 0 once `status` reaches a terminal value
  * (`Complete` or `Failed`), at which point the supervisor archives
  * `.minesweeper/` and removes the worktree. State-on-disk discipline
@@ -28,12 +32,20 @@ import { readState as defaultReadState } from "./state.js";
 import type { Mode, State } from "./state.js";
 import { runPlanning as defaultRunPlanning, type PlanningDeps } from "./modes/planning.js";
 import { runExecution as defaultRunExecution, type ExecutionDeps } from "./modes/execution.js";
+import { runAssess as defaultRunAssess, type AssessDeps } from "./modes/assess.js";
+import { runRefine as defaultRunRefine, type RefineDeps } from "./modes/refine.js";
 
 /** Test seam: the planning mode runner. Default delegates to `runPlanning`. */
 export type RunPlanningFn = (deps: PlanningDeps) => Promise<State>;
 
 /** Test seam: the execution mode runner. Default delegates to `runExecution`. */
 export type RunExecutionFn = (deps: ExecutionDeps) => Promise<State>;
+
+/** Test seam: the assess mode runner. Default delegates to `runAssess`. */
+export type RunAssessFn = (deps: AssessDeps) => Promise<State>;
+
+/** Test seam: the refine mode runner. Default delegates to `runRefine`. */
+export type RunRefineFn = (deps: RefineDeps) => Promise<State>;
 
 export interface HandleChildOptions {
   /** The issue number passed on the CLI. Cross-checked against state.json. */
@@ -48,6 +60,10 @@ export interface HandleChildOptions {
   runPlanning?: RunPlanningFn;
   /** Override the execution mode handler (tests). */
   runExecution?: RunExecutionFn;
+  /** Override the assess mode handler (tests). */
+  runAssess?: RunAssessFn;
+  /** Override the refine mode handler (tests). */
+  runRefine?: RunRefineFn;
   /** Override the logger event sink (tests). */
   emit?: Logger["event"];
 }
@@ -56,10 +72,10 @@ export interface HandleChildOptions {
  * Drive the state machine for a single issue to a terminal status.
  * Loops over mode handlers, re-reading state after each one, until
  * `status` is `Complete` or `Failed`. Throws if the on-disk issue
- * number does not match the CLI argument, if the mode is not
- * implemented in this build, if a mode handler itself throws, or if
- * a handler returns without making progress (same mode/status/iterations
- * as on entry) — that would otherwise spin forever.
+ * number does not match the CLI argument, if a mode handler itself
+ * throws, or if a handler returns without making progress (same
+ * mode/status/iterations as on entry) — that would otherwise spin
+ * forever.
  */
 export async function handleChild(opts: HandleChildOptions): Promise<State> {
   const cwd = opts.cwd ?? process.cwd();
@@ -67,6 +83,8 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
   const readState = opts.readState ?? defaultReadState;
   const runPlanning = opts.runPlanning ?? defaultRunPlanning;
   const runExecution = opts.runExecution ?? defaultRunExecution;
+  const runAssess = opts.runAssess ?? defaultRunAssess;
+  const runRefine = opts.runRefine ?? defaultRunRefine;
   const emit = opts.emit ?? defaultEvent;
 
   let state = await readState(cwd);
@@ -86,7 +104,7 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
       `child handle: mode=${state.mode} status=${state.status} iterations=${state.iterations}/${state.maxIterations}`,
     );
     const before = progressKey(state);
-    state = await dispatch(state.mode, { config, cwd, state, runPlanning, runExecution });
+    state = await dispatch(state.mode, { config, cwd, state, runPlanning, runExecution, runAssess, runRefine });
     if (!isTerminal(state) && progressKey(state) === before) {
       throw new Error(
         `child handler: mode=${state.mode} returned without advancing state (status=${state.status}, iterations=${state.iterations}); refusing to loop`,
@@ -111,23 +129,23 @@ interface DispatchDeps {
   state: State;
   runPlanning: RunPlanningFn;
   runExecution: RunExecutionFn;
+  runAssess: RunAssessFn;
+  runRefine: RunRefineFn;
 }
 
 async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
   switch (mode) {
     case "Planning":
-      return deps.runPlanning({
-        config: deps.config,
-        cwd: deps.cwd,
-        state: deps.state,
-      });
+      return deps.runPlanning({ config: deps.config, cwd: deps.cwd, state: deps.state });
+    case "Assess":
+      return deps.runAssess({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "Execution":
-      return deps.runExecution({
-        config: deps.config,
-        cwd: deps.cwd,
-        state: deps.state,
-      });
+      return deps.runExecution({ config: deps.config, cwd: deps.cwd, state: deps.state });
+    case "Refine":
+      return deps.runRefine({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "Delegated":
-      throw new Error(`child handler: mode=${mode} not implemented in this build (plan 12 will land assess/refine)`);
+      throw new Error(
+        `child handler: dispatched into terminal mode=${mode} with non-terminal status=${deps.state.status}`,
+      );
   }
 }

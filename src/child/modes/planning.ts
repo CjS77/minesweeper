@@ -21,11 +21,12 @@
  *   - critic `Approved` → loop exits without modifying the plan.
  *
  * On exit the plan is copied verbatim to `.minesweeper/final_plan.md`,
- * the state is transitioned to `mode=Execution`, `status=Writing`,
- * `iterations=0`, `maxIterations=config.maxReviewRounds`, and the
- * function returns. The child handler's mode loop sees the new mode
- * on disk and dispatches execution next, inside the same process —
- * no second `minesweeper handle` invocation is involved.
+ * the state is transitioned to `mode=Assess`, `status=InProgress`,
+ * `iterations=0`, `maxIterations=1`, and the function returns. The
+ * child handler's mode loop sees the new mode on disk and dispatches
+ * the assessor next, inside the same process — no second `minesweeper
+ * handle` invocation is involved. The assessor then dispatches either
+ * Execution (Execute verdict) or Refine (Refine verdict).
  *
  * Resumption: the loop reads `state.iterations` from disk on entry, so
  * a crashed child that left state at iteration N resumes at iteration
@@ -100,7 +101,7 @@ export interface PlanningDeps {
 
 /**
  * Run the planning state machine to completion. Returns the post-mode-
- * transition state (mode=Execution, status=Writing) on success.
+ * transition state (mode=Assess, status=InProgress) on success.
  *
  * Throws on unrecoverable errors (subagent throws, filesystem failures).
  * The caller is expected to translate uncaught exceptions to a non-zero
@@ -199,13 +200,13 @@ export async function runPlanning(deps: PlanningDeps): Promise<State> {
 
   const next = await writeState(cwd, {
     ...state,
-    mode: "Execution",
-    status: "Writing",
+    mode: "Assess",
+    status: "InProgress",
     iterations: 0,
-    maxIterations: config.maxReviewRounds,
+    maxIterations: 1,
   });
 
-  emit("planner", "OK", issueNumber, "planning complete; transitioning to Execution");
+  emit("planner", "OK", issueNumber, "planning complete; transitioning to Assess");
   return next;
 }
 

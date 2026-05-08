@@ -171,14 +171,14 @@ describe("runPlanning", () => {
     const current = await readFile(join(tmp, CURRENT_PLAN_FILE), "utf8");
     expect(current).toBe(PLAN_BODY);
 
-    expect(result.mode).toBe("Execution");
-    expect(result.status).toBe("Writing");
+    expect(result.mode).toBe("Assess");
+    expect(result.status).toBe("InProgress");
     expect(result.iterations).toBe(0);
-    expect(result.maxIterations).toBe(FAKE_CONFIG.maxReviewRounds);
+    expect(result.maxIterations).toBe(1);
 
     const persisted = await readState(tmp);
-    expect(persisted.mode).toBe("Execution");
-    expect(persisted.status).toBe("Writing");
+    expect(persisted.mode).toBe("Assess");
+    expect(persisted.status).toBe("InProgress");
     expect(persisted.iterations).toBe(0);
 
     const warnCalls = emit.mock.calls.filter((c) => c[1] === "WARN");
@@ -200,7 +200,7 @@ describe("runPlanning", () => {
     expect(final).not.toContain("Points to consider");
     expect(final).not.toContain("Execution Plan review");
 
-    expect(result.mode).toBe("Execution");
+    expect(result.mode).toBe("Assess");
     expect(result.iterations).toBe(0);
   });
 
@@ -227,7 +227,7 @@ describe("runPlanning", () => {
     expect(final).not.toContain("nit: rename foo");
     expect(final).not.toContain("Execution Plan review");
 
-    expect(result.mode).toBe("Execution");
+    expect(result.mode).toBe("Assess");
   });
 
   it("planner → critic-changes → planner → critic-approved: re-plans with feedback", async () => {
@@ -251,7 +251,7 @@ describe("runPlanning", () => {
     const final = await readFile(join(tmp, FINAL_PLAN_FILE), "utf8");
     expect(final).toBe(REVISED_PLAN);
 
-    expect(result.mode).toBe("Execution");
+    expect(result.mode).toBe("Assess");
     expect(result.iterations).toBe(0);
 
     const warnCalls = emit.mock.calls.filter((c) => c[1] === "WARN");
@@ -273,7 +273,7 @@ describe("runPlanning", () => {
     expect(calls).toHaveLength(4);
 
     const persisted = await readState(tmp);
-    expect(persisted.mode).toBe("Execution");
+    expect(persisted.mode).toBe("Assess");
 
     // current_plan.md retains the last critic's feedback — it is the input
     // the *next* planner round would have consumed if we had one.
@@ -287,7 +287,7 @@ describe("runPlanning", () => {
     expect(final).not.toContain("Execution Plan review");
 
     expect(result.iterations).toBe(0);
-    expect(result.mode).toBe("Execution");
+    expect(result.mode).toBe("Assess");
 
     const warnCalls = emit.mock.calls.filter((c) => c[1] === "WARN");
     expect(warnCalls.some((c) => String(c[3]).includes("hit maxIterations"))).toBe(true);

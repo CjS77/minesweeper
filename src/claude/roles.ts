@@ -51,7 +51,7 @@ export const ROLES: Record<RoleName, Role> = {
   },
   assessor: {
     name: "assessor",
-    modelEnvVar: "reviewAgent",
+    modelEnvVar: "planningAgent",
     systemPromptPath: "prompts/assessor.md",
     allowedTools: ["Read", "Grep"],
     permissionMode: "plan",
