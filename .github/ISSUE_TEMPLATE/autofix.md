@@ -2,17 +2,11 @@
 name: Autofix request
 about: File a bug or small feature for Minesweeper to fix autonomously.
 title: ""
-labels: ["autofix"]
+labels: [""]
 assignees: []
 ---
 
 <!--
-Filing this issue with the `autofix` label opts it into Minesweeper's queue.
-Until the prompt-injection screen lands (plan 11), only file these issues
-yourself — do not apply the `autofix` label to issues filed by external
-contributors. See the "Bootstrap mode" section of the README for the full
-rules.
-
 Fill in every section below. The planner reads the body verbatim and bases
 the execution plan on it, so the more concrete you are here, the closer
 the resulting PR will be to what you actually want.

@@ -1,5 +1,5 @@
 # 12 — Assess + refine modes
-## Status: Not started
+## Status: done
 
 ## Context
 The final M2 deliverable. Up to this point we've been treating every plan

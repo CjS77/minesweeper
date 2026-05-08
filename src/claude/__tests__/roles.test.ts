@@ -74,7 +74,7 @@ describe("ROLES registry", () => {
     expect(modelFor(getRole("planner"), FAKE_CONFIG)).toBe("opus-planning");
     expect(modelFor(getRole("refiner"), FAKE_CONFIG)).toBe("opus-planning");
     expect(modelFor(getRole("critic"), FAKE_CONFIG)).toBe("sonnet-review");
-    expect(modelFor(getRole("assessor"), FAKE_CONFIG)).toBe("sonnet-review");
+    expect(modelFor(getRole("assessor"), FAKE_CONFIG)).toBe("opus-planning");
     expect(modelFor(getRole("reviewer"), FAKE_CONFIG)).toBe("sonnet-review");
     expect(modelFor(getRole("executor"), FAKE_CONFIG)).toBe("opus-execution");
   });
