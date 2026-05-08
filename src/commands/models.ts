@@ -135,16 +135,21 @@ const SIMPLE_COLUMNS: SimpleColumn[] = [
   { header: "Display Name", cell: (m) => m.display_name },
 ];
 
-const CAPABILITY_COLUMNS: { header: string; key: keyof ModelCapabilities }[] = [
-  { header: "Bat", key: "batch" },
-  { header: "Cit", key: "citations" },
-  { header: "Code", key: "code_execution" },
-  { header: "Img", key: "image_input" },
-  { header: "Pdf", key: "pdf_input" },
-  { header: "Stru", key: "structured_outputs" },
-  { header: "Thnk", key: "thinking" },
-  { header: "Ctx", key: "context_management" },
-  { header: "Eff", key: "effort" },
+const CAPABILITY_COLUMNS: { header: string; key: keyof ModelCapabilities; label: string }[] = [
+  { header: "Bat", key: "batch", label: "Batch API" },
+  { header: "Cit", key: "citations", label: "Citations" },
+  { header: "Code", key: "code_execution", label: "Code execution" },
+  { header: "Img", key: "image_input", label: "Image input" },
+  { header: "Pdf", key: "pdf_input", label: "PDF input" },
+  { header: "Stru", key: "structured_outputs", label: "Structured outputs" },
+  { header: "Thnk", key: "thinking", label: "Extended thinking" },
+  { header: "Ctx", key: "context_management", label: "Context management" },
+  { header: "Eff", key: "effort", label: "Effort control" },
+];
+
+const NON_CAPABILITY_LEGEND: { header: string; label: string }[] = [
+  { header: "MaxIn", label: "Max input tokens" },
+  { header: "MaxOut", label: "Max output tokens" },
 ];
 
 function formatTextSimple(models: ModelInfo[]): string {
@@ -171,7 +176,20 @@ function formatTextVerbose(models: ModelInfo[]): string {
     formatNum(m.max_tokens),
     ...CAPABILITY_COLUMNS.map((c) => boolMark(m.capabilities?.[c.key]?.supported ?? null)),
   ]);
-  return renderTable(headers, rows);
+  return `${renderTable(headers, rows)}\n\n${renderLegend()}`;
+}
+
+function renderLegend(): string {
+  const entries = [
+    ...NON_CAPABILITY_LEGEND,
+    ...CAPABILITY_COLUMNS.map((c) => ({ header: c.header, label: c.label })),
+  ];
+  const headerWidth = Math.max(...entries.map((e) => e.header.length));
+  const lines = entries.map(
+    (e) => `  ${chalk.bold(padRight(e.header, headerWidth))}  ${e.label}`,
+  );
+  const marks = `  ${chalk.green("✓")} supported   ${chalk.red("✗")} not supported   – unknown (capabilities omitted)`;
+  return [chalk.bold("Key:"), ...lines, "", marks].join("\n");
 }
 
 /**

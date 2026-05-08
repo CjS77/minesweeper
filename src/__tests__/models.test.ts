@@ -100,6 +100,14 @@ describe("runModelsCommand", () => {
     expect(out).toContain("–");
     expect(out).toContain("200,000");
     expect(out).toContain("2025-09-01");
+    expect(out).toContain("Key:");
+    expect(out).toContain("Bat");
+    expect(out).toContain("Batch API");
+    expect(out).toContain("Stru");
+    expect(out).toContain("Structured outputs");
+    expect(out).toContain("MaxIn");
+    expect(out).toContain("Max input tokens");
+    expect(out).toMatch(/✓ supported/);
   });
 
   it("json output is parseable and round-trips every model", async () => {
