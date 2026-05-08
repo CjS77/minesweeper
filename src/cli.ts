@@ -126,6 +126,9 @@ async function runDaemon(): Promise<void> {
     onIssue: async (issue) => {
       await supervisor.dispatch(issue);
     },
+    onTickEnd: async () => {
+      await supervisor.sweepClosedIssues();
+    },
   });
 
   event(
@@ -153,6 +156,15 @@ async function recoverOrphans(supervisor: Supervisor, worktreesRoot: string): Pr
         "WARN",
         orphan.state.issueNumber,
         `orphan worktree ${orphan.path} is in Failed state; leaving for inspection`,
+      );
+      continue;
+    }
+    if (orphan.state.status === "Complete") {
+      event(
+        "daemon",
+        "INFO",
+        orphan.state.issueNumber,
+        `orphan worktree ${orphan.path} already Complete; closed-issue sweep will reap it`,
       );
       continue;
     }

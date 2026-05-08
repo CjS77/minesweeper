@@ -7,9 +7,19 @@
  *   2. Create the worktree and seed `state.json`,
  *   3. Spawn the child with `cwd` set to the worktree,
  *   4. On exit:
- *        exit 0 → archive `.minesweeper/`, remove the worktree,
+ *        exit 0 → log success and leave the worktree on disk so the operator
+ *                 (or a reviewer of the open PR) can inspect it; cleanup is
+ *                 deferred to the closed-issue sweep,
  *        exit ≠ 0 → label the issue with `failedLabel`, leave the worktree
- *                   alone for post-mortem.
+ *                   alone for post-mortem; cleanup also deferred to the
+ *                   closed-issue sweep.
+ *
+ * Closed-issue sweep: `sweepClosedIssues` enumerates worktree dirs on disk,
+ * skips ones whose issue is in-flight, asks `gh` for each remaining issue's
+ * state, and archives `.minesweeper/` + removes the worktree once the issue
+ * is `CLOSED`. This applies to both successful (PR merged or manually closed)
+ * and failed (operator triaged + closed) lifecycles. The sweep is wired to
+ * fire once per poll tick from `cli.ts`.
  *
  * Concurrency is bounded by `config.maxConcurrency` (v0 default 1, i.e.
  * strictly serial). Extra work goes onto an in-memory queue and starts as
@@ -17,8 +27,9 @@
  *   - the inflight `Map<issueNumber, …>` short-circuits dispatches for
  *     issues that already have a child running, and
  *   - the worktree-existence check short-circuits dispatches whose worktree
- *     dir is already on disk (e.g. a previous run was killed mid-flight —
- *     orphan recovery handles those via `resume`, not `dispatch`).
+ *     dir is already on disk (e.g. a previous run was killed mid-flight, or
+ *     an exited child whose issue is still open — orphan recovery handles
+ *     in-progress orphans via `resume`, the sweep handles closed-issue ones).
  *
  * `drain` is the shutdown handle: it stops accepting new work, drops the
  * queue, and resolves once every in-flight child has exited.
@@ -66,16 +77,16 @@ export interface SupervisorDeps {
   repoRoot: string;
   /** Where new worktrees are created (one subdir per branch). */
   worktreesRoot: string;
-  /** Where archived `.minesweeper/` directories land after a successful run. */
+  /** Where archived `.minesweeper/` directories land when an issue is closed. */
   archiveRoot: string;
   /** Test/dev seam: how to spawn the per-issue child. Defaults to {@link defaultSpawnChild}. */
   spawnChild?: SpawnChild;
-  /** Override `github.addLabel` (tests). */
-  github?: Pick<typeof defaultGithub, "addLabel">;
+  /** Override the github carve-out (tests). */
+  github?: Pick<typeof defaultGithub, "addLabel" | "getIssue">;
   /** Override worktree helpers (tests). */
   worktree?: Pick<
     typeof defaultWorktree,
-    "addWorktree" | "archiveWorktreeState" | "removeWorktree"
+    "addWorktree" | "archiveWorktreeState" | "removeWorktree" | "listOrphans"
   >;
   /** Override `child/state.initState` (tests). */
   initState?: typeof defaultState.initState;
@@ -94,9 +105,17 @@ export interface Supervisor {
   dispatch(issue: Issue): Promise<boolean>;
   /**
    * Re-spawn a child against an existing worktree (used at startup for
-   * orphan recovery). Skips orphans whose state is `Failed`.
+   * orphan recovery). Skips orphans whose state is `Failed` or already
+   * `Complete` — those wait for the closed-issue sweep, not a child re-run.
    */
   resume(orphan: OrphanedWorktree): Promise<boolean>;
+  /**
+   * Enumerate worktree dirs on disk, query `gh` for each issue's state,
+   * and archive + remove the worktrees whose issue is `CLOSED`. Skips
+   * in-flight issues. Errors talking to `gh` are logged and swallowed so
+   * a transient GitHub failure does not take down the daemon.
+   */
+  sweepClosedIssues(): Promise<void>;
   /** Issue numbers of currently in-flight children. */
   inFlight(): readonly number[];
   /** Number of items waiting for a free slot. */
@@ -205,6 +224,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const resume = async (orphan: OrphanedWorktree): Promise<boolean> => {
     if (!accepting) return false;
     if (orphan.state.status === "Failed") return false;
+    // Complete orphans don't need a child re-run — the work is already done
+    // and the worktree is just waiting for the closed-issue sweep.
+    if (orphan.state.status === "Complete") return false;
     if (isKnown(orphan.state.issueNumber)) return false;
 
     queue.push({
@@ -221,6 +243,52 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     );
     void drain();
     return true;
+  };
+
+  const sweepClosedIssues = async (): Promise<void> => {
+    const orphans = await wt.listOrphans(deps.worktreesRoot);
+    for (const orphan of orphans) {
+      if (!orphan.state) continue;
+      const issueNumber = orphan.state.issueNumber;
+      if (inflight.has(issueNumber)) continue;
+
+      let issueClosed: boolean;
+      try {
+        const issue = await gh.getIssue(issueNumber, { cwd: deps.repoRoot });
+        issueClosed = issue.state === "CLOSED";
+      } catch (err) {
+        emit(
+          "daemon",
+          "WARN",
+          issueNumber,
+          `sweep: gh getIssue failed (${(err as Error).message}); leaving worktree at ${orphan.path}`,
+        );
+        continue;
+      }
+      if (!issueClosed) continue;
+
+      try {
+        const archiveDir = await wt.archiveWorktreeState({
+          worktreePath: orphan.path,
+          archiveRoot: deps.archiveRoot,
+          issueNumber,
+        });
+        await wt.removeWorktree(orphan.path);
+        emit(
+          "daemon",
+          "OK",
+          issueNumber,
+          `issue closed; archived to ${archiveDir} and removed worktree`,
+        );
+      } catch (err) {
+        emit(
+          "daemon",
+          "ERROR",
+          issueNumber,
+          `sweep: cleanup failed for ${orphan.path}: ${(err as Error).message}`,
+        );
+      }
+    }
   };
 
   /** Move queue entries into the inflight map until at capacity. */
@@ -276,22 +344,12 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   ): Promise<void> => {
     const code = await child.exit;
     if (code === 0) {
-      try {
-        const archiveDir = await wt.archiveWorktreeState({
-          worktreePath,
-          archiveRoot: deps.archiveRoot,
-          issueNumber,
-        });
-        await wt.removeWorktree(worktreePath);
-        emit("daemon", "OK", issueNumber, `child exited 0; archived to ${archiveDir}`);
-      } catch (err) {
-        emit(
-          "daemon",
-          "ERROR",
-          issueNumber,
-          `child exited 0 but post-exit cleanup failed: ${(err as Error).message}`,
-        );
-      }
+      emit(
+        "daemon",
+        "OK",
+        issueNumber,
+        `child exited 0; worktree at ${worktreePath} kept until issue is closed`,
+      );
       return;
     }
 
@@ -317,6 +375,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   return {
     dispatch,
     resume,
+    sweepClosedIssues,
     inFlight: () => [...inflight.keys()],
     queueLength: () => queue.length,
     async drain(): Promise<void> {

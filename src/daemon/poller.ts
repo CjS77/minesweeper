@@ -8,9 +8,10 @@
  * `runPollLoop` schedules one `setInterval` per spec (each spec is a poll
  * interval in milliseconds, parsed from config by the CLI). On every tick it
  * calls `pollOnce` and forwards each eligible issue to the supplied
- * `onIssue` callback (typically `supervisor.dispatch`). The first tick
- * fires immediately so operators see "polled (N eligible)" without waiting
- * out the interval; subsequent ticks fire every `intervalMs`.
+ * `onIssue` callback (typically `supervisor.dispatch`), then invokes the
+ * optional `onTickEnd` hook (typically `supervisor.sweepClosedIssues`). The
+ * first tick fires immediately so operators see "polled (N eligible)"
+ * without waiting out the interval; subsequent ticks fire every `intervalMs`.
  *
  * Errors in a tick are logged and swallowed — a transient `gh` failure
  * should not take down the daemon.
@@ -54,6 +55,12 @@ export interface PollLoopOptions {
    * `dispatch` is the canonical implementation.
    */
   onIssue: (issue: Issue) => void | Promise<void>;
+  /**
+   * Called once at the end of every tick, after all `onIssue` callbacks
+   * have settled. The supervisor's `sweepClosedIssues` is the canonical
+   * implementation: it reaps worktrees whose issue has been closed.
+   */
+  onTickEnd?: () => void | Promise<void>;
 }
 
 export interface PollLoopHandle {
@@ -79,6 +86,9 @@ export function runPollLoop(
       emit("daemon", "INFO", null, `polled (${eligible.length} eligible)`);
       for (const issue of eligible) {
         await opts.onIssue(issue);
+      }
+      if (opts.onTickEnd) {
+        await opts.onTickEnd();
       }
     } catch (err) {
       emit("daemon", "ERROR", null, `poll failed: ${(err as Error).message}`);

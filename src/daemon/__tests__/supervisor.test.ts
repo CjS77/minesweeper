@@ -66,9 +66,11 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   deps: SupervisorDeps;
   spawnChildMock: ReturnType<typeof vi.fn>;
   addLabelMock: ReturnType<typeof vi.fn>;
+  getIssueMock: ReturnType<typeof vi.fn>;
   addWorktreeMock: ReturnType<typeof vi.fn>;
   archiveMock: ReturnType<typeof vi.fn>;
   removeMock: ReturnType<typeof vi.fn>;
+  listOrphansMock: ReturnType<typeof vi.fn>;
   initStateMock: ReturnType<typeof vi.fn>;
   pathExistsMock: ReturnType<typeof vi.fn>;
   emitMock: ReturnType<typeof vi.fn>;
@@ -85,6 +87,7 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   );
 
   const addLabelMock = vi.fn(async () => undefined);
+  const getIssueMock = vi.fn(async () => makeIssue(0));
   const addWorktreeMock = vi.fn(
     async ({ worktreesRoot, branchName }: { worktreesRoot: string; branchName: string }) => ({
       path: `${worktreesRoot}/${branchName}`,
@@ -93,6 +96,7 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   );
   const archiveMock = vi.fn(async () => "/tmp/archive/x");
   const removeMock = vi.fn(async () => undefined);
+  const listOrphansMock = vi.fn(async () => [] as Array<{ path: string; state?: State }>);
   const initStateMock = vi.fn(async () => makeOrphanState(0));
   const pathExistsMock = vi.fn(async () => false);
   const emitMock = vi.fn();
@@ -103,11 +107,15 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
     worktreesRoot: "/tmp/wt",
     archiveRoot: "/tmp/archive",
     spawnChild: spawnChildMock,
-    github: { addLabel: addLabelMock as unknown as typeof ghModule.addLabel },
+    github: {
+      addLabel: addLabelMock as unknown as typeof ghModule.addLabel,
+      getIssue: getIssueMock as unknown as typeof ghModule.getIssue,
+    },
     worktree: {
       addWorktree: addWorktreeMock as unknown as typeof worktreeModule.addWorktree,
       archiveWorktreeState: archiveMock as unknown as typeof worktreeModule.archiveWorktreeState,
       removeWorktree: removeMock as unknown as typeof worktreeModule.removeWorktree,
+      listOrphans: listOrphansMock as unknown as typeof worktreeModule.listOrphans,
     },
     initState: initStateMock as unknown as typeof stateModule.initState,
     pathExists: pathExistsMock,
@@ -119,9 +127,11 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
     deps,
     spawnChildMock,
     addLabelMock,
+    getIssueMock,
     addWorktreeMock,
     archiveMock,
     removeMock,
+    listOrphansMock,
     initStateMock,
     pathExistsMock,
     emitMock,
@@ -173,7 +183,7 @@ describe("createSupervisor.dispatch", () => {
     expect(sup.inFlight()).toEqual([7]);
   });
 
-  it("archives + removes the worktree on exit code 0", async () => {
+  it("leaves the worktree on disk on exit code 0 (sweep handles cleanup)", async () => {
     const ctx = makeDeps();
     const sup = createSupervisor(ctx.deps);
     await sup.dispatch(makeIssue(7));
@@ -183,14 +193,16 @@ describe("createSupervisor.dispatch", () => {
     ctx.childrenSpawned[0]!.resolve(0);
     await sup.drain();
 
-    expect(ctx.archiveMock).toHaveBeenCalledWith({
-      worktreePath: "/tmp/wt/minesweeper-issue0007",
-      archiveRoot: "/tmp/archive",
-      issueNumber: 7,
-    });
-    expect(ctx.removeMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-issue0007");
+    expect(ctx.archiveMock).not.toHaveBeenCalled();
+    expect(ctx.removeMock).not.toHaveBeenCalled();
     expect(ctx.addLabelMock).not.toHaveBeenCalled();
     expect(sup.inFlight()).toEqual([]);
+    expect(ctx.emitMock).toHaveBeenCalledWith(
+      "daemon",
+      "OK",
+      7,
+      expect.stringContaining("kept until issue is closed"),
+    );
   });
 
   it("labels the issue and leaves the worktree on non-zero exit", async () => {
@@ -302,6 +314,105 @@ describe("createSupervisor.resume", () => {
     });
     expect(accepted).toBe(false);
     expect(ctx.spawnChildMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses to resume orphans whose state is already Complete", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+    const accepted = await sup.resume({
+      path: "/tmp/wt/x",
+      state: makeOrphanState(42, "Complete"),
+    });
+    expect(accepted).toBe(false);
+    expect(ctx.spawnChildMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("createSupervisor.sweepClosedIssues", () => {
+  it("archives + removes worktrees whose issue is CLOSED", async () => {
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValueOnce([
+      { path: "/tmp/wt/minesweeper-issue0042", state: makeOrphanState(42, "Complete") },
+    ]);
+    ctx.getIssueMock.mockResolvedValueOnce({ ...makeIssue(42), state: "CLOSED" });
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.sweepClosedIssues();
+
+    expect(ctx.getIssueMock).toHaveBeenCalledWith(42, { cwd: "/tmp/repos/minesweeper" });
+    expect(ctx.archiveMock).toHaveBeenCalledWith({
+      worktreePath: "/tmp/wt/minesweeper-issue0042",
+      archiveRoot: "/tmp/archive",
+      issueNumber: 42,
+    });
+    expect(ctx.removeMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-issue0042");
+  });
+
+  it("also reaps worktrees whose state is Failed once the issue is CLOSED", async () => {
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValueOnce([
+      { path: "/tmp/wt/minesweeper-issue0099", state: makeOrphanState(99, "Failed") },
+    ]);
+    ctx.getIssueMock.mockResolvedValueOnce({ ...makeIssue(99), state: "CLOSED" });
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.sweepClosedIssues();
+
+    expect(ctx.archiveMock).toHaveBeenCalledTimes(1);
+    expect(ctx.removeMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-issue0099");
+  });
+
+  it("leaves worktrees alone when the issue is still OPEN", async () => {
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValueOnce([
+      { path: "/tmp/wt/minesweeper-issue0007", state: makeOrphanState(7, "Complete") },
+    ]);
+    ctx.getIssueMock.mockResolvedValueOnce({ ...makeIssue(7), state: "OPEN" });
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.sweepClosedIssues();
+
+    expect(ctx.archiveMock).not.toHaveBeenCalled();
+    expect(ctx.removeMock).not.toHaveBeenCalled();
+  });
+
+  it("skips worktrees whose issue is currently in-flight", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+    await sup.dispatch(makeIssue(7));
+    await flush();
+
+    ctx.listOrphansMock.mockResolvedValueOnce([
+      { path: "/tmp/wt/minesweeper-issue0007", state: makeOrphanState(7, "InProgress") },
+    ]);
+
+    await sup.sweepClosedIssues();
+
+    expect(ctx.getIssueMock).not.toHaveBeenCalled();
+    expect(ctx.archiveMock).not.toHaveBeenCalled();
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+  });
+
+  it("logs a WARN and skips when gh.getIssue throws", async () => {
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValueOnce([
+      { path: "/tmp/wt/minesweeper-issue0042", state: makeOrphanState(42, "Complete") },
+    ]);
+    ctx.getIssueMock.mockRejectedValueOnce(new Error("gh down"));
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.sweepClosedIssues();
+
+    expect(ctx.archiveMock).not.toHaveBeenCalled();
+    expect(ctx.removeMock).not.toHaveBeenCalled();
+    expect(ctx.emitMock).toHaveBeenCalledWith(
+      "daemon",
+      "WARN",
+      42,
+      expect.stringContaining("gh getIssue failed"),
+    );
   });
 });
 

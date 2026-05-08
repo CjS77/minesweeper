@@ -115,6 +115,23 @@ describe("runPollLoop", () => {
     handle.stop();
   });
 
+  it("calls onTickEnd once per tick after all onIssue callbacks have settled", async () => {
+    const deps = makeDeps();
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"]), makeIssue(2, ["autofix"])]);
+    const order: string[] = [];
+    const onIssue = vi.fn(async (issue: Issue) => {
+      order.push(`issue:${issue.number}`);
+    });
+    const onTickEnd = vi.fn(async () => {
+      order.push("tick-end");
+    });
+    const handle = runPollLoop(deps, [3_600_000], { onIssue, onTickEnd });
+    await flushMicrotasks();
+    handle.stop();
+    expect(onTickEnd).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(["issue:1", "issue:2", "tick-end"]);
+  });
+
   it("logs an ERROR but does not throw when listIssues rejects", async () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockRejectedValueOnce(new Error("gh down"));

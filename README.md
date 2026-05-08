@@ -34,9 +34,12 @@ issue**:
 * **Child (`minesweeper handle <issue#>`)** — spawned by the supervisor with `cwd` set to a freshly created
   `git worktree`. The child drives the role agents (planner ↔ critic, then executor ↔ reviewer) via the Claude Agent
   SDK. State is persisted to `.minesweeper/state.json` inside the worktree so a crashed child can be resumed.
-* **Worktree lifecycle** — the daemon creates the worktree under `$MINESWEEPER_WORKTREE_PATH/<branch>`. On a clean
-  exit (`code === 0`) it archives `.minesweeper/` and removes the worktree. On a non-zero exit it labels the issue
-  with `$MINESWEEPER_FAILED_LABEL` and **leaves the worktree in place** for post-mortem.
+* **Worktree lifecycle** — the daemon creates the worktree under `$MINESWEEPER_WORKTREE_PATH/<branch>`. The worktree
+  stays on disk for the entire life of the issue: on a clean exit (`code === 0`) the daemon leaves it alone so the
+  reviewer of the open PR can inspect `.minesweeper/`; on a non-zero exit it labels the issue with
+  `$MINESWEEPER_FAILED_LABEL` and again leaves the worktree in place for post-mortem. Each poll tick the daemon then
+  runs a closed-issue sweep — for every worktree whose issue is now `CLOSED` (PR merged, manually closed, or "not
+  planned"), it archives `.minesweeper/` under `archive/<issue>-<timestamp>/` and removes the worktree.
 
 ## Issue eligibility
 
@@ -226,9 +229,10 @@ The daemon prints a pretty stream of events: `polled (N eligible) → dispatchin
 * **Structured logs** — JSON, one line per event, in `.minesweeper/logs/daemon.log` (rotated by Minesweeper). Useful
   with `jq`. Per-issue children write their own logs into `<worktree>/.minesweeper/logs/`.
 * **Pretty stdout** — `chalk`-coloured summaries; this is the human-readable view.
-* **Successful runs** — once a child exits 0 the worktree is removed and the entire `.minesweeper/` directory is
-  archived under `.minesweeper/archive/<issue-number>/<timestamp>/`. The transcript, planning history, final plan,
-  review comments, and final state are all there.
+* **Successful runs** — when a child exits 0 the daemon leaves the worktree on disk and only logs `child exited 0;
+  worktree at … kept until issue is closed`. The PR reviewer can poke at `<worktree>/.minesweeper/` while the PR is
+  open. Once the issue is closed (typically by the PR being merged), the next poll tick's sweep archives
+  `.minesweeper/` under `$MINESWEEPER_WORKTREE_PATH/archive/<issue>-<timestamp>/` and removes the worktree.
 * **Failed runs** — the worktree is **left in place** at `$MINESWEEPER_WORKTREE_PATH/<branch>` and the issue is
   tagged with `$MINESWEEPER_FAILED_LABEL`. Inspect the run with:
 
@@ -237,7 +241,8 @@ The daemon prints a pretty stream of events: `polled (N eligible) → dispatchin
   ls $MINESWEEPER_WORKTREE_PATH/<branch>/.minesweeper/
   ```
 
-  Once you've extracted what you need, remove the worktree with `git worktree remove`.
+  When you're done, close the issue (e.g. as "not planned") — the next sweep tick will archive and remove the
+  worktree for you. If you want to clean up sooner, `git worktree remove` works too.
 
 # Bootstrap mode — using Minesweeper to develop Minesweeper
 
