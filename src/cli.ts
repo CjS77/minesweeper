@@ -2,6 +2,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import chalk from "chalk";
 import { Command } from "commander";
 
 import { loadConfig } from "./config.js";
@@ -13,6 +14,7 @@ import {
   type Supervisor,
 } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
+import { runModelsCommand } from "./commands/models.js";
 import { listOrphans } from "./worktree.js";
 
 const program = new Command();
@@ -22,7 +24,10 @@ program
   .description("An agentic bughunter that drives Claude Code to triage and fix GitHub issues.")
   .version("0.0.0")
   .option("-q, --quiet", "suppress INFO output on stdout (file logs are unaffected)")
-  .hook("preAction", (thisCommand) => {
+  .hook("preAction", (thisCommand, actionCommand) => {
+    // `models` is a read-only utility; it writes its own output and shouldn't
+    // spin up a pino file destination just to be torn down.
+    if (actionCommand.name() === "models") return;
     const opts = thisCommand.optsWithGlobals();
     createLogger({ quiet: Boolean(opts.quiet) });
   });
@@ -56,10 +61,32 @@ program
     );
   });
 
-program.parseAsync(process.argv).catch((err: unknown) => {
-  console.error(err);
+program
+  .command("models")
+  .description("List Claude models available to your ANTHROPIC_API_KEY.")
+  .option("-v, --verbose", "show all model info (capabilities, limits, dates)")
+  .option("-f, --format <format>", "output format: text (default) or json", "text")
+  .action(async (opts: { verbose?: boolean; format?: string }) => {
+    const format = parseFormatArg(opts.format);
+    await runModelsCommand({ verbose: Boolean(opts.verbose), format });
+  });
+
+program.parseAsync(process.argv).catch(handleFatal);
+
+async function handleFatal(err: unknown): Promise<never> {
+  if (err instanceof Error) {
+    process.stderr.write(`${chalk.red("error:")} ${err.message}\n`);
+    if (process.env["MINESWEEPER_DEBUG"] && err.stack) {
+      process.stderr.write(`${err.stack}\n`);
+    }
+  } else {
+    process.stderr.write(`${chalk.red("error:")} ${String(err)}\n`);
+  }
+  // Drain pino's async file destination if any command opened one, otherwise
+  // sonic-boom throws "not ready yet" when the event loop tears down.
+  await getActiveLogger()?.flush().catch(() => undefined);
   process.exit(1);
-});
+}
 
 async function runDaemon(): Promise<void> {
   const config = loadConfig();
@@ -122,6 +149,12 @@ function parseIssueArg(raw: string): number {
     throw new Error(`invalid issue number: ${JSON.stringify(raw)}`);
   }
   return n;
+}
+
+function parseFormatArg(raw: string | undefined): "text" | "json" {
+  if (raw === undefined || raw === "text") return "text";
+  if (raw === "json") return "json";
+  throw new Error(`invalid --format: ${JSON.stringify(raw)} (expected "text" or "json")`);
 }
 
 function waitForShutdown(): Promise<void> {
