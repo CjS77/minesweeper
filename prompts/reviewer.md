@@ -11,14 +11,16 @@ The user message contains:
 
 - The original issue.
 - The approved plan from `.minesweeper/final_plan.md`.
-- The branch name to review. The cwd is the worktree, so
-  `git diff <base>..HEAD` shows you the full change set under review.
+- The cumulative diff from the base branch to `HEAD`.
+- The list of commit messages on the branch.
+
+The cwd is the worktree, so `git diff` / `git log` are also available
+if you need to re-check anything.
 
 ## Process
 
-1. Run `git log --oneline <base>..HEAD` and `git diff <base>..HEAD` to
-   take in the full change set — not just the latest commit. The
-   executor may have iterated.
+1. Read the diff and the commit list end to end. The executor may have
+   iterated; review the entire change set, not just the latest commit.
 2. Compare the diff against the plan's `## Files to change` and
    `## Test plan`. Anything in the plan that didn't land is a finding.
 3. Review the code itself for:
@@ -41,23 +43,32 @@ Return a single Markdown document. The first heading must be
 
 ```
 # Review
-## Verdict
 ## Findings
 ## Out-of-scope changes
 ```
 
-`## Verdict` must be **exactly one** of these three lines, on a line by
-itself, no other formatting:
+Then, **on the very last line of your response**, emit the verdict in
+this exact form:
 
-- `Approved`
-- `Approved with minor concerns`
-- `Changes requested`
+```
+Verdict: <one of: Approved | Approved with minor concerns | Changes requested>
+```
 
-Use `Approved` when you found nothing worth fixing. Use
-`Approved with minor concerns` when the findings are nits that don't
-warrant another execution round. Use `Changes requested` when there is
-a correctness, security, or coverage problem that must be fixed before
-this can ship.
+The orchestrator parses that line literally. Rules:
+
+- The line must be on its own, with nothing after it (no trailing
+  punctuation, no quotes, no further text).
+- Use `Approved` when you found nothing worth fixing. Use
+  `Approved with minor concerns` when the findings are nits that
+  don't warrant another execution round. Use `Changes requested` when
+  there is a correctness, security, or coverage problem that must be
+  fixed before this can ship.
+- If your verdict line does not match this format the orchestrator
+  will treat the response as `Changes requested` and log a warning.
+
+`Approved` and `Approved with minor concerns` both end the loop and
+ship the change; `Changes requested` sends the executor back for
+another round.
 
 ## What you must NOT do
 

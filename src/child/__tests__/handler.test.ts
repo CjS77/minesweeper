@@ -89,21 +89,49 @@ describe("handleChild", () => {
     ).rejects.toThrow(/issue #99 but child invoked with #42/);
   });
 
-  it("throws not-implemented for Execution mode in this build", async () => {
+  it("dispatches Execution mode to runExecution and returns its result", async () => {
     await initState(tmp, "Execution", {
       issueNumber: 7,
       branchName: "minesweeper-issue0007",
+      maxIterations: 3,
+    });
+
+    const runExecution = vi.fn(
+      async (deps: { state: State; cwd: string }): Promise<State> =>
+        writeState(deps.cwd, { ...deps.state, status: "Complete" }),
+    );
+
+    const result = await handleChild({
+      issueNumber: 7,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      runPlanning: vi.fn(),
+      runExecution,
+      emit: vi.fn(),
+    });
+
+    expect(runExecution).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("Complete");
+    const persisted = await readState(tmp);
+    expect(persisted.status).toBe("Complete");
+  });
+
+  it("throws not-implemented for Delegated mode in this build", async () => {
+    await initState(tmp, "Delegated", {
+      issueNumber: 11,
+      branchName: "minesweeper-issue0011",
       maxIterations: 2,
     });
 
     await expect(
       handleChild({
-        issueNumber: 7,
+        issueNumber: 11,
         cwd: tmp,
         loadConfig: () => FAKE_CONFIG,
         runPlanning: vi.fn(),
+        runExecution: vi.fn(),
         emit: vi.fn(),
       }),
-    ).rejects.toThrow(/mode=Execution not implemented/);
+    ).rejects.toThrow(/mode=Delegated not implemented/);
   });
 });

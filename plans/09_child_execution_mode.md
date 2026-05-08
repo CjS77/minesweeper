@@ -1,5 +1,5 @@
 # 09 — Child execution mode
-## Status: Not started
+## Status: done
 
 ## Context
 With planning landed, we now implement the executor ↔ reviewer loop and the

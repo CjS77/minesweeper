@@ -7,9 +7,9 @@
  * matches the CLI argument, and dispatches to the mode-specific
  * handler.
  *
- * For plan 08 only `Planning` is implemented. Other modes throw, which
- * the CLI surfaces as a non-zero exit code; the supervisor then labels
- * the issue with `failedLabel` and leaves the worktree for inspection.
+ * As of plan 09 the `Planning` and `Execution` modes are wired up.
+ * `Delegated` is still a no-op and throws — that is the assess+refine
+ * exit path which lands in plan 12.
  *
  * Each mode runs to completion (or a clean state-machine boundary) and
  * then returns. The CLI exits 0 on return, which signals the supervisor
@@ -27,9 +27,13 @@ import { event as defaultEvent, type Logger } from "../logging.js";
 import { readState as defaultReadState } from "./state.js";
 import type { Mode, State } from "./state.js";
 import { runPlanning as defaultRunPlanning, type PlanningDeps } from "./modes/planning.js";
+import { runExecution as defaultRunExecution, type ExecutionDeps } from "./modes/execution.js";
 
 /** Test seam: the planning mode runner. Default delegates to `runPlanning`. */
 export type RunPlanningFn = (deps: PlanningDeps) => Promise<State>;
+
+/** Test seam: the execution mode runner. Default delegates to `runExecution`. */
+export type RunExecutionFn = (deps: ExecutionDeps) => Promise<State>;
 
 export interface HandleChildOptions {
   /** The issue number passed on the CLI. Cross-checked against state.json. */
@@ -42,6 +46,8 @@ export interface HandleChildOptions {
   readState?: typeof defaultReadState;
   /** Override the planning mode handler (tests). */
   runPlanning?: RunPlanningFn;
+  /** Override the execution mode handler (tests). */
+  runExecution?: RunExecutionFn;
   /** Override the logger event sink (tests). */
   emit?: Logger["event"];
 }
@@ -57,6 +63,7 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
   const loadConfig = opts.loadConfig ?? defaultLoadConfig;
   const readState = opts.readState ?? defaultReadState;
   const runPlanning = opts.runPlanning ?? defaultRunPlanning;
+  const runExecution = opts.runExecution ?? defaultRunExecution;
   const emit = opts.emit ?? defaultEvent;
 
   const state = await readState(cwd);
@@ -74,7 +81,7 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
     `child handle: mode=${state.mode} status=${state.status} iterations=${state.iterations}/${state.maxIterations}`,
   );
 
-  return dispatch(state.mode, { config, cwd, state, runPlanning });
+  return dispatch(state.mode, { config, cwd, state, runPlanning, runExecution });
 }
 
 interface DispatchDeps {
@@ -82,6 +89,7 @@ interface DispatchDeps {
   cwd: string;
   state: State;
   runPlanning: RunPlanningFn;
+  runExecution: RunExecutionFn;
 }
 
 async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
@@ -93,9 +101,14 @@ async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
         state: deps.state,
       });
     case "Execution":
+      return deps.runExecution({
+        config: deps.config,
+        cwd: deps.cwd,
+        state: deps.state,
+      });
     case "Delegated":
       throw new Error(
-        `child handler: mode=${mode} not implemented in this build (plan 08 implements Planning only)`,
+        `child handler: mode=${mode} not implemented in this build (plan 12 will land assess/refine)`,
       );
   }
 }
