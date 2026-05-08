@@ -22,9 +22,7 @@ describe("transcriptPathFor", () => {
   });
 
   it("rejects non-positive iterations", () => {
-    expect(() => transcriptPathFor({ cwd: "/x", role: "planner", iteration: 0 })).toThrow(
-      /positive integer/,
-    );
+    expect(() => transcriptPathFor({ cwd: "/x", role: "planner", iteration: 0 })).toThrow(/positive integer/);
     expect(() => transcriptPathFor({ cwd: "/x", role: "planner", iteration: -1 })).toThrow();
   });
 });
@@ -54,10 +52,7 @@ describe("openTranscript", () => {
     b.write({ n: 2 });
     await b.close();
 
-    const lines = readFileSync(
-      join(tempDir, ".minesweeper/planning_history/planner-02.jsonl"),
-      "utf8",
-    )
+    const lines = readFileSync(join(tempDir, ".minesweeper/planning_history/planner-02.jsonl"), "utf8")
       .split("\n")
       .filter((l) => l.length > 0);
     expect(lines).toEqual(['{"n":1}', '{"n":2}']);

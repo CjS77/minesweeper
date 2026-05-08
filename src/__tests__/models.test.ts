@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  ModelsCommandError,
-  runModelsCommand,
-  type ModelInfo,
-} from "../commands/models.js";
+import { ModelsCommandError, runModelsCommand, type ModelInfo } from "../commands/models.js";
 
 describe("runModelsCommand", () => {
   it("calls the Anthropic models endpoint with key + version headers", async () => {
@@ -173,8 +169,7 @@ describe("runModelsCommand", () => {
 
   it("translates HTTP 401 into a friendly ModelsCommandError", async () => {
     const fetchImpl = (() => {
-      return async () =>
-        new Response("forbidden", { status: 401, statusText: "Unauthorized" });
+      return async () => new Response("forbidden", { status: 401, statusText: "Unauthorized" });
     })() as unknown as typeof fetch;
     const stdout = makeStdout();
 
@@ -246,10 +241,7 @@ function singlePage(data: ModelInfo[]): PageBody {
   return { data, has_more: false, last_id: data.at(-1)?.id ?? null };
 }
 
-function makeFetch(
-  calls: { url: string; init: RequestInit }[],
-  pages: PageBody[],
-): typeof fetch {
+function makeFetch(calls: { url: string; init: RequestInit }[], pages: PageBody[]): typeof fetch {
   let i = 0;
   const impl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input.toString();

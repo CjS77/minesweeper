@@ -7,12 +7,7 @@ import { Command, Option } from "commander";
 
 import { loadConfig } from "./config.js";
 import { createLogger, event, getActiveLogger } from "./logging.js";
-import {
-  createSupervisor,
-  defaultSpawnChild,
-  runPollLoop,
-  type Supervisor,
-} from "./daemon/index.js";
+import { createSupervisor, defaultSpawnChild, runPollLoop, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
 import { runLabelsCommand } from "./commands/labels.js";
 import { runModelsCommand } from "./commands/models.js";
@@ -54,12 +49,7 @@ program
   .argument("<issue>", "issue number to process once")
   .description("Debug helper: run a single issue end-to-end without the daemon loop.")
   .action((issue: string) => {
-    event(
-      "daemon",
-      "INFO",
-      Number(issue),
-      `minesweeper once — one-shot driver not yet implemented`,
-    );
+    event("daemon", "INFO", Number(issue), `minesweeper once — one-shot driver not yet implemented`);
   });
 
 program
@@ -101,7 +91,9 @@ async function handleFatal(err: unknown): Promise<never> {
   }
   // Drain pino's async file destination if any command opened one, otherwise
   // sonic-boom throws "not ready yet" when the event loop tears down.
-  await getActiveLogger()?.flush().catch(() => undefined);
+  await getActiveLogger()
+    ?.flush()
+    .catch(() => undefined);
   process.exit(1);
 }
 

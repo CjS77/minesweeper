@@ -95,9 +95,7 @@ describe("readState / writeState", () => {
       branchName: "x",
       maxIterations: 2,
     });
-    await expect(
-      writeState(tmp, { ...initial, iterations: -1 } as State),
-    ).rejects.toThrow();
+    await expect(writeState(tmp, { ...initial, iterations: -1 } as State)).rejects.toThrow();
   });
 });
 

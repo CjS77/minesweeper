@@ -57,12 +57,7 @@ describe("pollOnce", () => {
 
   it("uses a custom isEligible predicate when provided", async () => {
     const deps = makeDeps({ isEligible: (issue) => issue.number % 2 === 0 });
-    deps.listIssuesMock.mockResolvedValueOnce([
-      makeIssue(1),
-      makeIssue(2),
-      makeIssue(3),
-      makeIssue(4),
-    ]);
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2), makeIssue(3), makeIssue(4)]);
     const eligible = await pollOnce(deps);
     expect(eligible.map((i) => i.number)).toEqual([2, 4]);
   });
@@ -79,8 +74,7 @@ describe("runPollLoop", () => {
     await new Promise<void>((resolveFn) => setImmediate(resolveFn));
     await new Promise<void>((resolveFn) => setImmediate(resolveFn));
   };
-  const sleep = (ms: number): Promise<void> =>
-    new Promise<void>((resolveFn) => setTimeout(resolveFn, ms));
+  const sleep = (ms: number): Promise<void> => new Promise<void>((resolveFn) => setTimeout(resolveFn, ms));
 
   it("polls immediately on startup and emits onIssue per eligible result", async () => {
     const deps = makeDeps();
@@ -105,10 +99,7 @@ describe("runPollLoop", () => {
 
   it("logs the eligible count via emit", async () => {
     const deps = makeDeps();
-    deps.listIssuesMock.mockResolvedValueOnce([
-      makeIssue(1, ["autofix"]),
-      makeIssue(2, ["autofix"]),
-    ]);
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"]), makeIssue(2, ["autofix"])]);
     const handle = runPollLoop(deps, [3_600_000], { onIssue: vi.fn() });
     await flushMicrotasks();
     expect(deps.emitMock).toHaveBeenCalledWith("daemon", "INFO", null, "polled (2 eligible)");

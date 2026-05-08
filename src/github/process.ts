@@ -50,10 +50,7 @@ const NOT_A_REPO_PATTERNS = [
   /failed to run git/i,
 ];
 
-export async function runGh<T = unknown>(
-  args: readonly string[],
-  opts: RunGhOptions = {},
-): Promise<T> {
+export async function runGh<T = unknown>(args: readonly string[], opts: RunGhOptions = {}): Promise<T> {
   const bin = opts.bin ?? "gh";
   let result;
   try {

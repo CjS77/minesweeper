@@ -12,8 +12,7 @@ import {
 } from "../models.js";
 
 const FIX_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "__fixtures__");
-const fixture = (name: string): unknown =>
-  JSON.parse(readFileSync(join(FIX_DIR, name), "utf8")) as unknown;
+const fixture = (name: string): unknown => JSON.parse(readFileSync(join(FIX_DIR, name), "utf8")) as unknown;
 
 describe("UserSchema", () => {
   it("accepts a typical user", () => {
@@ -67,9 +66,7 @@ describe("IssueSchema", () => {
 
   it("preserves unknown future fields via passthrough", () => {
     const issues = IssueListSchema.parse(fixture("issue_list.json"));
-    expect((issues[1] as Record<string, unknown>).extraFutureField).toBe(
-      "tolerated by passthrough",
-    );
+    expect((issues[1] as Record<string, unknown>).extraFutureField).toBe("tolerated by passthrough");
   });
 
   it("parses a single-issue view with comments", () => {
@@ -80,9 +77,7 @@ describe("IssueSchema", () => {
   });
 
   it("rejects an issue missing required fields", () => {
-    expect(() =>
-      IssueSchema.parse({ number: 1, title: "x", body: "x", labels: [], state: "OPEN" }),
-    ).toThrow();
+    expect(() => IssueSchema.parse({ number: 1, title: "x", body: "x", labels: [], state: "OPEN" })).toThrow();
   });
 
   it("rejects an issue with a non-positive number", () => {

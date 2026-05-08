@@ -6,14 +6,7 @@ import { z } from "zod";
 export const Mode = z.enum(["Planning", "Execution", "Delegated"]);
 export type Mode = z.infer<typeof Mode>;
 
-export const Status = z.enum([
-  "InProgress",
-  "Writing",
-  "Reviewing",
-  "FixingReviewComments",
-  "Complete",
-  "Failed",
-]);
+export const Status = z.enum(["InProgress", "Writing", "Reviewing", "FixingReviewComments", "Complete", "Failed"]);
 export type Status = z.infer<typeof Status>;
 
 export const Assessment = z.enum(["Execute", "Refine"]);

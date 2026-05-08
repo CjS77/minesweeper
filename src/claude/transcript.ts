@@ -116,9 +116,7 @@ export function openTranscript(opts: OpenTranscriptOptions): Transcript {
     },
     close(): Promise<void> {
       return new Promise((resolve, reject) => {
-        stream.end((err: NodeJS.ErrnoException | null | undefined) =>
-          err ? reject(err) : resolve(),
-        );
+        stream.end((err: NodeJS.ErrnoException | null | undefined) => (err ? reject(err) : resolve()));
       });
     },
   };

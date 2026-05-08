@@ -4,13 +4,7 @@ import { runGh, type RunGhOptions } from "./process.js";
 
 const RepoLabelListSchema = z.array(LabelSchema);
 
-export {
-  GhError,
-  GhMissingError,
-  GhNotARepoError,
-  runGh,
-  type RunGhOptions,
-} from "./process.js";
+export { GhError, GhMissingError, GhNotARepoError, runGh, type RunGhOptions } from "./process.js";
 export {
   CommentSchema,
   IssueListSchema,
@@ -67,10 +61,10 @@ export async function listIssues(opts: ListIssuesOptions = {}): Promise<Issue[]>
 }
 
 export async function getIssue(number: number, opts: GhOverridable = {}): Promise<Issue> {
-  const raw = await runGh(
-    ["issue", "view", String(number), "--json", ISSUE_VIEW_FIELDS],
-    { ...ghOpts(opts), json: true },
-  );
+  const raw = await runGh(["issue", "view", String(number), "--json", ISSUE_VIEW_FIELDS], {
+    ...ghOpts(opts),
+    json: true,
+  });
   return IssueSchema.parse(raw);
 }
 
@@ -78,11 +72,7 @@ export async function addLabel(number: number, label: string, opts: GhOverridabl
   await runGh(["issue", "edit", String(number), "--add-label", label], ghOpts(opts));
 }
 
-export async function removeLabel(
-  number: number,
-  label: string,
-  opts: GhOverridable = {},
-): Promise<void> {
+export async function removeLabel(number: number, label: string, opts: GhOverridable = {}): Promise<void> {
   await runGh(["issue", "edit", String(number), "--remove-label", label], ghOpts(opts));
 }
 
@@ -102,11 +92,7 @@ export async function createIssue(opts: CreateIssueOptions): Promise<{ number: n
   return { number: parseIssueNumber(url), url };
 }
 
-export async function comment(
-  number: number,
-  body: string,
-  opts: GhOverridable = {},
-): Promise<void> {
+export async function comment(number: number, body: string, opts: GhOverridable = {}): Promise<void> {
   await runGh(["issue", "comment", String(number), "--body", body], ghOpts(opts));
 }
 
@@ -121,14 +107,7 @@ export interface ListLabelsOptions extends GhOverridable {
  * already on the repo before mutating it.
  */
 export async function listLabels(opts: ListLabelsOptions = {}): Promise<Label[]> {
-  const args = [
-    "label",
-    "list",
-    "--limit",
-    String(opts.limit ?? 200),
-    "--json",
-    "name,color,description",
-  ];
+  const args = ["label", "list", "--limit", String(opts.limit ?? 200), "--json", "name,color,description"];
   const raw = await runGh(args, { ...ghOpts(opts), json: true });
   return RepoLabelListSchema.parse(raw);
 }
@@ -146,16 +125,7 @@ export interface UpsertLabelOptions extends GhOverridable {
  */
 export async function upsertLabel(opts: UpsertLabelOptions): Promise<void> {
   await runGh(
-    [
-      "label",
-      "create",
-      opts.name,
-      "--color",
-      opts.color,
-      "--description",
-      opts.description,
-      "--force",
-    ],
+    ["label", "create", opts.name, "--color", opts.color, "--description", opts.description, "--force"],
     ghOpts(opts),
   );
 }
@@ -169,18 +139,7 @@ export interface CreatePrOptions extends GhOverridable {
 }
 
 export async function createPr(opts: CreatePrOptions): Promise<{ number: number; url: string }> {
-  const args = [
-    "pr",
-    "create",
-    "--base",
-    opts.base,
-    "--head",
-    opts.head,
-    "--title",
-    opts.title,
-    "--body",
-    opts.body,
-  ];
+  const args = ["pr", "create", "--base", opts.base, "--head", opts.head, "--title", opts.title, "--body", opts.body];
   if (opts.draft) args.push("--draft");
   const stdout = await runGh<string>(args, ghOpts(opts));
   const url = lastUrl(stdout);
@@ -209,4 +168,3 @@ function parsePrNumber(url: string): number {
   if (!m) throw new Error(`could not parse pull-request number from URL: ${url}`);
   return Number(m[1]);
 }
-

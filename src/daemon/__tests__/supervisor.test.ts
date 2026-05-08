@@ -5,12 +5,7 @@ import type * as ghModule from "../../github/index.js";
 import type { Issue } from "../../github/index.js";
 import type * as worktreeModule from "../../worktree.js";
 import type * as stateModule from "../../child/state.js";
-import {
-  branchNameFor,
-  createSupervisor,
-  type ChildHandle,
-  type SupervisorDeps,
-} from "../supervisor.js";
+import { branchNameFor, createSupervisor, type ChildHandle, type SupervisorDeps } from "../supervisor.js";
 import type { State } from "../../child/state.js";
 
 interface FakeChild {
@@ -77,14 +72,12 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   childrenSpawned: FakeChild[];
 } {
   const childrenSpawned: FakeChild[] = [];
-  const spawnChildMock = vi.fn(
-    ({ worktreePath }: { issueNumber: number; worktreePath: string }) => {
-      void worktreePath;
-      const child = fakeChild();
-      childrenSpawned.push(child);
-      return child.handle;
-    },
-  );
+  const spawnChildMock = vi.fn(({ worktreePath }: { issueNumber: number; worktreePath: string }) => {
+    void worktreePath;
+    const child = fakeChild();
+    childrenSpawned.push(child);
+    return child.handle;
+  });
 
   const addLabelMock = vi.fn(async () => undefined);
   const getIssueMock = vi.fn(async () => makeIssue(0));
@@ -197,12 +190,7 @@ describe("createSupervisor.dispatch", () => {
     expect(ctx.removeMock).not.toHaveBeenCalled();
     expect(ctx.addLabelMock).not.toHaveBeenCalled();
     expect(sup.inFlight()).toEqual([]);
-    expect(ctx.emitMock).toHaveBeenCalledWith(
-      "daemon",
-      "OK",
-      7,
-      expect.stringContaining("kept until issue is closed"),
-    );
+    expect(ctx.emitMock).toHaveBeenCalledWith("daemon", "OK", 7, expect.stringContaining("kept until issue is closed"));
   });
 
   it("labels the issue and leaves the worktree on non-zero exit", async () => {
@@ -407,12 +395,7 @@ describe("createSupervisor.sweepClosedIssues", () => {
 
     expect(ctx.archiveMock).not.toHaveBeenCalled();
     expect(ctx.removeMock).not.toHaveBeenCalled();
-    expect(ctx.emitMock).toHaveBeenCalledWith(
-      "daemon",
-      "WARN",
-      42,
-      expect.stringContaining("gh getIssue failed"),
-    );
+    expect(ctx.emitMock).toHaveBeenCalledWith("daemon", "WARN", 42, expect.stringContaining("gh getIssue failed"));
   });
 });
 
