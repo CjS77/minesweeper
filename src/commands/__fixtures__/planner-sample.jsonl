@@ -1,0 +1,10 @@
+{"type":"system","subtype":"init","cwd":"/tmp/work","permissionMode":"plan","model":"claude-opus-4-7","claude_code_version":"2.1.132"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}
+{"type":"assistant","message":{"model":"claude-opus-4-7","content":[{"type":"thinking","thinking":"considering the task\nmore reasoning"}]}}
+{"type":"assistant","message":{"model":"claude-opus-4-7","content":[{"type":"tool_use","id":"toolu_a","name":"Bash","input":{"command":"ls /tmp/somedir"}}]}}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_a","type":"tool_result","content":"file1\nfile2\nfile3","is_error":false}]},"timestamp":"2026-05-08T13:45:30.000Z","tool_use_result":{"stdout":"file1\nfile2\nfile3","stderr":"","interrupted":false}}
+{"type":"assistant","message":{"model":"claude-opus-4-7","content":[{"type":"tool_use","id":"toolu_b","name":"Read","input":{"file_path":"/tmp/work/prompts/executor.md"}}]}}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_b","type":"tool_result","content":"omitted","is_error":false}]},"timestamp":"2026-05-08T13:45:31.000Z","tool_use_result":{"type":"text","file":{"filePath":"/tmp/work/prompts/executor.md","content":"line 1\nline 2\nline 3\nline 4\nline 5","numLines":63}}}
+{ deliberately malformed json
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_c","type":"tool_result","content":"command not found","is_error":true}]},"timestamp":"2026-05-08T13:45:32.000Z","tool_use_result":{"stdout":"","stderr":"command not found","interrupted":false}}
+{"type":"result","subtype":"success","stop_reason":"end_turn","num_turns":3,"duration_ms":12345}
