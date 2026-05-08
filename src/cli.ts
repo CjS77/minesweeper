@@ -9,6 +9,7 @@ import { loadConfig } from "./config.js";
 import { createLogger, event, getActiveLogger } from "./logging.js";
 import { createSupervisor, defaultSpawnChild, runPollLoop, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
+import { runIssueListCommand, runIssueNewCommand } from "./commands/issues.js";
 import { runLabelsCommand } from "./commands/labels.js";
 import { runLogViewCommand } from "./commands/log.js";
 import { runModelsCommand } from "./commands/models.js";
@@ -30,7 +31,7 @@ program
     createLogger({ quiet: Boolean(opts.quiet) });
   });
 
-const LOGGER_FREE_COMMANDS = new Set(["models", "log view"]);
+const LOGGER_FREE_COMMANDS = new Set(["models", "log view", "issue list", "issue new"]);
 
 function commandPath(cmd: Command): string {
   const parts: string[] = [];
@@ -107,6 +108,23 @@ log
       color: opts.color !== false,
       maxLines: parseMaxLines(opts.maxLines),
     });
+  });
+
+const issue = program.command("issue").description("Inspect or create issues that Minesweeper can act on.");
+
+issue
+  .command("list")
+  .description("List the repository's open issues, marking eligible and in-progress ones.")
+  .action(async () => {
+    const config = loadConfig();
+    await runIssueListCommand({ config, cwd: process.cwd() });
+  });
+
+issue
+  .command("new")
+  .description("Create a new issue from the CLI (not yet implemented).")
+  .action(() => {
+    runIssueNewCommand();
   });
 
 program.parseAsync(process.argv).catch(handleFatal);
