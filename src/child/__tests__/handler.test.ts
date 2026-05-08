@@ -39,7 +39,49 @@ afterEach(async () => {
 });
 
 describe("handleChild", () => {
-  it("dispatches Planning mode to runPlanning and returns its result", async () => {
+  it("loops Planning → Execution end-to-end inside one invocation", async () => {
+    await initState(tmp, "Planning", {
+      issueNumber: 42,
+      branchName: "minesweeper-issue0042",
+      maxIterations: 5,
+    });
+
+    const callOrder: string[] = [];
+    const runPlanning = vi.fn(async (deps: { state: State; cwd: string }): Promise<State> => {
+      callOrder.push("planning");
+      return writeState(deps.cwd, {
+        ...deps.state,
+        mode: "Execution",
+        status: "Writing",
+        iterations: 0,
+        maxIterations: 2,
+      });
+    });
+    const runExecution = vi.fn(async (deps: { state: State; cwd: string }): Promise<State> => {
+      callOrder.push("execution");
+      return writeState(deps.cwd, { ...deps.state, status: "Complete" });
+    });
+
+    const result = await handleChild({
+      issueNumber: 42,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      runPlanning,
+      runExecution,
+      emit: vi.fn(),
+    });
+
+    expect(runPlanning).toHaveBeenCalledTimes(1);
+    expect(runExecution).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual(["planning", "execution"]);
+    expect(result.mode).toBe("Execution");
+    expect(result.status).toBe("Complete");
+    const persisted = await readState(tmp);
+    expect(persisted.mode).toBe("Execution");
+    expect(persisted.status).toBe("Complete");
+  });
+
+  it("throws when a mode handler returns without advancing state", async () => {
     await initState(tmp, "Planning", {
       issueNumber: 42,
       branchName: "minesweeper-issue0042",
@@ -48,27 +90,20 @@ describe("handleChild", () => {
 
     const runPlanning = vi.fn(
       async (deps: { state: State; cwd: string }): Promise<State> =>
-        writeState(deps.cwd, {
-          ...deps.state,
-          mode: "Execution",
-          status: "Writing",
-          iterations: 0,
-          maxIterations: 2,
-        }),
+        writeState(deps.cwd, deps.state),
     );
 
-    const result = await handleChild({
-      issueNumber: 42,
-      cwd: tmp,
-      loadConfig: () => FAKE_CONFIG,
-      runPlanning,
-      emit: vi.fn(),
-    });
-
+    await expect(
+      handleChild({
+        issueNumber: 42,
+        cwd: tmp,
+        loadConfig: () => FAKE_CONFIG,
+        runPlanning,
+        runExecution: vi.fn(),
+        emit: vi.fn(),
+      }),
+    ).rejects.toThrow(/returned without advancing state/);
     expect(runPlanning).toHaveBeenCalledTimes(1);
-    expect(result.mode).toBe("Execution");
-    const persisted = await readState(tmp);
-    expect(persisted.mode).toBe("Execution");
   });
 
   it("throws when state.json's issueNumber doesn't match the CLI argument", async () => {
@@ -116,22 +151,28 @@ describe("handleChild", () => {
     expect(persisted.status).toBe("Complete");
   });
 
-  it("throws not-implemented for Delegated mode in this build", async () => {
+  it("returns immediately when state is already terminal (Delegated/Complete)", async () => {
     await initState(tmp, "Delegated", {
       issueNumber: 11,
       branchName: "minesweeper-issue0011",
       maxIterations: 2,
     });
 
-    await expect(
-      handleChild({
-        issueNumber: 11,
-        cwd: tmp,
-        loadConfig: () => FAKE_CONFIG,
-        runPlanning: vi.fn(),
-        runExecution: vi.fn(),
-        emit: vi.fn(),
-      }),
-    ).rejects.toThrow(/mode=Delegated not implemented/);
+    const runPlanning = vi.fn();
+    const runExecution = vi.fn();
+
+    const result = await handleChild({
+      issueNumber: 11,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      runPlanning,
+      runExecution,
+      emit: vi.fn(),
+    });
+
+    expect(runPlanning).not.toHaveBeenCalled();
+    expect(runExecution).not.toHaveBeenCalled();
+    expect(result.mode).toBe("Delegated");
+    expect(result.status).toBe("Complete");
   });
 });

@@ -23,8 +23,9 @@
  * On exit the plan is copied verbatim to `.minesweeper/final_plan.md`,
  * the state is transitioned to `mode=Execution`, `status=Writing`,
  * `iterations=0`, `maxIterations=config.maxReviewRounds`, and the
- * function returns. The caller (the child handler) then exits 0; the
- * supervisor's next dispatch picks up plan 09's execution mode.
+ * function returns. The child handler's mode loop sees the new mode
+ * on disk and dispatches execution next, inside the same process —
+ * no second `minesweeper handle` invocation is involved.
  *
  * Resumption: the loop reads `state.iterations` from disk on entry, so
  * a crashed child that left state at iteration N resumes at iteration

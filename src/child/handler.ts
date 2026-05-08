@@ -4,22 +4,22 @@
  * The child runs with `cwd` set to the issue's worktree (set by the
  * supervisor's `execaNode` call, see `src/daemon/supervisor.ts`). It
  * loads `state.json`, sanity-checks that the on-disk issue number
- * matches the CLI argument, and dispatches to the mode-specific
- * handler.
+ * matches the CLI argument, and drives the issue's state machine
+ * to a terminal status inside this single process.
  *
  * As of plan 09 the `Planning` and `Execution` modes are wired up.
  * `Delegated` is still a no-op and throws — that is the assess+refine
  * exit path which lands in plan 12.
  *
- * Each mode runs to completion (or a clean state-machine boundary) and
- * then returns. The CLI exits 0 on return, which signals the supervisor
- * to archive `.minesweeper/` and remove the worktree on the success
- * path. For multi-mode flows (Planning → Execution) we deliberately
- * exit between modes — the supervisor's next dispatch will re-spawn
- * the child against the same worktree, and the new mode handler picks
- * up from the just-written state. This keeps each mode a process
- * boundary and enforces the "state on disk" discipline from
- * `plans/00_index.md`.
+ * Multi-mode flows (Planning → Execution, later Planning → Assess →
+ * Refine|Execution) run inside one child invocation: each mode handler
+ * persists its outgoing state to `.minesweeper/state.json` and
+ * returns; the loop dispatches the next mode based on that state.
+ * The child only exits 0 once `status` reaches a terminal value
+ * (`Complete` or `Failed`), at which point the supervisor archives
+ * `.minesweeper/` and removes the worktree. State-on-disk discipline
+ * is preserved because every mode transition goes through `writeState`
+ * before the next handler runs.
  */
 
 import { loadConfig as defaultLoadConfig, type Config } from "../config.js";
@@ -53,10 +53,13 @@ export interface HandleChildOptions {
 }
 
 /**
- * Drive the state machine for a single issue. Resolves once the
- * dispatched mode handler returns. Throws if the on-disk issue number
- * does not match the CLI argument, if the mode is not implemented in
- * this build, or if the mode handler itself throws.
+ * Drive the state machine for a single issue to a terminal status.
+ * Loops over mode handlers, re-reading state after each one, until
+ * `status` is `Complete` or `Failed`. Throws if the on-disk issue
+ * number does not match the CLI argument, if the mode is not
+ * implemented in this build, if a mode handler itself throws, or if
+ * a handler returns without making progress (same mode/status/iterations
+ * as on entry) — that would otherwise spin forever.
  */
 export async function handleChild(opts: HandleChildOptions): Promise<State> {
   const cwd = opts.cwd ?? process.cwd();
@@ -66,7 +69,7 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
   const runExecution = opts.runExecution ?? defaultRunExecution;
   const emit = opts.emit ?? defaultEvent;
 
-  const state = await readState(cwd);
+  let state = await readState(cwd);
   if (state.issueNumber !== opts.issueNumber) {
     throw new Error(
       `state mismatch: cwd state.json describes issue #${state.issueNumber} but child invoked with #${opts.issueNumber}`,
@@ -74,14 +77,32 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
   }
 
   const config = loadConfig();
-  emit(
-    "daemon",
-    "INFO",
-    state.issueNumber,
-    `child handle: mode=${state.mode} status=${state.status} iterations=${state.iterations}/${state.maxIterations}`,
-  );
 
-  return dispatch(state.mode, { config, cwd, state, runPlanning, runExecution });
+  while (!isTerminal(state)) {
+    emit(
+      "daemon",
+      "INFO",
+      state.issueNumber,
+      `child handle: mode=${state.mode} status=${state.status} iterations=${state.iterations}/${state.maxIterations}`,
+    );
+    const before = progressKey(state);
+    state = await dispatch(state.mode, { config, cwd, state, runPlanning, runExecution });
+    if (!isTerminal(state) && progressKey(state) === before) {
+      throw new Error(
+        `child handler: mode=${state.mode} returned without advancing state (status=${state.status}, iterations=${state.iterations}); refusing to loop`,
+      );
+    }
+  }
+
+  return state;
+}
+
+function isTerminal(state: State): boolean {
+  return state.status === "Complete" || state.status === "Failed";
+}
+
+function progressKey(state: State): string {
+  return `${state.mode}:${state.status}:${state.iterations}`;
 }
 
 interface DispatchDeps {
