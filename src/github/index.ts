@@ -1,5 +1,8 @@
-import { IssueListSchema, IssueSchema, type Issue } from "./models.js";
+import { IssueListSchema, IssueSchema, LabelSchema, type Issue, type Label } from "./models.js";
+import { z } from "zod";
 import { runGh, type RunGhOptions } from "./process.js";
+
+const RepoLabelListSchema = z.array(LabelSchema);
 
 export {
   GhError,
@@ -105,6 +108,56 @@ export async function comment(
   opts: GhOverridable = {},
 ): Promise<void> {
   await runGh(["issue", "comment", String(number), "--body", body], ghOpts(opts));
+}
+
+export interface ListLabelsOptions extends GhOverridable {
+  /** Hard cap on rows returned by `gh label list --limit`. Default 200. */
+  limit?: number;
+}
+
+/**
+ * Return every label currently defined on the repository (name, colour and
+ * description). Used by `minesweeper labels` to show the operator what is
+ * already on the repo before mutating it.
+ */
+export async function listLabels(opts: ListLabelsOptions = {}): Promise<Label[]> {
+  const args = [
+    "label",
+    "list",
+    "--limit",
+    String(opts.limit ?? 200),
+    "--json",
+    "name,color,description",
+  ];
+  const raw = await runGh(args, { ...ghOpts(opts), json: true });
+  return RepoLabelListSchema.parse(raw);
+}
+
+export interface UpsertLabelOptions extends GhOverridable {
+  name: string;
+  /** 6-char hex without leading `#`. */
+  color: string;
+  description: string;
+}
+
+/**
+ * Create a repository label, or update its colour and description if it
+ * already exists. Uses `gh label create --force`, which is idempotent.
+ */
+export async function upsertLabel(opts: UpsertLabelOptions): Promise<void> {
+  await runGh(
+    [
+      "label",
+      "create",
+      opts.name,
+      "--color",
+      opts.color,
+      "--description",
+      opts.description,
+      "--force",
+    ],
+    ghOpts(opts),
+  );
 }
 
 export interface CreatePrOptions extends GhOverridable {

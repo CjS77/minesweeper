@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import chalk from "chalk";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 
 import { loadConfig } from "./config.js";
 import { createLogger, event, getActiveLogger } from "./logging.js";
@@ -14,6 +14,7 @@ import {
   type Supervisor,
 } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
+import { runLabelsCommand } from "./commands/labels.js";
 import { runModelsCommand } from "./commands/models.js";
 import { listOrphans } from "./worktree.js";
 
@@ -59,6 +60,22 @@ program
       Number(issue),
       `minesweeper once — one-shot driver not yet implemented`,
     );
+  });
+
+program
+  .command("labels")
+  .description("Create or update the GitHub labels Minesweeper uses on the current repository.")
+  .option("-l, --list", "print the canonical Minesweeper labels and exit (no changes made)")
+  .addOption(new Option("--ls").hideHelp())
+  .option("-f, --force", "skip the confirmation prompt and apply changes immediately")
+  .action(async (opts: { list?: boolean; ls?: boolean; force?: boolean }) => {
+    const config = loadConfig();
+    await runLabelsCommand({
+      config,
+      cwd: process.cwd(),
+      list: Boolean(opts.list || opts.ls),
+      force: Boolean(opts.force),
+    });
   });
 
 program

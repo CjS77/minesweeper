@@ -2,10 +2,9 @@
 ## Status: Not started
 
 ## Context
-This is the M1 capstone. Before we dogfood Minesweeper, we need (a) a
-proper eligibility filter — still label-based, prompt-injection screening
-comes in plan 11 — and (b) a README that matches the actual behaviour and
-introduces the new env vars.
+This is the M1 capstone. Before we dogfood Minesweeper, we need 
+(a) a proper eligibility filter — still label-based, prompt-injection screening comes in plan 11 — and 
+(b) a README that matches the actual behaviour and introduces the new env vars.
 
 ## Scope (in)
 
@@ -14,11 +13,11 @@ Replace the placeholder `isEligible` from plan 07 with the real label-based
 logic that honours the spec's hierarchy:
 
 1. If issue has `MINESWEEPER_NEVER_FIX_LABEL` → ineligible.
-2. If issue has `MINESWEEPER_FAILED_LABEL` → ineligible (don't reattempt
+2. If issue has `MINESWEEPER_MANUALLY_APPROVED_LABEL` → eligible.
+3. If issue has `MINESWEEPER_FAILED_LABEL` → ineligible (don't reattempt
    failed issues automatically).
-3. If issue has `MINESWEEPER_POSSIBLY_DANGEROUS_LABEL` → ineligible.
-4. If issue has `MINESWEEPER_ALWAYS_FIX_LABEL` → eligible.
-5. If issue has `MINESWEEPER_MANUALLY_APPROVED_LABEL` → eligible.
+4. If issue has `MINESWEEPER_POSSIBLY_DANGEROUS_LABEL` → ineligible.
+6. If issue has `MINESWEEPER_ALWAYS_FIX_LABEL` → eligible.
 6. Otherwise → fall back to `MINESWEEPER_DEFAULT_ELIGIBLE` (default
    `false`).
 
@@ -34,9 +33,9 @@ Unit tests covering each branch.
 ### README updates
 Apply the spec deltas identified in the master plan:
 
-1. Change `MINESWEEPER_REVIEW_AGENT` default from `"codex"` to `"sonnet"`,
+1. Change `MINESWEEPER_REVIEW_AGENT` default from `"codex"` to whatever is in .env.sample,
    note codex/other-backend support is on the roadmap.
-2. Add to the env-var table (in order):
+2. Add to the env-var table (in order) - use the value in .env.sample if it conflicts with below:
    - `MINESWEEPER_WORKTREE_PATH` — `"/tmp/minesweeper"`
    - `MINESWEEPER_PR_BASE_BRANCH` — `"main"`
    - `MINESWEEPER_POLL_INTERVAL_SECONDS` — `300`
@@ -84,7 +83,7 @@ Apply the spec deltas identified in the master plan:
 This is the gate for declaring M1 done.
 
 1. On the dogfood checkout:
-   - `gh label create autofix` (and the others if not present).
+   - Check if the necessary labels have been created. Run `labels -f` if not.
    - File a real issue: e.g. "Add a `--version` flag to the CLI" with the
      `autofix` label.
    - Start the daemon: `node dist/cli.js run`.

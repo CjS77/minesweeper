@@ -18,8 +18,10 @@ import {
   GhNotARepoError,
   getIssue,
   listIssues,
+  listLabels,
   removeLabel,
   runGh,
+  upsertLabel,
 } from "../index.js";
 
 const mockExeca = vi.mocked(execa);
@@ -107,6 +109,67 @@ describe("addLabel / removeLabel", () => {
     mockExeca.mockResolvedValueOnce(ok("") as never);
     await removeLabel(17, "manual");
     expect(lastCall().args).toEqual(["issue", "edit", "17", "--remove-label", "manual"]);
+  });
+});
+
+describe("listLabels", () => {
+  it("invokes gh label list with the documented flags and parses the response", async () => {
+    mockExeca.mockResolvedValueOnce(
+      ok(
+        JSON.stringify([
+          { name: "bug", color: "d73a4a", description: "Something is broken" },
+          { name: "autofix", color: "0e8a16", description: "" },
+        ]),
+      ) as never,
+    );
+    const labels = await listLabels({ limit: 50 });
+    expect(labels).toHaveLength(2);
+    expect(labels[0]?.name).toBe("bug");
+    const { args } = lastCall();
+    expect(args.slice(0, 4)).toEqual(["label", "list", "--limit", "50"]);
+    expect(args).toContain("--json");
+    expect(args.at(-1)).toBe("name,color,description");
+  });
+
+  it("defaults limit to 200", async () => {
+    mockExeca.mockResolvedValueOnce(ok("[]") as never);
+    await listLabels();
+    expect(lastCall().args).toContain("200");
+  });
+});
+
+describe("upsertLabel", () => {
+  it("invokes gh label create with --force, color and description", async () => {
+    mockExeca.mockResolvedValueOnce(ok("") as never);
+    await upsertLabel({ name: "autofix", color: "0E8A16", description: "always handled" });
+    expect(lastCall().args).toEqual([
+      "label",
+      "create",
+      "autofix",
+      "--color",
+      "0E8A16",
+      "--description",
+      "always handled",
+      "--force",
+    ]);
+  });
+
+  it("forwards cwd", async () => {
+    mockExeca.mockResolvedValueOnce(ok("") as never);
+    await upsertLabel({
+      name: "manual",
+      color: "B60205",
+      description: "never handled",
+      cwd: "/tmp/wt",
+    });
+    expect(lastCall().opts.cwd).toBe("/tmp/wt");
+  });
+
+  it("propagates gh errors", async () => {
+    mockExeca.mockResolvedValueOnce(fail("HTTP 422: validation failed") as never);
+    await expect(
+      upsertLabel({ name: "x", color: "ffffff", description: "y" }),
+    ).rejects.toBeInstanceOf(GhError);
   });
 });
 
