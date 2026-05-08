@@ -1,4 +1,20 @@
-export { isEligible } from "./eligibility.js";
+export {
+  decideEligibility,
+  isEligible,
+  type DecideEligibilityDeps,
+  type EligibilityDecision,
+  type ScreenIssueFn,
+} from "./eligibility.js";
+export {
+  parseScreenVerdict,
+  readScreenCache,
+  screenIssue,
+  writeScreenCache,
+  SCREEN_CACHE_DIR,
+  type ScreenDeps,
+  type ScreenResult,
+  type ScreenVerdict,
+} from "./screen.js";
 export {
   pollOnce,
   runPollLoop,

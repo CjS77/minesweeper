@@ -14,7 +14,7 @@ describe("loadConfig", () => {
       subtaskLabel: "subtask",
       maxPlanningIterations: 5,
       maxReviewRounds: 3,
-      eligibilityAgent: "haiku",
+      eligibilityAgent: "claude-haiku-4-5-20251001",
       planningAgent: "claude-opus-4-7",
       reviewAgent: "claude-sonnet-4-6",
       executionAgent: "claude-opus-4-7",

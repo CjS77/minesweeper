@@ -80,7 +80,7 @@ export function loadConfig(env: Env = process.env): Config {
     subtaskLabel: readString(env, "MINESWEEPER_SUBTASK_LABEL", "subtask"),
     maxPlanningIterations: readInt(env, "MINESWEEPER_MAX_PLANNING_ITERATIONS", 1, 5),
     maxReviewRounds: readInt(env, "MINESWEEPER_MAX_REVIEW_ROUNDS", 1, 3),
-    eligibilityAgent: readString(env, "MINESWEEPER_ELIGIBILITY_AGENT", "haiku"),
+    eligibilityAgent: readString(env, "MINESWEEPER_ELIGIBILITY_AGENT", "claude-haiku-4-5-20251001"),
     planningAgent: readString(env, "MINESWEEPER_PLANNING_AGENT", "claude-opus-4-7"),
     reviewAgent: readString(env, "MINESWEEPER_REVIEW_AGENT", "claude-sonnet-4-6"),
     executionAgent: readString(env, "MINESWEEPER_EXECUTION_AGENT", "claude-opus-4-7"),

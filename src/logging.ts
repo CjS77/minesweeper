@@ -13,6 +13,7 @@ export const ROLES = [
   "executor",
   "reviewer",
   "prwriter",
+  "screener",
 ] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -37,6 +38,7 @@ export const ROLE_COLOUR: Record<Role, (s: string) => string> = {
   executor: chalk.blue,
   reviewer: chalk.magenta,
   prwriter: chalk.green,
+  screener: chalk.red,
 };
 
 const LEVEL_TO_PINO: Record<Level, "info" | "warn" | "error"> = {

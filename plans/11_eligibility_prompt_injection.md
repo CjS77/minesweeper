@@ -1,5 +1,5 @@
 # 11 — Prompt-injection eligibility screen
-## Status: Not started
+## Status: done
 
 ## Context
 M1 is intentionally narrow: only issues with `MINESWEEPER_ALWAYS_FIX_LABEL`
