@@ -11,6 +11,7 @@ import {
   FINAL_PLAN_FILE,
   parseVerdict,
   runPlanning,
+  sanitisePlan,
   type RunSubagentFn,
 } from "../modes/planning.js";
 import type { SubagentResult } from "../../claude/index.js";
@@ -66,9 +67,10 @@ interface ScriptedCall {
   userPrompt: string;
 }
 
-function scriptedRunner(
-  responses: Array<{ role: "planner" | "critic"; text: string }>,
-): { fn: RunSubagentFn; calls: ScriptedCall[] } {
+function scriptedRunner(responses: Array<{ role: "planner" | "critic"; text: string }>): {
+  fn: RunSubagentFn;
+  calls: ScriptedCall[];
+} {
   const calls: ScriptedCall[] = [];
   const queue = [...responses];
   const fn: RunSubagentFn = async (opts) => {
@@ -91,8 +93,7 @@ function scriptedRunner(
   return { fn, calls };
 }
 
-const PLAN_BODY =
-  "# Execution Plan\n\n## Summary\nFix the widget.\n\n## Files to change\n- src/widget.ts\n";
+const PLAN_BODY = "# Execution Plan\n\n## Summary\nFix the widget.\n\n## Files to change\n- src/widget.ts\n";
 
 let tmp: string;
 
@@ -159,10 +160,7 @@ describe("parseVerdict", () => {
 
 describe("runPlanning", () => {
   it("planner-only when maxIterations is 1: writes final_plan, transitions to Execution", async () => {
-    const { result, calls, emit } = await setup(
-      [{ role: "planner", text: PLAN_BODY }],
-      { maxIterations: 1 },
-    );
+    const { result, calls, emit } = await setup([{ role: "planner", text: PLAN_BODY }], { maxIterations: 1 });
 
     expect(calls).toHaveLength(1);
     expect(calls[0]?.role).toBe("planner");
@@ -206,9 +204,8 @@ describe("runPlanning", () => {
     expect(result.iterations).toBe(0);
   });
 
-  it("planner → critic Approved-with-comments: appends Points to consider", async () => {
-    const critique =
-      "# Critique\n## Findings\n- nit: rename foo.\n\nVerdict: Approved with comments\n";
+  it("planner → critic Approved-with-comments: appends Points to consider in current, strips it from final", async () => {
+    const critique = "# Critique\n## Findings\n- nit: rename foo.\n\nVerdict: Approved with comments\n";
     const { result, calls } = await setup([
       { role: "planner", text: PLAN_BODY },
       { role: "critic", text: critique },
@@ -216,19 +213,26 @@ describe("runPlanning", () => {
 
     expect(calls.map((c) => c.role)).toEqual(["planner", "critic"]);
 
+    // current_plan.md keeps the appendix — the next planner round (if there
+    // were one) needs the critic's nits as feedback.
+    const current = await readFile(join(tmp, CURRENT_PLAN_FILE), "utf8");
+    expect(current).toContain(PLAN_BODY.trimEnd());
+    expect(current).toContain("## Points to consider");
+    expect(current).toContain("nit: rename foo");
+
+    // final_plan.md is sanitised: no critic appendix, no critic content.
     const final = await readFile(join(tmp, FINAL_PLAN_FILE), "utf8");
     expect(final).toContain(PLAN_BODY.trimEnd());
-    expect(final).toContain("## Points to consider");
-    expect(final).toContain("nit: rename foo");
-    expect(final).not.toContain("## Execution Plan review");
+    expect(final).not.toContain("Points to consider");
+    expect(final).not.toContain("nit: rename foo");
+    expect(final).not.toContain("Execution Plan review");
 
     expect(result.mode).toBe("Execution");
   });
 
   it("planner → critic-changes → planner → critic-approved: re-plans with feedback", async () => {
     const REVISED_PLAN = "# Execution Plan\n\n## Summary\nFix v2.\n";
-    const critique1 =
-      "# Critique\n## Findings\n- missing test plan.\n\nVerdict: Request changes\n";
+    const critique1 = "# Critique\n## Findings\n- missing test plan.\n\nVerdict: Request changes\n";
     const { result, calls, emit } = await setup([
       { role: "planner", text: PLAN_BODY },
       { role: "critic", text: critique1 },
@@ -271,10 +275,16 @@ describe("runPlanning", () => {
     const persisted = await readState(tmp);
     expect(persisted.mode).toBe("Execution");
 
+    // current_plan.md retains the last critic's feedback — it is the input
+    // the *next* planner round would have consumed if we had one.
+    const current = await readFile(join(tmp, CURRENT_PLAN_FILE), "utf8");
+    expect(current).toContain(REVISED.trimEnd());
+    expect(current).toContain("## Execution Plan review");
+
+    // final_plan.md is sanitised — appendix dropped before it ships.
     const final = await readFile(join(tmp, FINAL_PLAN_FILE), "utf8");
     expect(final).toContain(REVISED.trimEnd());
-    // The last critic round's review is appended to current_plan as feedback
-    expect(final).toContain("## Execution Plan review");
+    expect(final).not.toContain("Execution Plan review");
 
     expect(result.iterations).toBe(0);
     expect(result.mode).toBe("Execution");
@@ -296,6 +306,57 @@ describe("runPlanning", () => {
     expect(calls.map((c) => c.role)).toEqual(["planner", "critic", "planner"]);
     const warnings = emit.mock.calls.filter((c) => c[1] === "WARN").map((c) => String(c[3]));
     expect(warnings.some((m) => m.includes("did not emit a parseable Verdict"))).toBe(true);
+  });
+
+  it("sanitisePlan: leaves a clean plan unchanged (modulo trailing whitespace)", () => {
+    const emit = vi.fn();
+    const out = sanitisePlan(PLAN_BODY, emit, 1);
+    expect(out).toBe(PLAN_BODY.trimEnd());
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("sanitisePlan: strips planner preamble before # Execution Plan", () => {
+    const emit = vi.fn();
+    const polluted =
+      "I don't see an `ExitPlanMode` tool available, so I can't call it directly.\n" +
+      "The plan file is written at /tmp/plan.md.\n\n" +
+      PLAN_BODY;
+    const out = sanitisePlan(polluted, emit, 1);
+    expect(out.startsWith("# Execution Plan")).toBe(true);
+    expect(out).not.toContain("ExitPlanMode");
+    expect(out).not.toContain("plan file is written at");
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("sanitisePlan: drops `## Points to consider` and everything after", () => {
+    const emit = vi.fn();
+    const withAppendix = `${PLAN_BODY.trimEnd()}\n\n## Points to consider\n\n# Critique\n## Findings\n- nit: rename foo.\n`;
+    const out = sanitisePlan(withAppendix, emit, 1);
+    expect(out).toContain("# Execution Plan");
+    expect(out).not.toContain("Points to consider");
+    expect(out).not.toContain("Critique");
+    expect(out).not.toContain("nit: rename foo");
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("sanitisePlan: drops `## Execution Plan review` and everything after", () => {
+    const emit = vi.fn();
+    const withReview = `${PLAN_BODY.trimEnd()}\n\n## Execution Plan review\n\n- needs more tests\n`;
+    const out = sanitisePlan(withReview, emit, 1);
+    expect(out).toContain("# Execution Plan");
+    expect(out).not.toContain("Execution Plan review");
+    expect(out).not.toContain("needs more tests");
+  });
+
+  it("sanitisePlan: missing # Execution Plan heading emits a WARN and passes through", () => {
+    const emit = vi.fn();
+    const noHeading = "## Summary\nthis plan forgot its top-level heading\n";
+    const out = sanitisePlan(noHeading, emit, 99);
+    expect(out).toBe(noHeading.trimEnd());
+    const warnCalls = emit.mock.calls.filter((c) => c[1] === "WARN");
+    expect(warnCalls).toHaveLength(1);
+    expect(warnCalls[0]?.[2]).toBe(99);
+    expect(String(warnCalls[0]?.[3])).toContain("Execution Plan");
   });
 
   it("persists state after every iteration", async () => {

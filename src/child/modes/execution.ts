@@ -40,10 +40,13 @@
  *
  *   - Best-effort `npm run check` if the worktree's package.json
  *     defines that script. Failures are logged but do not abort.
+ *   - The `prwriter` subagent runs once with the issue, the approved
+ *     plan, the executor's final summary, and a diff stat, and produces
+ *     the PR body. Its output replaces the body verbatim.
  *   - Squash via `git reset --soft <merge-base>` + `git commit`. The
  *     merge-base is computed against `config.prBaseBranch`. The commit
- *     message uses the issue title; the body starts with `Fixes #N`
- *     followed by a digest of the approved plan.
+ *     message uses the issue title and the prwriter's body so the
+ *     squashed commit and the PR stay in sync.
  *   - `git push -u origin <branch>` and `gh pr create`.
  *   - State transitions to `status = "Complete"`.
  */
@@ -71,9 +74,6 @@ export const FINAL_PLAN_FILE = join(".minesweeper", "final_plan.md");
  * findings are passed back to the executor.
  */
 export const REVIEW_COMMENTS_FILE = join(".minesweeper", "review_comments.md");
-
-/** Max characters of the plan included verbatim in the squashed commit body. */
-const PLAN_DIGEST_LIMIT = 1500;
 
 /** Signals the executor's first invocation in this mode (no prior review). */
 const FIRST_ROUND = Symbol("first round");
@@ -122,6 +122,8 @@ export interface GitOps {
   mergeBase(cwd: string, base: string): Promise<string>;
   /** `git diff base..HEAD`. Stdout returned verbatim. */
   diff(cwd: string, base: string): Promise<string>;
+  /** `git diff --stat base..HEAD`. Stdout returned verbatim. */
+  diffStat(cwd: string, base: string): Promise<string>;
   /** `git log --oneline base..HEAD`. Stdout returned verbatim. */
   log(cwd: string, base: string): Promise<string>;
   /** `git reset --soft <ref>`. Used to collapse the branch before squashing. */
@@ -148,6 +150,10 @@ export const defaultGit: GitOps = {
   },
   async diff(cwd, base) {
     const r = await execa("git", ["diff", `${base}..HEAD`], { cwd });
+    return r.stdout;
+  },
+  async diffStat(cwd, base) {
+    const r = await execa("git", ["diff", "--stat", `${base}..HEAD`], { cwd });
     return r.stdout;
   },
   async log(cwd, base) {
@@ -225,14 +231,14 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
 
   let approved = false;
   let lastVerdict: ReviewerVerdict | null = null;
+  let lastExecutorSummary = "";
 
   while (state.iterations < state.maxIterations) {
     if (state.status === "Writing" || state.status === "FixingReviewComments") {
-      const reviewComments =
-        state.status === "Writing" ? FIRST_ROUND : await readReviewComments(cwd);
+      const reviewComments = state.status === "Writing" ? FIRST_ROUND : await readReviewComments(cwd);
       const userPrompt = executorPromptFor(finalPlan, reviewComments);
       const headBefore = await git.headSha(cwd);
-      await runSubagent({
+      const executorResult = await runSubagent({
         role: "executor",
         config,
         userPrompt,
@@ -240,6 +246,7 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
         iteration: state.iterations + 1,
         cwd,
       });
+      lastExecutorSummary = executorResult.finalText;
       const headAfter = await git.headSha(cwd);
       if (headBefore === headAfter) {
         emit(
@@ -302,18 +309,30 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
 
   const ahead = await git.commitsAhead(cwd, baseBranch);
   if (ahead === 0) {
-    throw new Error(
-      `execution: cannot finalise — branch ${branch} has no commits ahead of ${baseBranch}`,
-    );
+    throw new Error(`execution: cannot finalise — branch ${branch} has no commits ahead of ${baseBranch}`);
   }
 
   const mergeBaseSha = await git.mergeBase(cwd, baseBranch);
-  const { title, body } = composePrMessage(issue, finalPlan);
+  const log = await git.log(cwd, baseBranch);
+  const stat = await git.diffStat(cwd, baseBranch);
+  const prBody = await runPrWriter({
+    runSubagent,
+    config,
+    issue,
+    plan: finalPlan,
+    executorSummary: lastExecutorSummary,
+    log,
+    diffStat: stat,
+    cwd,
+    issueNumber,
+    iteration: state.iterations + 1,
+  });
+  const title = issue.title.trim();
   await git.resetSoft(cwd, mergeBaseSha);
-  await git.commit(cwd, buildCommitMessage(title, body));
+  await git.commit(cwd, buildCommitMessage(title, prBody));
   await git.pushBranch(cwd, branch);
 
-  const pr = await gh.createPr({ base: baseBranch, head: branch, title, body, cwd });
+  const pr = await gh.createPr({ base: baseBranch, head: branch, title, body: prBody, cwd });
   emit("daemon", "SHIP", issueNumber, `opened PR #${pr.number}: ${pr.url}`);
 
   return writeState(cwd, { ...state, status: "Complete" });
@@ -324,9 +343,7 @@ async function readFinalPlan(path: string): Promise<string> {
     return await fs.readFile(path, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error(
-        `execution: ${path} not found — planning mode must run first`,
-      );
+      throw new Error(`execution: ${path} not found — planning mode must run first`);
     }
     throw err;
   }
@@ -357,12 +374,7 @@ async function runCheckHookSafely(
   try {
     await hook(cwd);
   } catch (err) {
-    emit(
-      "executor",
-      "WARN",
-      issueNumber,
-      `check hook failed (best-effort, continuing): ${(err as Error).message}`,
-    );
+    emit("executor", "WARN", issueNumber, `check hook failed (best-effort, continuing): ${(err as Error).message}`);
   }
 }
 
@@ -394,9 +406,7 @@ async function defaultRunCheckHook(cwd: string): Promise<void> {
 function executorPromptFor(plan: string, reviewComments: string | null | typeof FIRST_ROUND): string {
   const base = ["# Execution Plan", "", plan.trimEnd(), ""];
   if (reviewComments === FIRST_ROUND || reviewComments === null) {
-    base.push(
-      "Implement the plan as described. End your work with a `git commit -m \"...\"` covering all changes.",
-    );
+    base.push('Implement the plan as described. End your work with a `git commit -m "..."` covering all changes.');
     return base.join("\n");
   }
   return [
@@ -409,12 +419,7 @@ function executorPromptFor(plan: string, reviewComments: string | null | typeof 
   ].join("\n");
 }
 
-function reviewerPromptFor(
-  issue: Issue,
-  plan: string,
-  diff: string,
-  log: string,
-): string {
+function reviewerPromptFor(issue: Issue, plan: string, diff: string, log: string): string {
   return [
     formatIssue(issue),
     "",
@@ -451,16 +456,84 @@ function formatIssue(issue: Issue): string {
   ].join("\n");
 }
 
-function composePrMessage(issue: Issue, plan: string): { title: string; body: string } {
-  const title = issue.title.trim();
-  const body = [`Fixes #${issue.number}.`, "", "## Approved plan", "", digestPlan(plan)].join("\n");
-  return { title, body };
+interface RunPrWriterOptions {
+  runSubagent: RunSubagentFn;
+  config: Config;
+  issue: Issue;
+  plan: string;
+  executorSummary: string;
+  log: string;
+  diffStat: string;
+  cwd: string;
+  issueNumber: number;
+  iteration: number;
 }
 
-function digestPlan(plan: string): string {
-  const trimmed = plan.trim();
-  if (trimmed.length <= PLAN_DIGEST_LIMIT) return trimmed;
-  return `${trimmed.slice(0, PLAN_DIGEST_LIMIT)}\n\n…(plan truncated; full plan in .minesweeper/final_plan.md)`;
+/**
+ * Run the `prwriter` role to produce the PR body. The subagent's
+ * `finalText` is normalised (trimmed, trailing newline) and the
+ * mandatory `Fixes #<N>` line is enforced — appended if missing,
+ * deduplicated if the role emitted more than one. The PR title is the
+ * issue title; only the body is generated.
+ */
+async function runPrWriter(opts: RunPrWriterOptions): Promise<string> {
+  const result = await opts.runSubagent({
+    role: "prwriter",
+    config: opts.config,
+    userPrompt: prWriterPromptFor(opts.issue, opts.plan, opts.executorSummary, opts.log, opts.diffStat),
+    issueNumber: opts.issueNumber,
+    iteration: opts.iteration,
+    cwd: opts.cwd,
+  });
+  return normalisePrBody(result.finalText, opts.issue.number);
+}
+
+function prWriterPromptFor(issue: Issue, plan: string, executorSummary: string, log: string, diffStat: string): string {
+  return [
+    formatIssue(issue),
+    "",
+    "# Approved plan",
+    "",
+    plan.trimEnd(),
+    "",
+    "# Executor summary",
+    "",
+    executorSummary.trim() || "(no summary returned)",
+    "",
+    "# Commits on this branch (oldest → newest)",
+    "",
+    "```",
+    log.trim() || "(no commits)",
+    "```",
+    "",
+    "# Diff stat",
+    "",
+    "```",
+    diffStat.trim() || "(empty)",
+    "```",
+    "",
+    "Write the PR body now, following the format in your system prompt.",
+  ].join("\n");
+}
+
+/**
+ * Matches a `Fixes #<number>` line (also `closes`/`resolves`, the GitHub
+ * autoclose keywords). Anchored to a line, case-insensitive, tolerates
+ * a trailing period or whitespace. We use this both to detect whether
+ * the prwriter emitted the line and to strip duplicates.
+ */
+const FIXES_LINE_RE = /^[ \t]*(fixes|closes|resolves)[ \t]+#\d+\s*\.?[ \t]*$/gim;
+
+function normalisePrBody(raw: string, issueNumber: number): string {
+  const trimmed = raw.replace(/^\s+|\s+$/g, "");
+  if (trimmed.length === 0) {
+    return `Fixes #${issueNumber}\n`;
+  }
+  const withoutFixes = trimmed
+    .replace(FIXES_LINE_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+  return `${withoutFixes}\n\nFixes #${issueNumber}\n`;
 }
 
 function buildCommitMessage(title: string, body: string): string {

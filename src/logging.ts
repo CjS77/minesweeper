@@ -12,6 +12,7 @@ export const ROLES = [
   "refiner",
   "executor",
   "reviewer",
+  "prwriter",
 ] as const;
 export type Role = (typeof ROLES)[number];
 
@@ -35,6 +36,7 @@ export const ROLE_COLOUR: Record<Role, (s: string) => string> = {
   refiner: chalk.yellow,
   executor: chalk.blue,
   reviewer: chalk.magenta,
+  prwriter: chalk.green,
 };
 
 const LEVEL_TO_PINO: Record<Level, "info" | "warn" | "error"> = {
@@ -71,13 +73,7 @@ export interface SpinnerHandle {
 }
 
 export interface Logger {
-  event(
-    role: Role,
-    level: Level,
-    issueNumber: number | null,
-    message: string,
-    meta?: Record<string, unknown>,
-  ): void;
+  event(role: Role, level: Level, issueNumber: number | null, message: string, meta?: Record<string, unknown>): void;
   spinner(role: Role, issueNumber: number | null, message: string): SpinnerHandle;
   formatLine(role: Role, level: Level, issueNumber: number | null, message: string): string;
   filePath: string;
@@ -180,11 +176,7 @@ export function event(
   ensureActive().event(role, level, issueNumber, message, meta);
 }
 
-export function spinner(
-  role: Role,
-  issueNumber: number | null,
-  message: string,
-): SpinnerHandle {
+export function spinner(role: Role, issueNumber: number | null, message: string): SpinnerHandle {
   return ensureActive().spinner(role, issueNumber, message);
 }
 
@@ -206,12 +198,7 @@ function isTty(stream: NodeJS.WritableStream): boolean {
   return Boolean((stream as Partial<NodeJS.WriteStream>).isTTY);
 }
 
-function formatLineWithoutSymbol(
-  role: Role,
-  issueNumber: number | null,
-  message: string,
-  when: Date,
-): string {
+function formatLineWithoutSymbol(role: Role, issueNumber: number | null, message: string, when: Date): string {
   const time = formatTime(when);
   const role_coloured = ROLE_COLOUR[role](role.toUpperCase());
   const issuePart = issueNumber === null ? "" : ` #${issueNumber}`;

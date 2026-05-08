@@ -61,8 +61,7 @@ export type Verdict = "Approved" | "Approved with comments" | "Request changes";
  * lines). The longer alternative is listed first so alternation prefers
  * "approved with comments" over "approved".
  */
-const VERDICT_RE =
-  /^[ \t]*verdict[ \t]*:[ \t]*(approved with comments|approved|request changes)[ \t]*$/gim;
+const VERDICT_RE = /^[ \t]*verdict[ \t]*:[ \t]*(approved with comments|approved|request changes)[ \t]*$/gim;
 
 /**
  * Parse a critic response and return the **last** verdict line found,
@@ -117,12 +116,7 @@ export async function runPlanning(deps: PlanningDeps): Promise<State> {
   let state = deps.state;
   const issueNumber = state.issueNumber;
 
-  emit(
-    "planner",
-    "WORK",
-    issueNumber,
-    `planning starting at iteration ${state.iterations + 1}/${state.maxIterations}`,
-  );
+  emit("planner", "WORK", issueNumber, `planning starting at iteration ${state.iterations + 1}/${state.maxIterations}`);
 
   const issue = await gh.getIssue(issueNumber, { cwd });
   let currentPlan = await readFileIfExists(join(cwd, CURRENT_PLAN_FILE));
@@ -163,12 +157,7 @@ export async function runPlanning(deps: PlanningDeps): Promise<State> {
     const parsed = parseVerdict(result.finalText);
     const verdict: Verdict = parsed ?? "Request changes";
     if (parsed === null) {
-      emit(
-        "critic",
-        "WARN",
-        issueNumber,
-        "critic did not emit a parseable Verdict line; treating as Request changes",
-      );
+      emit("critic", "WARN", issueNumber, "critic did not emit a parseable Verdict line; treating as Request changes");
     } else {
       emit("critic", "INFO", issueNumber, `verdict: ${verdict}`);
     }
@@ -205,7 +194,8 @@ export async function runPlanning(deps: PlanningDeps): Promise<State> {
     throw new Error("planning: completed without ever producing a plan");
   }
 
-  await writePlanFile(join(cwd, FINAL_PLAN_FILE), currentPlan);
+  const sanitised = sanitisePlan(currentPlan, emit, issueNumber);
+  await writePlanFile(join(cwd, FINAL_PLAN_FILE), sanitised);
 
   const next = await writeState(cwd, {
     ...state,
@@ -240,6 +230,57 @@ function appendSection(plan: string, heading: string, body: string): string {
   return `${trimmedPlan}\n\n## ${heading}\n\n${trimmedBody}\n`;
 }
 
+/**
+ * Matches the canonical opening heading of a planner's output. Anchored
+ * to the start of a line, case-insensitive, tolerates leading whitespace
+ * and a trailing colon (some models add one).
+ */
+const EXECUTION_PLAN_HEADING_RE = /^[ \t]*#[ \t]+execution[ \t]+plan\b[ \t]*:?[ \t]*$/im;
+
+/**
+ * Matches the headings the loop appends to feed the *next* planner round
+ * (or to surface critic nits to the executor). Both belong inside the
+ * loop's working file, not in the post-loop final plan, so we cut from
+ * either heading onwards.
+ */
+const APPENDED_SECTION_HEADING_RE = /^[ \t]*##[ \t]+(points to consider|execution plan review)\b/im;
+
+/**
+ * Strip planner preamble and critic appendices from the post-loop plan
+ * before it lands in `final_plan.md`. The on-disk `current_plan.md` is
+ * left as-is — the appendix is consumed by the next planner round if the
+ * loop continues. This helper only runs once, on loop exit.
+ *
+ * Behaviour:
+ *
+ *   - If `# Execution Plan` is found, drop everything before it.
+ *   - If a `## Points to consider` or `## Execution Plan review` heading
+ *     is found, drop everything from that heading onwards.
+ *   - If `# Execution Plan` is not present at all, log a WARN via `emit`
+ *     and return the input unchanged so we never lose data — the
+ *     downstream prwriter (and any debugging human) can still recover.
+ */
+export function sanitisePlan(plan: string, emit: Logger["event"], issueNumber: number): string {
+  const headingMatch = EXECUTION_PLAN_HEADING_RE.exec(plan);
+  let withoutPreamble: string;
+  if (headingMatch) {
+    withoutPreamble = plan.slice(headingMatch.index);
+  } else {
+    emit(
+      "planner",
+      "WARN",
+      issueNumber,
+      "final plan does not contain a `# Execution Plan` heading; passing through verbatim",
+    );
+    withoutPreamble = plan;
+  }
+
+  const appendixMatch = APPENDED_SECTION_HEADING_RE.exec(withoutPreamble);
+  const trimmed = appendixMatch ? withoutPreamble.slice(0, appendixMatch.index) : withoutPreamble;
+
+  return trimmed.replace(/\s+$/, "");
+}
+
 function plannerPromptFor(issue: Issue, annotatedPlan: string | null): string {
   const issueBlock = formatIssue(issue);
   if (annotatedPlan === null) {
@@ -260,13 +301,7 @@ function plannerPromptFor(issue: Issue, annotatedPlan: string | null): string {
 }
 
 function criticPromptFor(issue: Issue, currentPlan: string): string {
-  return [
-    formatIssue(issue),
-    "",
-    "Review the following execution plan.",
-    "",
-    currentPlan,
-  ].join("\n");
+  return [formatIssue(issue), "", "Review the following execution plan.", "", currentPlan].join("\n");
 }
 
 function formatIssue(issue: Issue): string {

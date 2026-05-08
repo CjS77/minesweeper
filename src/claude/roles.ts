@@ -1,13 +1,6 @@
 import type { Config } from "../config.js";
 
-export const ROLE_NAMES = [
-  "planner",
-  "critic",
-  "assessor",
-  "refiner",
-  "executor",
-  "reviewer",
-] as const;
+export const ROLE_NAMES = ["planner", "critic", "assessor", "refiner", "executor", "reviewer", "prwriter"] as const;
 
 export type RoleName = (typeof ROLE_NAMES)[number];
 
@@ -72,6 +65,13 @@ export const ROLES: Record<RoleName, Role> = {
     name: "reviewer",
     modelEnvVar: "reviewAgent",
     systemPromptPath: "prompts/reviewer.md",
+    allowedTools: ["Read", "Grep", "Glob", "Bash"],
+    permissionMode: "plan",
+  },
+  prwriter: {
+    name: "prwriter",
+    modelEnvVar: "reviewAgent",
+    systemPromptPath: "prompts/prwriter.md",
     allowedTools: ["Read", "Grep", "Glob", "Bash"],
     permissionMode: "plan",
   },
