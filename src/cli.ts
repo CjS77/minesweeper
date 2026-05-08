@@ -12,6 +12,7 @@ import {
   runPollLoop,
   type Supervisor,
 } from "./daemon/index.js";
+import { handleChild } from "./child/handler.js";
 import { listOrphans } from "./worktree.js";
 
 const program = new Command();
@@ -37,13 +38,9 @@ program
   .command("handle")
   .argument("<issue>", "issue number to handle (cwd must be the issue's worktree)")
   .description("Child worker entry: drive the state machine for a single issue from the worktree.")
-  .action((issue: string) => {
-    event(
-      "daemon",
-      "INFO",
-      Number(issue),
-      `minesweeper handle — child handler not yet implemented`,
-    );
+  .action(async (issue: string) => {
+    const issueNumber = parseIssueArg(issue);
+    await handleChild({ issueNumber });
   });
 
 program
@@ -117,6 +114,14 @@ async function recoverOrphans(supervisor: Supervisor, worktreesRoot: string): Pr
     }
     await supervisor.resume({ path: orphan.path, state: orphan.state });
   }
+}
+
+function parseIssueArg(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`invalid issue number: ${JSON.stringify(raw)}`);
+  }
+  return n;
 }
 
 function waitForShutdown(): Promise<void> {

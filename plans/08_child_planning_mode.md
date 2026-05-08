@@ -1,5 +1,5 @@
 # 08 — Child handler + planning mode
-## Status: Not started
+## Status: done
 
 ## Context
 This plan implements the child-side entry point and the first state-machine

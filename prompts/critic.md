@@ -43,22 +43,27 @@ Return a single Markdown document. The first heading must be
 
 ```
 # Critique
-## Verdict
 ## Findings
 ## Suggested wording for the planner
 ```
 
-`## Verdict` must be **exactly one** of these three lines, on a line by
-itself, no other formatting:
+Then, **on the very last line of your response**, emit the verdict in
+this exact form:
 
-- `Approved`
-- `Approved, with comments`
-- `Request changes`
+```
+Verdict: <one of: Approved | Approved with comments | Request changes>
+```
 
-Use `Approved` only when you have no findings. Use
-`Approved, with comments` for nits that the executor should bear in mind
-but that don't require a re-plan. Use `Request changes` when you found a
-correctness, scope, safety, or verifiability problem.
+The orchestrator parses that line literally. Rules:
+
+- The line must be on its own, with nothing after it (no trailing
+  punctuation, no quotes, no further text).
+- Use `Approved` only when you have no findings. Use
+  `Approved with comments` for nits that the executor should bear in
+  mind but that don't require a re-plan. Use `Request changes` when
+  you found a correctness, scope, safety, or verifiability problem.
+- If your verdict line does not match this format the orchestrator
+  will treat the response as `Request changes` and log a warning.
 
 ## What you must NOT do
 
