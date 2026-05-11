@@ -178,7 +178,7 @@ describe("archiveWorktreeState", () => {
 
 describe("removeWorktree", () => {
   it("removes the worktree directory and deregisters it from the parent repo", async () => {
-    const { path: wtPath } = await addWorktree({
+    const { path: wtPath, branch } = await addWorktree({
       repoRoot,
       worktreesRoot,
       branchName: "to-remove",
@@ -189,10 +189,12 @@ describe("removeWorktree", () => {
     await expect(fs.stat(wtPath)).rejects.toThrow();
     const list = await execa("git", ["worktree", "list"], { cwd: repoRoot });
     expect(list.stdout).not.toContain(wtPath);
+    const branches = await execa("git", ["branch", "--list", branch], { cwd: repoRoot });
+    expect(branches.stdout.trim()).toBe("");
   });
 
   it("removes a worktree even when uncommitted files are present", async () => {
-    const { path: wtPath } = await addWorktree({
+    const { path: wtPath, branch } = await addWorktree({
       repoRoot,
       worktreesRoot,
       branchName: "dirty",
@@ -202,6 +204,8 @@ describe("removeWorktree", () => {
     await removeWorktree(wtPath);
 
     await expect(fs.stat(wtPath)).rejects.toThrow();
+    const branches = await execa("git", ["branch", "--list", branch], { cwd: repoRoot });
+    expect(branches.stdout.trim()).toBe("");
   });
 });
 
