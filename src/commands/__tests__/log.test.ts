@@ -255,17 +255,30 @@ describe("runLogViewCommand", () => {
     expect(out.match(/🏛️ SYSTEM/g)?.length).toBe(3);
   });
 
-  it("with --issue + regex, filters basenames", () => {
+  it("with --issue + substring, filters basenames", () => {
     seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl"]);
 
     const { stream, text } = makeStdout();
-    runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: stream, name: "^critic" });
+    runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: stream, name: "critic" });
     const out = strip(text());
 
     const banners = out.split("\n").filter((l) => /═{6} .+\.jsonl {2}\(/.test(l));
     // Only one file matches and it is the only file, so no banners (single-file path).
     expect(banners).toHaveLength(0);
     expect(out).toMatch(/🏛️ SYSTEM/);
+  });
+
+  it("with --issue, a bare role name matches every transcript with that prefix", () => {
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "planner-02.jsonl", "critic-01.jsonl"]);
+
+    const { stream, text } = makeStdout();
+    runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: stream, name: "planner" });
+    const out = strip(text());
+
+    const banners = out.split("\n").filter((l) => /═{6} .+\.jsonl {2}\(/.test(l));
+    expect(banners).toHaveLength(2);
+    expect(banners.every((l) => l.includes("planner-"))).toBe(true);
+    expect(banners.some((l) => l.includes("critic-"))).toBe(false);
   });
 
   it("with --issue, throws when no matching transcripts exist", () => {
@@ -275,11 +288,18 @@ describe("runLogViewCommand", () => {
     );
   });
 
-  it("with --issue, throws an explanatory error when regex matches nothing", () => {
+  it("with --issue, throws an explanatory error when the substring matches nothing", () => {
     seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl"]);
     expect(() =>
-      runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: makeStdout().stream, name: "^reviewer" }),
-    ).toThrow(/no transcripts for issue 5 match/);
+      runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: makeStdout().stream, name: "reviewer" }),
+    ).toThrow(/no transcripts for issue 5 match "reviewer"/);
+  });
+
+  it("with --issue, treats regex meta-characters as literals and reports no match", () => {
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl"]);
+    expect(() =>
+      runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: makeStdout().stream, name: "(.*)" }),
+    ).toThrow(/no transcripts for issue 5 match "\(\.\*\)"/);
   });
 
   it("with --issue, ignores worktrees whose state.json belongs to other issues", () => {
@@ -305,9 +325,9 @@ describe("findTranscriptsForIssue", () => {
     expect(paths).toEqual([...paths].sort());
   });
 
-  it("filters by basename regex", () => {
+  it("filters by basename substring", () => {
     seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl"]);
-    const paths = findTranscriptsForIssue(5, tmp, /^critic/);
+    const paths = findTranscriptsForIssue(5, tmp, "critic");
     expect(paths).toHaveLength(1);
     expect(paths[0]).toMatch(/critic-01\.jsonl$/);
   });

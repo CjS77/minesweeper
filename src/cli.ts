@@ -107,7 +107,7 @@ const log = program.command("log").description("Inspect Minesweeper log and tran
 
 log
   .command("view")
-  .argument("[name]", "transcript name (e.g. planner-01), .jsonl path, or — with --issue — a basename regex filter")
+  .argument("[name]", "transcript name (e.g. planner-01), .jsonl path, or — with --issue — a basename substring filter")
   .description("Pretty-print a JSONL transcript captured during a planning or execution run.")
   .option("--issue <n>", "issue number; finds matching transcripts under MINESWEEPER_WORKTREE_PATH")
   .option("--no-color", "disable ANSI colour escapes")
