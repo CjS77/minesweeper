@@ -53,6 +53,13 @@ export type ConfigSources = Record<string, ConfigFieldSource>;
 
 export const ConfigSchema = z.object({
   defaultEligible: z.boolean(),
+  /**
+   * Whether code-scanning and secret-scanning alerts are auto-eligible.
+   * Sits at the same precedence as `alwaysFixLabel` for issues — when
+   * `true`, alerts skip the screener; when `false`, alerts are hard-
+   * ineligible (the daemon also stops calling the alert APIs).
+   */
+  alertsEligible: z.boolean(),
   alwaysFixLabel: z.string().min(1),
   tryFixLabel: z.string().min(1),
   neverFixLabel: z.string().min(1),
@@ -317,6 +324,7 @@ export function loadConfig(
       file.defaultEligible,
       false,
     ),
+    alertsEligible: readBool(env, "MINESWEEPER_ALERTS_ELIGIBLE", repoFile.alertsEligible, file.alertsEligible, true),
     alwaysFixLabel: readString(
       env,
       "MINESWEEPER_ALWAYS_FIX_LABEL",

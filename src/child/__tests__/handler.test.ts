@@ -126,7 +126,27 @@ describe("handleChild", () => {
         runPlanning: vi.fn(),
         emit: vi.fn(),
       }),
-    ).rejects.toThrow(/issue #99 but child invoked with #42/);
+    ).rejects.toThrow(/issue #99 but child invoked with issue #42/);
+  });
+
+  it("throws when state.json's kind doesn't match the CLI argument", async () => {
+    await initState(tmp, "Planning", {
+      kind: "codeScanningAlert",
+      issueNumber: 5,
+      branchName: "minesweeper-codeScanningAlert0005",
+      maxIterations: 2,
+    });
+
+    await expect(
+      handleChild({
+        issueNumber: 5,
+        kind: "issue",
+        cwd: tmp,
+        loadConfig: () => FAKE_CONFIG,
+        runPlanning: vi.fn(),
+        emit: vi.fn(),
+      }),
+    ).rejects.toThrow(/codeScanningAlert #5 but child invoked with issue #5/);
   });
 
   it("dispatches Execution mode to runExecution and returns its result", async () => {

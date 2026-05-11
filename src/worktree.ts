@@ -14,7 +14,14 @@
 import { promises as fs, type Dirent } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { execa } from "execa";
-import { STATE_DIR, STATE_FILE, StateSchema, migrateIfNeeded, type State } from "./child/state.js";
+import {
+  STATE_DIR,
+  STATE_FILE,
+  StateSchema,
+  migrateIfNeeded,
+  type State,
+  type WorkItemKind,
+} from "./child/state.js";
 
 export interface AddWorktreeOptions {
   /** Absolute path to the main repo (the one that owns the worktrees). */
@@ -35,10 +42,16 @@ export interface AddedWorktree {
 export interface ArchiveWorktreeStateOptions {
   /** Absolute path of the worktree whose `.minesweeper/` directory will be archived. */
   worktreePath: string;
-  /** Directory under which `${issueNumber}-${ISO}` archive subdirs are created. */
+  /** Directory under which `${kind}${issueNumber}-${ISO}` archive subdirs are created. */
   archiveRoot: string;
-  /** Issue number used to namespace the archive subdir. */
+  /** Issue / alert number used to namespace the archive subdir. */
   issueNumber: number;
+  /**
+   * Work-item kind. Defaults to `"issue"` for back-compat. Non-issue kinds
+   * are prefixed onto the archive directory name so issue #N and alert #N
+   * never collide on disk.
+   */
+  kind?: WorkItemKind;
 }
 
 export interface OrphanedWorktree {
@@ -104,7 +117,9 @@ export async function addWorktree(opts: AddWorktreeOptions): Promise<AddedWorktr
  * remove — the inverse order would delete the source the archive copies from.
  */
 export async function archiveWorktreeState(opts: ArchiveWorktreeStateOptions): Promise<string> {
-  const archiveDir = join(opts.archiveRoot, `${opts.issueNumber}-${new Date().toISOString()}`);
+  const kind = opts.kind ?? "issue";
+  const prefix = kind === "issue" ? "" : `${kind}-`;
+  const archiveDir = join(opts.archiveRoot, `${prefix}${opts.issueNumber}-${new Date().toISOString()}`);
   await fs.mkdir(opts.archiveRoot, { recursive: true });
 
   const sourceDir = join(opts.worktreePath, STATE_DIR);

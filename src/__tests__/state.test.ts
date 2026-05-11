@@ -33,10 +33,21 @@ describe("initState", () => {
     expect(state.assessmentReason).toBeNull();
     expect(state.prNumber).toBeNull();
     expect(state.prFeedbackProcessedAt).toBeNull();
-    expect(state.version).toBe(3);
+    expect(state.kind).toBe("issue");
+    expect(state.version).toBe(4);
 
     const onDisk = JSON.parse(await readFile(statePath(tmp), "utf8"));
     expect(onDisk).toEqual(state);
+  });
+
+  it("honours an explicit kind for alert-backed worktrees", async () => {
+    const state = await initState(tmp, "Planning", {
+      kind: "codeScanningAlert",
+      issueNumber: 7,
+      branchName: "repo-codeScanningAlert0007",
+      maxIterations: 3,
+    });
+    expect(state.kind).toBe("codeScanningAlert");
   });
 
   it("uses 'InProgress' status for AddressingPRFeedback mode and initialises PR fields to null", async () => {
@@ -103,7 +114,7 @@ describe("readState / writeState", () => {
     await expect(readState(tmp)).rejects.toThrow(/not valid JSON/);
   });
 
-  it("migrates v1 state on read by chaining v1 → v2 → v3 with new fields defaulted to null", async () => {
+  it("migrates v1 state on read by chaining v1 → v2 → v3 → v4 with new fields defaulted", async () => {
     const v1 = {
       version: 1,
       issueNumber: 5,
@@ -120,15 +131,16 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v1));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(3);
+    expect(loaded.version).toBe(4);
     expect(loaded.assessmentReason).toBeNull();
     expect(loaded.prNumber).toBeNull();
     expect(loaded.prFeedbackProcessedAt).toBeNull();
+    expect(loaded.kind).toBe("issue");
     expect(loaded.issueNumber).toBe(5);
     expect(loaded.mode).toBe("Planning");
   });
 
-  it("migrates v2 state on read by adding prNumber and prFeedbackProcessedAt defaults", async () => {
+  it("migrates v2 state on read by adding prNumber, prFeedbackProcessedAt, and kind defaults", async () => {
     const v2 = {
       version: 2,
       issueNumber: 9,
@@ -146,12 +158,39 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v2));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(3);
+    expect(loaded.version).toBe(4);
     expect(loaded.prNumber).toBeNull();
     expect(loaded.prFeedbackProcessedAt).toBeNull();
+    expect(loaded.kind).toBe("issue");
     expect(loaded.mode).toBe("Execution");
     expect(loaded.status).toBe("Complete");
     expect(loaded.assessment).toBe("Execute");
+  });
+
+  it("migrates v3 state on read by adding kind: 'issue'", async () => {
+    const v3 = {
+      version: 3,
+      issueNumber: 11,
+      branchName: "feat/v3-legacy",
+      mode: "AddressingPRFeedback",
+      status: "InProgress",
+      iterations: 0,
+      maxIterations: 2,
+      assessment: null,
+      assessmentReason: null,
+      prNumber: 42,
+      prFeedbackProcessedAt: "2026-05-02T00:00:00.000Z",
+      startedAt: "2026-05-01T00:00:00.000Z",
+      updatedAt: "2026-05-02T00:00:00.000Z",
+    };
+    await fs.mkdir(join(tmp, ".minesweeper"), { recursive: true });
+    await writeFile(statePath(tmp), JSON.stringify(v3));
+
+    const loaded = await readState(tmp);
+    expect(loaded.version).toBe(4);
+    expect(loaded.kind).toBe("issue");
+    expect(loaded.prNumber).toBe(42);
+    expect(loaded.prFeedbackProcessedAt).toBe("2026-05-02T00:00:00.000Z");
   });
 
   it("exposes migrateIfNeeded for callers that swallow parse errors", () => {
@@ -168,15 +207,17 @@ describe("readState / writeState", () => {
       updatedAt: "2026-05-01T00:00:00.000Z",
     };
     const migrated = migrateIfNeeded(v1) as Record<string, unknown>;
-    expect(migrated["version"]).toBe(3);
+    expect(migrated["version"]).toBe(4);
     expect(migrated["assessmentReason"]).toBeNull();
     expect(migrated["prNumber"]).toBeNull();
     expect(migrated["prFeedbackProcessedAt"]).toBeNull();
+    expect(migrated["kind"]).toBe("issue");
 
     const v2 = { ...v1, version: 2, assessmentReason: null };
     const migrated2 = migrateIfNeeded(v2) as Record<string, unknown>;
-    expect(migrated2["version"]).toBe(3);
+    expect(migrated2["version"]).toBe(4);
     expect(migrated2["prNumber"]).toBeNull();
+    expect(migrated2["kind"]).toBe("issue");
   });
 
   it("rejects writes that violate the schema", async () => {
@@ -230,7 +271,7 @@ describe("atomic writes", () => {
       // Each snapshot must be parseable JSON matching the schema, with no
       // torn payload. JSON.parse would throw on a partial write.
       const parsed = JSON.parse(raw);
-      expect(parsed.version).toBe(3);
+      expect(parsed.version).toBe(4);
       expect(parsed.issueNumber).toBe(99);
       expect(typeof parsed.branchName).toBe("string");
       const branch = parsed.branchName as string;

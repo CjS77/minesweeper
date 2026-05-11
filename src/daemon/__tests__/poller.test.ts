@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../../config.js";
 import type * as ghModule from "../../github/index.js";
-import type { Issue } from "../../github/index.js";
+import type { CodeScanningAlert, Issue, SecretScanningAlert } from "../../github/index.js";
 import { pollOnce, runPollLoop, type PollerDeps } from "../poller.js";
+import { workItemNumber, type WorkItem } from "../../workitem.js";
 
 const config = loadConfig({}, { configFile: null });
 
@@ -20,10 +21,35 @@ function makeIssue(number: number, labels: readonly string[] = []): Issue {
   };
 }
 
-function makeDeps(
-  overrides: Partial<PollerDeps> = {},
-): PollerDeps & { listIssuesMock: ReturnType<typeof vi.fn>; emitMock: ReturnType<typeof vi.fn> } {
+function makeCsa(number: number, state: "open" | "fixed" = "open"): CodeScanningAlert {
+  return {
+    number,
+    state,
+    html_url: `https://github.com/example/repo/security/code-scanning/${number}`,
+    created_at: "2026-01-01T00:00:00Z",
+    rule: { id: "js/test-rule", severity: "warning" },
+  };
+}
+
+function makeSsa(number: number, state: "open" | "resolved" = "open"): SecretScanningAlert {
+  return {
+    number,
+    state,
+    html_url: `https://github.com/example/repo/security/secret-scanning/${number}`,
+    created_at: "2026-01-01T00:00:00Z",
+    secret_type: "generic_token",
+  };
+}
+
+function makeDeps(overrides: Partial<PollerDeps> = {}): PollerDeps & {
+  listIssuesMock: ReturnType<typeof vi.fn>;
+  listCsaMock: ReturnType<typeof vi.fn>;
+  listSsaMock: ReturnType<typeof vi.fn>;
+  emitMock: ReturnType<typeof vi.fn>;
+} {
   const listIssuesMock = vi.fn(async () => [] as Issue[]);
+  const listCsaMock = vi.fn(async () => [] as CodeScanningAlert[]);
+  const listSsaMock = vi.fn(async () => [] as SecretScanningAlert[]);
   const addLabelMock = vi.fn(async () => undefined);
   const commentMock = vi.fn(async () => undefined);
   const emitMock = vi.fn();
@@ -32,11 +58,15 @@ function makeDeps(
     cwd: "/tmp/repo",
     github: {
       listIssues: listIssuesMock as unknown as typeof ghModule.listIssues,
+      listCodeScanningAlerts: listCsaMock as unknown as typeof ghModule.listCodeScanningAlerts,
+      listSecretScanningAlerts: listSsaMock as unknown as typeof ghModule.listSecretScanningAlerts,
       addLabel: addLabelMock as unknown as typeof ghModule.addLabel,
       comment: commentMock as unknown as typeof ghModule.comment,
     },
     emit: emitMock,
     listIssuesMock,
+    listCsaMock,
+    listSsaMock,
     emitMock,
     ...overrides,
   };
@@ -51,7 +81,8 @@ describe("pollOnce", () => {
       makeIssue(3, ["autofix", "p1"]),
     ]);
     const eligible = await pollOnce(deps);
-    expect(eligible.map((i) => i.number)).toEqual([1, 3]);
+    expect(eligible.map(workItemNumber)).toEqual([1, 3]);
+    expect(eligible.every((i) => i.kind === "issue")).toBe(true);
   });
 
   it("calls listIssues with state=open and forwards cwd", async () => {
@@ -62,17 +93,17 @@ describe("pollOnce", () => {
   });
 
   it("uses a custom isEligible predicate when provided", async () => {
-    const deps = makeDeps({ isEligible: (issue) => issue.number % 2 === 0 });
+    const deps = makeDeps({ isEligible: (item) => workItemNumber(item) % 2 === 0 });
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2), makeIssue(3), makeIssue(4)]);
     const eligible = await pollOnce(deps);
-    expect(eligible.map((i) => i.number)).toEqual([2, 4]);
+    expect(eligible.map(workItemNumber)).toEqual([2, 4]);
   });
 
   it("supports an async custom isEligible predicate", async () => {
-    const deps = makeDeps({ isEligible: async (issue) => issue.number > 1 });
+    const deps = makeDeps({ isEligible: async (item) => workItemNumber(item) > 1 });
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2), makeIssue(3)]);
     const eligible = await pollOnce(deps);
-    expect(eligible.map((i) => i.number)).toEqual([2, 3]);
+    expect(eligible.map(workItemNumber)).toEqual([2, 3]);
   });
 
   it("invokes the injected screener for default-eligible unlabelled issues", async () => {
@@ -88,7 +119,7 @@ describe("pollOnce", () => {
     });
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2, [permissive.alwaysFixLabel])]);
     const eligible = await pollOnce(deps);
-    expect(eligible.map((i) => i.number).sort()).toEqual([1, 2]);
+    expect(eligible.map(workItemNumber).sort()).toEqual([1, 2]);
     // Only the unlabelled issue went through the screener; the alwaysFix one
     // short-circuited.
     expect((deps.screenIssue as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
@@ -114,6 +145,43 @@ describe("pollOnce", () => {
     expect(addLabel).toHaveBeenCalledWith(7, permissive.possiblyDangerousLabel, { cwd: "/tmp/repo" });
     expect(comment).toHaveBeenCalledTimes(1);
   });
+
+  it("merges code-scanning and secret-scanning alerts as work items when alertsEligible=true", async () => {
+    const deps = makeDeps();
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"])]);
+    deps.listCsaMock.mockResolvedValueOnce([makeCsa(11), makeCsa(12)]);
+    deps.listSsaMock.mockResolvedValueOnce([makeSsa(21)]);
+    const eligible = await pollOnce(deps);
+    expect(eligible.map((i) => `${i.kind}:${workItemNumber(i)}`).sort()).toEqual([
+      "codeScanningAlert:11",
+      "codeScanningAlert:12",
+      "issue:1",
+      "secretScanningAlert:21",
+    ]);
+  });
+
+  it("does not call alert endpoints when alertsEligible=false", async () => {
+    const strict = loadConfig({ MINESWEEPER_ALERTS_ELIGIBLE: "false" }, { configFile: null });
+    const deps = makeDeps({ config: strict });
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"])]);
+    await pollOnce(deps);
+    expect(deps.listCsaMock).not.toHaveBeenCalled();
+    expect(deps.listSsaMock).not.toHaveBeenCalled();
+  });
+
+  it("a 403 from one alert endpoint does not drop the issue list (fail-soft)", async () => {
+    const deps = makeDeps();
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"])]);
+    deps.listCsaMock.mockRejectedValueOnce(new Error("HTTP 403: Forbidden"));
+    deps.listSsaMock.mockResolvedValueOnce([makeSsa(21)]);
+    const eligible = await pollOnce(deps);
+    expect(eligible.map((i) => `${i.kind}:${workItemNumber(i)}`).sort()).toEqual([
+      "issue:1",
+      "secretScanningAlert:21",
+    ]);
+    const warns = deps.emitMock.mock.calls.filter((c) => c[1] === "WARN");
+    expect(warns.some((c) => String(c[3]).includes("code-scanning alerts fetch failed"))).toBe(true);
+  });
 });
 
 describe("runPollLoop", () => {
@@ -129,67 +197,69 @@ describe("runPollLoop", () => {
   };
   const sleep = (ms: number): Promise<void> => new Promise<void>((resolveFn) => setTimeout(resolveFn, ms));
 
-  it("polls immediately on startup and emits onIssue per eligible result", async () => {
+  it("polls immediately on startup and emits onWorkItem per eligible result", async () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"]), makeIssue(2, ["bug"])]);
-    const onIssue = vi.fn();
-    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onIssue });
+    const onWorkItem = vi.fn();
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onWorkItem });
     await flushMicrotasks();
-    expect(onIssue).toHaveBeenCalledTimes(1);
-    expect((onIssue.mock.calls[0]?.[0] as Issue).number).toBe(1);
+    expect(onWorkItem).toHaveBeenCalledTimes(1);
+    expect(workItemNumber(onWorkItem.mock.calls[0]?.[0] as WorkItem)).toBe(1);
     handle.stop();
   });
 
   it("polls again after each interval", async () => {
     const deps = makeDeps({ cooldownMs: 0 });
     deps.listIssuesMock.mockResolvedValue([makeIssue(1, ["autofix"])]);
-    const onIssue = vi.fn();
-    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 25 }], { onIssue });
+    const onWorkItem = vi.fn();
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 25 }], { onWorkItem });
     await sleep(80);
     handle.stop();
-    expect(onIssue.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(onWorkItem.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("logs the eligible count via emit", async () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"]), makeIssue(2, ["autofix"])]);
-    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onIssue: vi.fn() });
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onWorkItem: vi.fn() });
     await flushMicrotasks();
     expect(deps.emitMock).toHaveBeenCalledWith("daemon", "INFO", null, "polled (2 eligible)");
     handle.stop();
   });
 
-  it("calls onTickEnd once per tick after all onIssue callbacks have settled", async () => {
+  it("calls onTickEnd once per tick after all onWorkItem callbacks have settled", async () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"]), makeIssue(2, ["autofix"])]);
     const order: string[] = [];
-    const onIssue = vi.fn(async (issue: Issue) => {
-      order.push(`issue:${issue.number}`);
+    const onWorkItem = vi.fn(async (item: WorkItem) => {
+      order.push(`issue:${workItemNumber(item)}`);
     });
     const onTickEnd = vi.fn(async () => {
       order.push("tick-end");
     });
-    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onIssue, onTickEnd });
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onWorkItem, onTickEnd });
     await flushMicrotasks();
     handle.stop();
     expect(onTickEnd).toHaveBeenCalledTimes(1);
     expect(order).toEqual(["issue:1", "issue:2", "tick-end"]);
   });
 
-  it("logs an ERROR but does not throw when listIssues rejects", async () => {
+  it("emits a WARN but does not throw when listIssues rejects (safeList fail-soft)", async () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockRejectedValueOnce(new Error("gh down"));
-    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onIssue: vi.fn() });
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 3_600_000 }], { onWorkItem: vi.fn() });
     await flushMicrotasks();
-    expect(deps.emitMock).toHaveBeenCalledWith("daemon", "ERROR", null, "poll failed: gh down");
+    const warns = deps.emitMock.mock.calls.filter((c) => c[1] === "WARN");
+    expect(warns.some((c) => String(c[3]).includes("issues fetch failed"))).toBe(true);
+    expect(warns.some((c) => String(c[3]).includes("gh down"))).toBe(true);
     handle.stop();
   });
 
   it("stop() clears all timers so no more ticks fire", async () => {
     const deps = makeDeps({ cooldownMs: 0 });
     deps.listIssuesMock.mockResolvedValue([]);
-    const onIssue = vi.fn();
-    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 25 }], { onIssue });
+    const onWorkItem = vi.fn();
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 25 }], { onWorkItem });
     await flushMicrotasks();
     handle.stop();
     deps.listIssuesMock.mockClear();
@@ -204,8 +274,8 @@ describe("runPollLoop", () => {
     const anchor = new Date("2026-05-08T00:00:01Z").getTime();
     deps.now = () => anchor;
     deps.listIssuesMock.mockResolvedValue([]);
-    const onIssue = vi.fn();
-    const handle = runPollLoop(deps, [{ kind: "cron", expression: "0 0 * * *" }], { onIssue });
+    const onWorkItem = vi.fn();
+    const handle = runPollLoop(deps, [{ kind: "cron", expression: "0 0 * * *" }], { onWorkItem });
     // No immediate tick.
     await flushMicrotasks();
     expect(deps.listIssuesMock).not.toHaveBeenCalled();
@@ -220,10 +290,10 @@ describe("runPollLoop", () => {
       deps.now = () => Date.now();
       vi.setSystemTime(anchor);
       deps.listIssuesMock.mockResolvedValue([]);
-      const onIssue = vi.fn();
+      const onWorkItem = vi.fn();
       // "* * * * *" matches every minute. The first match after anchor is at
       // anchor + 60_000 ms.
-      const handle = runPollLoop(deps, [{ kind: "cron", expression: "* * * * *" }], { onIssue });
+      const handle = runPollLoop(deps, [{ kind: "cron", expression: "* * * * *" }], { onWorkItem });
       // Just before the first match.
       await vi.advanceTimersByTimeAsync(59_999);
       expect(deps.listIssuesMock).not.toHaveBeenCalled();
@@ -239,14 +309,14 @@ describe("runPollLoop", () => {
   it("cooldown gate skips overlapping interval ticks", async () => {
     const deps = makeDeps({ cooldownMs: 60_000 });
     deps.listIssuesMock.mockResolvedValue([]);
-    const onIssue = vi.fn();
+    const onWorkItem = vi.fn();
     const handle = runPollLoop(
       deps,
       [
         { kind: "interval", intervalMs: 5 },
         { kind: "interval", intervalMs: 5 },
       ],
-      { onIssue },
+      { onWorkItem },
     );
     await sleep(40);
     handle.stop();
@@ -261,8 +331,8 @@ describe("runPollLoop", () => {
   it("cooldown=0 disables the gate and lets every timer fire", async () => {
     const deps = makeDeps({ cooldownMs: 0 });
     deps.listIssuesMock.mockResolvedValue([]);
-    const onIssue = vi.fn();
-    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 10 }], { onIssue });
+    const onWorkItem = vi.fn();
+    const handle = runPollLoop(deps, [{ kind: "interval", intervalMs: 10 }], { onWorkItem });
     await sleep(50);
     handle.stop();
     expect(deps.listIssuesMock.mock.calls.length).toBeGreaterThan(2);
@@ -276,8 +346,8 @@ describe("runPollLoop", () => {
       deps.now = () => Date.now();
       vi.setSystemTime(anchor);
       deps.listIssuesMock.mockResolvedValue([]);
-      const onIssue = vi.fn();
-      const handle = runPollLoop(deps, [{ kind: "cron", expression: "* * * * *" }], { onIssue });
+      const onWorkItem = vi.fn();
+      const handle = runPollLoop(deps, [{ kind: "cron", expression: "* * * * *" }], { onWorkItem });
       handle.stop();
       await vi.advanceTimersByTimeAsync(120_000);
       expect(deps.listIssuesMock).not.toHaveBeenCalled();

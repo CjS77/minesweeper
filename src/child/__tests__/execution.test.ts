@@ -17,11 +17,17 @@ import {
   REVIEW_COMMENTS_FILE,
   defaultGit,
   isNonFastForwardRejection,
+  normalisePrBody,
   parseReviewerVerdict,
   runExecution,
   type GitOps,
   type RunSubagentFn,
 } from "../modes/execution.js";
+import {
+  asCodeScanningWorkItem,
+  asIssueWorkItem,
+  asSecretScanningWorkItem,
+} from "../../workitem.js";
 import type { SubagentResult } from "../../claude/index.js";
 
 const mockExeca = vi.mocked(execa);
@@ -653,5 +659,64 @@ describe("defaultGit.pushBranch", () => {
 
     await expect(defaultGit.pushBranch("/repo", "feat")).rejects.toBe(networkErr);
     expect(mockExeca).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("normalisePrBody", () => {
+  const issue = asIssueWorkItem(makeIssue(42));
+
+  it("appends Fixes #N for issues when missing", () => {
+    expect(normalisePrBody("- summary\n", issue)).toBe("- summary\n\nFixes #42\n");
+  });
+
+  it("dedups duplicate Fixes lines for issues", () => {
+    expect(normalisePrBody("body\nFixes #42\nFixes #42\n", issue)).toBe("body\n\nFixes #42\n");
+  });
+
+  it("returns just `Fixes #N` when the prwriter emitted an empty body", () => {
+    expect(normalisePrBody("   \n", issue)).toBe("Fixes #42\n");
+  });
+
+  it("appends `## Closes alert` for code-scanning alerts (no Fixes line)", () => {
+    const alert = asCodeScanningWorkItem({
+      number: 7,
+      state: "open",
+      html_url: "https://github.com/example/repo/security/code-scanning/7",
+      created_at: "2026-05-01T00:00:00Z",
+      rule: { id: "js/zipslip", severity: "error" },
+    });
+    const body = normalisePrBody("- summary\n", alert);
+    expect(body).toContain("## Closes alert");
+    expect(body).toContain("https://github.com/example/repo/security/code-scanning/7");
+    expect(body).not.toMatch(/Fixes #/);
+  });
+
+  it("strips a stray Fixes #N line emitted for an alert", () => {
+    const alert = asSecretScanningWorkItem({
+      number: 3,
+      state: "open",
+      html_url: "https://github.com/example/repo/security/secret-scanning/3",
+      created_at: "2026-05-01T00:00:00Z",
+      secret_type: "x",
+    });
+    const body = normalisePrBody("body\nFixes #3\n", alert);
+    expect(body).not.toMatch(/Fixes #/);
+    expect(body).toContain("## Closes alert");
+    expect(body).toContain("https://github.com/example/repo/security/secret-scanning/3");
+  });
+
+  it("rebuilds a single canonical `## Closes alert` block when one is already present", () => {
+    const alert = asCodeScanningWorkItem({
+      number: 7,
+      state: "open",
+      html_url: "https://github.com/example/repo/security/code-scanning/7",
+      created_at: "2026-05-01T00:00:00Z",
+      rule: { id: "r", severity: "error" },
+    });
+    const input = "body\n\n## Closes alert\n\nhttps://stale.example/url\n";
+    const out = normalisePrBody(input, alert);
+    expect(out.match(/## Closes alert/g)).toHaveLength(1);
+    expect(out).toContain("https://github.com/example/repo/security/code-scanning/7");
+    expect(out).not.toContain("stale.example");
   });
 });

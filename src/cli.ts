@@ -9,6 +9,7 @@ import { loadConfig, redactSecrets } from "./config.js";
 import { createLogger, event, getActiveLogger } from "./logging.js";
 import { createSupervisor, defaultSpawnChild, runPollLoop, type Schedule, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
+import { parseHandleArg, parseIssueArg } from "./handleArg.js";
 import { runIssueListCommand, runIssueNewCommand } from "./commands/issues.js";
 import { runLabelsCommand } from "./commands/labels.js";
 import { runLogViewCommand } from "./commands/log.js";
@@ -61,11 +62,14 @@ program
 
 program
   .command("handle")
-  .argument("<issue>", "issue number to handle (cwd must be the issue's worktree)")
-  .description("Child worker entry: drive the state machine for a single issue from the worktree.")
-  .action(async (issue: string) => {
-    const issueNumber = parseIssueArg(issue);
-    await handleChild({ issueNumber });
+  .argument(
+    "<ref>",
+    "work item to handle: bare issue number (e.g. `42`) or namespaced alert (`codeScanningAlert/42`, `secretScanningAlert/13`)",
+  )
+  .description("Child worker entry: drive the state machine for a single work item from its worktree.")
+  .action(async (raw: string) => {
+    const { kind, number } = parseHandleArg(raw);
+    await handleChild({ issueNumber: number, kind });
   });
 
 program
@@ -200,8 +204,8 @@ async function runDaemon(): Promise<void> {
       : [{ kind: "interval" as const, intervalMs: config.pollIntervalMs }];
 
   const loop = runPollLoop({ config, cwd: repoRoot }, schedules, {
-    onIssue: async (issue) => {
-      await supervisor.dispatch(issue);
+    onWorkItem: async (item) => {
+      await supervisor.dispatch(item);
     },
     onTickEnd: async () => {
       // Sweep first so closed-issue worktrees disappear before
@@ -252,14 +256,6 @@ async function recoverOrphans(supervisor: Supervisor, worktreesRoot: string): Pr
     }
     await supervisor.resume({ path: orphan.path, state: orphan.state });
   }
-}
-
-function parseIssueArg(raw: string): number {
-  const n = Number(raw);
-  if (!Number.isInteger(n) || n <= 0) {
-    throw new Error(`invalid issue number: ${JSON.stringify(raw)}`);
-  }
-  return n;
 }
 
 function parseFormatArg(raw: string | undefined): "text" | "json" {

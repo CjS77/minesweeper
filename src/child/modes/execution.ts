@@ -58,12 +58,20 @@ import { execa } from "execa";
 
 import type { Config } from "../../config.js";
 import * as defaultGithub from "../../github/index.js";
-import type { Issue } from "../../github/index.js";
 import { event as defaultEvent, type Logger } from "../../logging.js";
 import { runSubagent as defaultRunSubagent } from "../../claude/index.js";
 import type { RunSubagentOptions, SubagentResult } from "../../claude/index.js";
 import * as defaultState from "../state.js";
 import type { State } from "../state.js";
+import {
+  asCodeScanningWorkItem,
+  asIssueWorkItem,
+  asSecretScanningWorkItem,
+  formatWorkItem,
+  workItemTitle,
+  workItemUrl,
+  type WorkItem,
+} from "../../workitem.js";
 
 /** Path (worktree-relative) the planning mode wrote the approved plan to. */
 export const FINAL_PLAN_FILE = join(".minesweeper", "final_plan.md");
@@ -218,7 +226,10 @@ export interface ExecutionDeps {
   /** State as just read from disk by the handler. */
   state: State;
   /** Override the GitHub wrapper (tests). */
-  github?: Pick<typeof defaultGithub, "getIssue" | "createPr">;
+  github?: Pick<
+    typeof defaultGithub,
+    "getIssue" | "getCodeScanningAlert" | "getSecretScanningAlert" | "createPr"
+  >;
   /** Override the subagent runner (tests). */
   runSubagent?: RunSubagentFn;
   /** Override the state writer (tests can wrap to assert call sequence). */
@@ -263,7 +274,7 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
   );
 
   const finalPlan = await readFinalPlan(join(cwd, FINAL_PLAN_FILE));
-  const issue = await gh.getIssue(issueNumber, { cwd });
+  const item = await fetchWorkItem(gh, state, cwd);
 
   let approved = false;
   let lastVerdict: ReviewerVerdict | null = null;
@@ -300,7 +311,7 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
     const reviewerResult = await runSubagent({
       role: "reviewer",
       config,
-      userPrompt: reviewerPromptFor(issue, finalPlan, diff, log),
+      userPrompt: reviewerPromptFor(item, finalPlan, diff, log),
       issueNumber,
       iteration: state.iterations + 1,
       cwd,
@@ -354,7 +365,7 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
   const prBody = await runPrWriter({
     runSubagent,
     config,
-    issue,
+    item,
     plan: finalPlan,
     executorSummary: lastExecutorSummary,
     log,
@@ -363,7 +374,7 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
     issueNumber,
     iteration: state.iterations + 1,
   });
-  const title = issue.title.trim();
+  const title = workItemTitle(item).trim();
   await git.resetSoft(cwd, mergeBaseSha);
   await git.commit(cwd, buildCommitMessage(title, prBody));
   await git.pushBranch(cwd, branch);
@@ -455,9 +466,9 @@ function executorPromptFor(plan: string, reviewComments: string | null | typeof 
   ].join("\n");
 }
 
-function reviewerPromptFor(issue: Issue, plan: string, diff: string, log: string): string {
+function reviewerPromptFor(item: WorkItem, plan: string, diff: string, log: string): string {
   return [
-    formatIssue(issue),
+    formatWorkItem(item),
     "",
     "# Approved plan",
     "",
@@ -477,25 +488,10 @@ function reviewerPromptFor(issue: Issue, plan: string, diff: string, log: string
   ].join("\n");
 }
 
-function formatIssue(issue: Issue): string {
-  const labels = issue.labels.map((l) => l.name).join(", ") || "(none)";
-  return [
-    `# GitHub issue #${issue.number}`,
-    `Title: ${issue.title}`,
-    `Author: ${issue.author.login}`,
-    `Labels: ${labels}`,
-    `URL: ${issue.url}`,
-    "",
-    "## Body",
-    "",
-    issue.body.length > 0 ? issue.body : "(empty body)",
-  ].join("\n");
-}
-
 interface RunPrWriterOptions {
   runSubagent: RunSubagentFn;
   config: Config;
-  issue: Issue;
+  item: WorkItem;
   plan: string;
   executorSummary: string;
   log: string;
@@ -508,25 +504,30 @@ interface RunPrWriterOptions {
 /**
  * Run the `prwriter` role to produce the PR body. The subagent's
  * `finalText` is normalised (trimmed, trailing newline) and the
- * mandatory `Fixes #<N>` line is enforced — appended if missing,
- * deduplicated if the role emitted more than one. The PR title is the
- * issue title; only the body is generated.
+ * trailing closing-reference is enforced:
+ *
+ *   - For `kind="issue"`, append `Fixes #<N>` (the GitHub autoclose
+ *     trailer) if missing.
+ *   - For alert kinds, append `## Closes alert\n<url>` instead — alerts
+ *     do not auto-close from PR body keywords.
+ *
+ * The PR title is the work item's title; only the body is generated.
  */
 async function runPrWriter(opts: RunPrWriterOptions): Promise<string> {
   const result = await opts.runSubagent({
     role: "prwriter",
     config: opts.config,
-    userPrompt: prWriterPromptFor(opts.issue, opts.plan, opts.executorSummary, opts.log, opts.diffStat),
+    userPrompt: prWriterPromptFor(opts.item, opts.plan, opts.executorSummary, opts.log, opts.diffStat),
     issueNumber: opts.issueNumber,
     iteration: opts.iteration,
     cwd: opts.cwd,
   });
-  return normalisePrBody(result.finalText, opts.issue.number);
+  return normalisePrBody(result.finalText, opts.item);
 }
 
-function prWriterPromptFor(issue: Issue, plan: string, executorSummary: string, log: string, diffStat: string): string {
+function prWriterPromptFor(item: WorkItem, plan: string, executorSummary: string, log: string, diffStat: string): string {
   return [
-    formatIssue(issue),
+    formatWorkItem(item),
     "",
     "# Approved plan",
     "",
@@ -549,6 +550,9 @@ function prWriterPromptFor(issue: Issue, plan: string, executorSummary: string, 
     "```",
     "",
     "Write the PR body now, following the format in your system prompt.",
+    item.kind === "issue"
+      ? ""
+      : "Note: this work item is a security alert, not an issue. End the body with a `## Closes alert` section that links to the alert URL — `Fixes #N` does not apply here.",
   ].join("\n");
 }
 
@@ -560,16 +564,61 @@ function prWriterPromptFor(issue: Issue, plan: string, executorSummary: string, 
  */
 const FIXES_LINE_RE = /^[ \t]*(fixes|closes|resolves)[ \t]+#\d+\s*\.?[ \t]*$/gim;
 
-function normalisePrBody(raw: string, issueNumber: number): string {
+/** Alert closing-section header used when the work item is a security alert. */
+const CLOSES_ALERT_SECTION_RE = /(^|\n)#{1,6}\s+closes\s+alert\b[\s\S]*$/i;
+
+export function normalisePrBody(raw: string, item: WorkItem): string {
   const trimmed = raw.replace(/^\s+|\s+$/g, "");
-  if (trimmed.length === 0) {
-    return `Fixes #${issueNumber}\n`;
+  if (item.kind === "issue") {
+    const issueNumber = item.number;
+    if (trimmed.length === 0) {
+      return `Fixes #${issueNumber}\n`;
+    }
+    const withoutFixes = trimmed
+      .replace(FIXES_LINE_RE, "")
+      .replace(/\n{3,}/g, "\n\n")
+      .trimEnd();
+    return `${withoutFixes}\n\nFixes #${issueNumber}\n`;
   }
-  const withoutFixes = trimmed
+  // Alerts: strip any prior `## Closes alert` block and any stray `Fixes #N`
+  // line (the former is rebuilt below; the latter would mis-close an
+  // unrelated issue) before re-appending the canonical block.
+  const url = workItemUrl(item);
+  if (trimmed.length === 0) {
+    return `## Closes alert\n\n${url}\n`;
+  }
+  const cleaned = trimmed
+    .replace(CLOSES_ALERT_SECTION_RE, "")
     .replace(FIXES_LINE_RE, "")
     .replace(/\n{3,}/g, "\n\n")
     .trimEnd();
-  return `${withoutFixes}\n\nFixes #${issueNumber}\n`;
+  return `${cleaned}\n\n## Closes alert\n\n${url}\n`;
+}
+
+/**
+ * Resolve the on-disk `state.kind` to a fresh GitHub fetch of the
+ * underlying work item. Used by the executor so the PR title and body
+ * always reflect the latest issue title / alert state.
+ */
+async function fetchWorkItem(
+  gh: NonNullable<ExecutionDeps["github"]>,
+  state: State,
+  cwd: string,
+): Promise<WorkItem> {
+  switch (state.kind) {
+    case "issue": {
+      const issue = await gh.getIssue(state.issueNumber, { cwd });
+      return asIssueWorkItem(issue);
+    }
+    case "codeScanningAlert": {
+      const alert = await gh.getCodeScanningAlert(state.issueNumber, { cwd });
+      return asCodeScanningWorkItem(alert);
+    }
+    case "secretScanningAlert": {
+      const alert = await gh.getSecretScanningAlert(state.issueNumber, { cwd });
+      return asSecretScanningWorkItem(alert);
+    }
+  }
 }
 
 function buildCommitMessage(title: string, body: string): string {

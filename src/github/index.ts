@@ -1,14 +1,20 @@
 import {
+  CodeScanningAlertListSchema,
+  CodeScanningAlertSchema,
   IssueListSchema,
   IssueSchema,
   LabelSchema,
   PullRequestSchema,
   RestReviewCommentSchema,
+  SecretScanningAlertListSchema,
+  SecretScanningAlertSchema,
+  type CodeScanningAlert,
   type Issue,
   type Label,
   type PrReviewThread,
   type PullRequest,
   type RestReviewComment,
+  type SecretScanningAlert,
 } from "./models.js";
 import { z } from "zod";
 import { runGh, type RunGhOptions } from "./process.js";
@@ -20,6 +26,9 @@ const RepoOwnerResponseSchema = z.object({ owner: z.object({ login: z.string() }
 
 export { GhError, GhMissingError, GhNotARepoError, runGh, type RunGhOptions } from "./process.js";
 export {
+  AlertStateSchema,
+  CodeScanningAlertListSchema,
+  CodeScanningAlertSchema,
   CommentSchema,
   IssueListSchema,
   IssueSchema,
@@ -32,7 +41,11 @@ export {
   PrReviewThreadSchema,
   PrStateSchema,
   PullRequestSchema,
+  SecretScanningAlertListSchema,
+  SecretScanningAlertSchema,
   UserSchema,
+  type AlertState,
+  type CodeScanningAlert,
   type Comment,
   type Issue,
   type IssueState,
@@ -44,6 +57,7 @@ export {
   type PrReviewThreadComment,
   type PrState,
   type PullRequest,
+  type SecretScanningAlert,
   type User,
 } from "./models.js";
 
@@ -304,6 +318,66 @@ export async function addReactionToReviewComment(
 export async function getRepoOwner(opts: GhOverridable = {}): Promise<string> {
   const raw = await runGh(["repo", "view", "--json", "owner"], { ...ghOpts(opts), json: true });
   return RepoOwnerResponseSchema.parse(raw).owner.login;
+}
+
+export interface ListAlertsOptions extends GhOverridable {
+  /**
+   * GitHub's REST `state` filter. Defaults to `"open"` so the daemon never
+   * pulls already-resolved alerts. Pass `"all"` for diagnostics.
+   */
+  state?: "open" | "dismissed" | "fixed" | "resolved" | "all";
+  /**
+   * Per-page hint passed to `gh api --paginate`. The CLI still paginates
+   * through all pages; the per-page size only affects the number of
+   * round trips. Default 30.
+   */
+  perPage?: number;
+}
+
+function alertListArgs(endpoint: string, opts: ListAlertsOptions): string[] {
+  const state = opts.state ?? "open";
+  const params: string[] = [];
+  if (state !== "all") params.push(`state=${state}`);
+  params.push(`per_page=${opts.perPage ?? 30}`);
+  const query = params.length > 0 ? `?${params.join("&")}` : "";
+  return ["api", "--paginate", `repos/{owner}/{repo}/${endpoint}${query}`];
+}
+
+/**
+ * `GET /repos/{owner}/{repo}/code-scanning/alerts`. Returns the parsed
+ * list. The endpoint requires the `security_events` token scope and that
+ * GitHub Advanced Security (or a public-repo CodeQL setup) is enabled —
+ * callers should treat 403/404 as "alerts not available on this repo,"
+ * not as a daemon-level fault.
+ */
+export async function listCodeScanningAlerts(opts: ListAlertsOptions = {}): Promise<CodeScanningAlert[]> {
+  const raw = await runGh(alertListArgs("code-scanning/alerts", opts), { ...ghOpts(opts), json: true });
+  return CodeScanningAlertListSchema.parse(raw);
+}
+
+export async function getCodeScanningAlert(number: number, opts: GhOverridable = {}): Promise<CodeScanningAlert> {
+  const raw = await runGh(["api", `repos/{owner}/{repo}/code-scanning/alerts/${number}`], {
+    ...ghOpts(opts),
+    json: true,
+  });
+  return CodeScanningAlertSchema.parse(raw);
+}
+
+/**
+ * `GET /repos/{owner}/{repo}/secret-scanning/alerts`. Same scope and
+ * fail-soft caveats as {@link listCodeScanningAlerts}.
+ */
+export async function listSecretScanningAlerts(opts: ListAlertsOptions = {}): Promise<SecretScanningAlert[]> {
+  const raw = await runGh(alertListArgs("secret-scanning/alerts", opts), { ...ghOpts(opts), json: true });
+  return SecretScanningAlertListSchema.parse(raw);
+}
+
+export async function getSecretScanningAlert(number: number, opts: GhOverridable = {}): Promise<SecretScanningAlert> {
+  const raw = await runGh(["api", `repos/{owner}/{repo}/secret-scanning/alerts/${number}`], {
+    ...ghOpts(opts),
+    json: true,
+  });
+  return SecretScanningAlertSchema.parse(raw);
 }
 
 const URL_RE = /https?:\/\/\S+/g;
