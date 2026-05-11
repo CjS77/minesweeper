@@ -16,8 +16,9 @@
  *   - By issue: caller passes `issueNumber` + `worktreePath`. We walk
  *     `<worktreePath>/worktrees/` (matching against `state.json.issueNumber`)
  *     and `<worktreePath>/archive/` (matching the `${issueNumber}-…` prefix
- *     written by `archiveWorktreeState`), apply an optional regex filter on
- *     basenames, and render each match in turn separated by a banner.
+ *     written by `archiveWorktreeState`), apply an optional case-sensitive
+ *     substring filter on basenames, and render each match in turn separated
+ *     by a banner.
  *
  * Pure renderer (`renderTranscriptLine`) and resolver (`findTranscriptsForIssue`)
  * are exported for tests.
@@ -43,7 +44,8 @@ export interface RunLogViewCommandOptions {
   /**
    * Bare transcript name (`planner-01`), explicit `.jsonl` filename, or path.
    * Mutually exclusive with `issueNumber` — when `issueNumber` is set, this
-   * field (if present) is treated as a regex filter on transcript basenames.
+   * field (if present) is treated as a case-sensitive substring filter on
+   * transcript basenames.
    */
   name?: string;
   /**
@@ -181,22 +183,13 @@ function resolveAllPaths(opts: RunLogViewCommandOptions, cwd: string): string[] 
     if (!opts.worktreePath) {
       throw new LogViewError("--issue requires worktreePath (loaded from MINESWEEPER_WORKTREE_PATH)");
     }
-    const filter = compileFilter(opts.name);
+    const filter = opts.name === undefined || opts.name === "" ? undefined : opts.name;
     return findTranscriptsForIssue(opts.issueNumber, opts.worktreePath, filter);
   }
   if (!opts.name) {
     throw new LogViewError("either --issue <n> or a transcript name is required");
   }
   return [resolveTranscriptPath(opts.name, cwd)];
-}
-
-function compileFilter(raw: string | undefined): RegExp | undefined {
-  if (raw === undefined || raw === "") return undefined;
-  try {
-    return new RegExp(raw);
-  } catch (err) {
-    throw new LogViewError(`invalid regex ${JSON.stringify(raw)}: ${(err as Error).message}`);
-  }
 }
 
 /**
@@ -465,10 +458,11 @@ function resolveTranscriptPath(name: string, cwd: string): string {
  * Find every JSONL transcript belonging to `issueNumber` under `worktreePath`.
  * Searches both active worktrees (matched by `state.json.issueNumber`) and
  * archives (matched by the `${issueNumber}-…` directory prefix written by
- * `archiveWorktreeState`). Optionally filters by basename regex. Returns
- * absolute paths in lexical order; throws `LogViewError` on no match.
+ * `archiveWorktreeState`). Optionally filters by a case-sensitive basename
+ * substring. Returns absolute paths in lexical order; throws `LogViewError`
+ * on no match.
  */
-export function findTranscriptsForIssue(issueNumber: number, worktreePath: string, filter?: RegExp): string[] {
+export function findTranscriptsForIssue(issueNumber: number, worktreePath: string, filter?: string): string[] {
   const matches = [
     ...listFromActiveWorktrees(issueNumber, worktreePath),
     ...listFromArchive(issueNumber, worktreePath),
@@ -478,10 +472,10 @@ export function findTranscriptsForIssue(issueNumber: number, worktreePath: strin
     throw new LogViewError(`no transcripts found for issue ${issueNumber} under ${worktreePath}`);
   }
   if (!filter) return matches;
-  const filtered = matches.filter((p) => filter.test(basename(p)));
+  const filtered = matches.filter((p) => basename(p).includes(filter));
   if (filtered.length === 0) {
     throw new LogViewError(
-      `no transcripts for issue ${issueNumber} match /${filter.source}/. candidates:\n  ${matches.join("\n  ")}`,
+      `no transcripts for issue ${issueNumber} match "${filter}". candidates:\n  ${matches.join("\n  ")}`,
     );
   }
   return filtered;
