@@ -230,8 +230,7 @@ function collectFreshFeedback(
     login !== undefined && allowlist.has(login.toLowerCase());
 
   const reviews = (pr.reviews ?? []).filter(
-    (review) =>
-      isActionableReview(review) && isFresh(review.submittedAt ?? null) && isAuthorised(review.author.login),
+    (review) => isActionableReview(review) && isFresh(review.submittedAt ?? null) && isAuthorised(review.author.login),
   );
 
   const threadComments: FreshFeedback["threadComments"] = [];
