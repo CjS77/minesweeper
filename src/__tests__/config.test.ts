@@ -119,10 +119,7 @@ describe("loadConfig", () => {
     expect(repoOnly.alertsEligible).toBe(false);
     expect(repoOnly.sources["alertsEligible"]?.source).toBe("repo-config");
 
-    const withEnv = loadConfig(
-      { MINESWEEPER_ALERTS_ELIGIBLE: "true" },
-      { configFile: globalPath, cwd: tmp },
-    );
+    const withEnv = loadConfig({ MINESWEEPER_ALERTS_ELIGIBLE: "true" }, { configFile: globalPath, cwd: tmp });
     expect(withEnv.alertsEligible).toBe(true);
     expect(withEnv.sources["alertsEligible"]?.source).toBe("envar");
   });

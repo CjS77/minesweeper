@@ -7,12 +7,7 @@ import type * as worktreeModule from "../../worktree.js";
 import type * as stateModule from "../../child/state.js";
 import { branchNameFor, createSupervisor, type ChildHandle, type SupervisorDeps } from "../supervisor.js";
 import type { State, WorkItemKind } from "../../child/state.js";
-import {
-  asCodeScanningWorkItem,
-  asIssueWorkItem,
-  asSecretScanningWorkItem,
-  type WorkItem,
-} from "../../workitem.js";
+import { asCodeScanningWorkItem, asIssueWorkItem, asSecretScanningWorkItem, type WorkItem } from "../../workitem.js";
 
 interface FakeChild {
   handle: ChildHandle;
@@ -342,11 +337,7 @@ describe("createSupervisor.dispatch", () => {
     expect(ctx.addLabelMock).not.toHaveBeenCalled();
     expect(
       ctx.emitMock.mock.calls.some(
-        (c) =>
-          c[0] === "daemon" &&
-          c[1] === "WARN" &&
-          c[2] === 11 &&
-          String(c[3]).includes("cannot be labelled"),
+        (c) => c[0] === "daemon" && c[1] === "WARN" && c[2] === 11 && String(c[3]).includes("cannot be labelled"),
       ),
     ).toBe(true);
   });
@@ -599,9 +590,7 @@ describe("createSupervisor.sweepClosedIssues", () => {
     expect(ctx.archiveMock).not.toHaveBeenCalled();
     expect(ctx.removeMock).not.toHaveBeenCalled();
     expect(
-      ctx.emitMock.mock.calls.some(
-        (c) => c[1] === "WARN" && c[2] === 42 && String(c[3]).includes("gh fetch failed"),
-      ),
+      ctx.emitMock.mock.calls.some((c) => c[1] === "WARN" && c[2] === 42 && String(c[3]).includes("gh fetch failed")),
     ).toBe(true);
   });
 });

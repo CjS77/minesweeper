@@ -316,11 +316,7 @@ function criticPromptFor(item: WorkItem, currentPlan: string): string {
  * underlying work item. Used by the planner so the prompt always reflects
  * the latest issue title / alert state, even after a child resume.
  */
-async function fetchWorkItem(
-  gh: NonNullable<PlanningDeps["github"]>,
-  state: State,
-  cwd: string,
-): Promise<WorkItem> {
+async function fetchWorkItem(gh: NonNullable<PlanningDeps["github"]>, state: State, cwd: string): Promise<WorkItem> {
   switch (state.kind) {
     case "issue": {
       const issue = await gh.getIssue(state.issueNumber, { cwd });

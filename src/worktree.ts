@@ -14,14 +14,7 @@
 import { promises as fs, type Dirent } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { execa } from "execa";
-import {
-  STATE_DIR,
-  STATE_FILE,
-  StateSchema,
-  migrateIfNeeded,
-  type State,
-  type WorkItemKind,
-} from "./child/state.js";
+import { STATE_DIR, STATE_FILE, StateSchema, migrateIfNeeded, type State, type WorkItemKind } from "./child/state.js";
 
 export interface AddWorktreeOptions {
   /** Absolute path to the main repo (the one that owns the worktrees). */

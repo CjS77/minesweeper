@@ -226,10 +226,7 @@ export interface ExecutionDeps {
   /** State as just read from disk by the handler. */
   state: State;
   /** Override the GitHub wrapper (tests). */
-  github?: Pick<
-    typeof defaultGithub,
-    "getIssue" | "getCodeScanningAlert" | "getSecretScanningAlert" | "createPr"
-  >;
+  github?: Pick<typeof defaultGithub, "getIssue" | "getCodeScanningAlert" | "getSecretScanningAlert" | "createPr">;
   /** Override the subagent runner (tests). */
   runSubagent?: RunSubagentFn;
   /** Override the state writer (tests can wrap to assert call sequence). */
@@ -525,7 +522,13 @@ async function runPrWriter(opts: RunPrWriterOptions): Promise<string> {
   return normalisePrBody(result.finalText, opts.item);
 }
 
-function prWriterPromptFor(item: WorkItem, plan: string, executorSummary: string, log: string, diffStat: string): string {
+function prWriterPromptFor(
+  item: WorkItem,
+  plan: string,
+  executorSummary: string,
+  log: string,
+  diffStat: string,
+): string {
   return [
     formatWorkItem(item),
     "",
@@ -600,11 +603,7 @@ export function normalisePrBody(raw: string, item: WorkItem): string {
  * underlying work item. Used by the executor so the PR title and body
  * always reflect the latest issue title / alert state.
  */
-async function fetchWorkItem(
-  gh: NonNullable<ExecutionDeps["github"]>,
-  state: State,
-  cwd: string,
-): Promise<WorkItem> {
+async function fetchWorkItem(gh: NonNullable<ExecutionDeps["github"]>, state: State, cwd: string): Promise<WorkItem> {
   switch (state.kind) {
     case "issue": {
       const issue = await gh.getIssue(state.issueNumber, { cwd });

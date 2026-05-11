@@ -334,13 +334,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         await wt.removeWorktree(orphan.path);
         emit("daemon", "OK", issueNumber, `${kind} closed; archived to ${archiveDir} and removed worktree`, { kind });
       } catch (err) {
-        emit(
-          "daemon",
-          "ERROR",
-          issueNumber,
-          `sweep: cleanup failed for ${orphan.path}: ${(err as Error).message}`,
-          { kind },
-        );
+        emit("daemon", "ERROR", issueNumber, `sweep: cleanup failed for ${orphan.path}: ${(err as Error).message}`, {
+          kind,
+        });
       }
     }
   };

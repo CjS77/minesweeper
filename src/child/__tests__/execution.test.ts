@@ -23,11 +23,7 @@ import {
   type GitOps,
   type RunSubagentFn,
 } from "../modes/execution.js";
-import {
-  asCodeScanningWorkItem,
-  asIssueWorkItem,
-  asSecretScanningWorkItem,
-} from "../../workitem.js";
+import { asCodeScanningWorkItem, asIssueWorkItem, asSecretScanningWorkItem } from "../../workitem.js";
 import type { SubagentResult } from "../../claude/index.js";
 
 const mockExeca = vi.mocked(execa);

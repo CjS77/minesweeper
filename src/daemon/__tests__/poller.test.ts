@@ -175,10 +175,7 @@ describe("pollOnce", () => {
     deps.listCsaMock.mockRejectedValueOnce(new Error("HTTP 403: Forbidden"));
     deps.listSsaMock.mockResolvedValueOnce([makeSsa(21)]);
     const eligible = await pollOnce(deps);
-    expect(eligible.map((i) => `${i.kind}:${workItemNumber(i)}`).sort()).toEqual([
-      "issue:1",
-      "secretScanningAlert:21",
-    ]);
+    expect(eligible.map((i) => `${i.kind}:${workItemNumber(i)}`).sort()).toEqual(["issue:1", "secretScanningAlert:21"]);
     const warns = deps.emitMock.mock.calls.filter((c) => c[1] === "WARN");
     expect(warns.some((c) => String(c[3]).includes("code-scanning alerts fetch failed"))).toBe(true);
   });
