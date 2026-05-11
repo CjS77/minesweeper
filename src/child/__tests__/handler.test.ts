@@ -31,6 +31,7 @@ const FAKE_CONFIG: Config = {
   pollCooldownSeconds: 120,
   pollCooldownMs: 120_000,
   maxConcurrency: 1,
+  sources: {},
 };
 
 let tmp: string;
