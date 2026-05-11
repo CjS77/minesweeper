@@ -10,9 +10,18 @@
  *     `AddressingPRFeedback` mode (i.e. it has produced a PR and is
  *     not actively in some other phase of the state machine).
  *   - The issue is not currently in-flight on the supervisor.
- *   - The PR has either a "changes requested" review or an unresolved
- *     review-thread comment from an authorised reviewer whose
- *     timestamp is strictly newer than `state.prFeedbackProcessedAt`.
+ *   - The PR has either an actionable review or an inline review
+ *     comment from an authorised reviewer whose timestamp is strictly
+ *     newer than `state.prFeedbackProcessedAt`. A review is actionable
+ *     when its state is `CHANGES_REQUESTED`, or `COMMENTED` *with* a
+ *     non-empty body (a `COMMENTED` review with an empty body is just
+ *     the GitHub container for inline comments, which we pick up
+ *     separately and would otherwise double-dispatch on). Reviews come
+ *     from `gh pr view`; inline review comments come from REST
+ *     (`getReviewThreads`) because `gh pr view --json` does not expose
+ *     `reviewThreads`. The REST endpoint has no thread-resolution
+ *     state, so resolution status is approximated as "unresolved" and
+ *     the watermark prevents replay.
  *
  * Authorised reviewers are computed once per tick: the repo owner
  * (`gh repo view --json owner`) plus every bare `@username` listed in
@@ -70,7 +79,7 @@ export interface PrFeedbackDeps {
   /** Supervisor's `resume` — the dispatch path for re-running on a worktree. */
   resume: ResumeFn;
   /** Override the github wrapper (tests). */
-  github?: Pick<typeof defaultGithub, "getPullRequest" | "getRepoOwner">;
+  github?: Pick<typeof defaultGithub, "getPullRequest" | "getReviewThreads" | "getRepoOwner">;
   /** Override worktree helpers (tests). */
   worktree?: Pick<typeof defaultWorktree, "listOrphans">;
   /** Override the codeowners loader (tests). */
@@ -136,7 +145,7 @@ async function buildAllowlist(
 interface ProcessCandidateArgs {
   candidate: { path: string; state: State };
   allowlist: Set<string>;
-  gh: Pick<typeof defaultGithub, "getPullRequest">;
+  gh: Pick<typeof defaultGithub, "getPullRequest" | "getReviewThreads">;
   writeState: typeof defaultState.writeState;
   resume: ResumeFn;
   config: Config;
@@ -150,6 +159,7 @@ async function processCandidate(args: ProcessCandidateArgs): Promise<void> {
   const prNumber = state.prNumber as number;
 
   let pr: PullRequest;
+  let threads: PrReviewThread[];
   try {
     pr = await gh.getPullRequest(prNumber, { cwd: candidate.path });
   } catch (err) {
@@ -161,8 +171,19 @@ async function processCandidate(args: ProcessCandidateArgs): Promise<void> {
     );
     return;
   }
+  try {
+    threads = await gh.getReviewThreads(prNumber, { cwd: candidate.path });
+  } catch (err) {
+    emit(
+      "daemon",
+      "WARN",
+      state.issueNumber,
+      `pr-feedback: gh api pulls/${prNumber}/comments failed (${(err as Error).message})`,
+    );
+    return;
+  }
 
-  const fresh = collectFreshFeedback(pr, state.prFeedbackProcessedAt, allowlist);
+  const fresh = collectFreshFeedback(pr, threads, state.prFeedbackProcessedAt, allowlist);
   if (fresh.reviews.length === 0 && fresh.threadComments.length === 0) return;
 
   const rendered = renderFeedback(fresh);
@@ -192,7 +213,12 @@ interface FreshFeedback {
   threadComments: Array<{ thread: PrReviewThread; comment: PrReviewThreadComment }>;
 }
 
-function collectFreshFeedback(pr: PullRequest, since: string | null, allowlist: Set<string>): FreshFeedback {
+function collectFreshFeedback(
+  pr: PullRequest,
+  threads: PrReviewThread[],
+  since: string | null,
+  allowlist: Set<string>,
+): FreshFeedback {
   const cutoff = since === null ? null : Date.parse(since);
   const isFresh = (iso: string | null | undefined): boolean => {
     if (iso === null || iso === undefined) return false;
@@ -204,11 +230,11 @@ function collectFreshFeedback(pr: PullRequest, since: string | null, allowlist: 
 
   const reviews = (pr.reviews ?? []).filter(
     (review) =>
-      review.state === "CHANGES_REQUESTED" && isFresh(review.submittedAt ?? null) && isAuthorised(review.author.login),
+      isActionableReview(review) && isFresh(review.submittedAt ?? null) && isAuthorised(review.author.login),
   );
 
   const threadComments: FreshFeedback["threadComments"] = [];
-  for (const thread of pr.reviewThreads ?? []) {
+  for (const thread of threads) {
     if (thread.isResolved) continue;
     for (const comment of thread.comments) {
       if (!isFresh(comment.createdAt)) continue;
@@ -218,6 +244,21 @@ function collectFreshFeedback(pr: PullRequest, since: string | null, allowlist: 
   }
 
   return { reviews, threadComments };
+}
+
+/**
+ * A review is actionable when it carries enough information for the
+ * executor to do something with it. `CHANGES_REQUESTED` is always
+ * actionable. `COMMENTED` is actionable only when it has a non-empty
+ * body — an empty-bodied `COMMENTED` review is GitHub's container for
+ * a batch of inline comments, which we already collect via
+ * `getReviewThreads`; accepting it here would re-dispatch the same
+ * feedback twice.
+ */
+function isActionableReview(review: PrReview): boolean {
+  if (review.state === "CHANGES_REQUESTED") return true;
+  if (review.state === "COMMENTED") return review.body.trim().length > 0;
+  return false;
 }
 
 function newestTimestamp(fresh: FreshFeedback): string | null {

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadConfig } from "../../config.js";
 import type * as ghModule from "../../github/index.js";
-import type { PullRequest } from "../../github/index.js";
+import type { PrReviewThread, PullRequest } from "../../github/index.js";
 import type * as worktreeModule from "../../worktree.js";
 import { pollPrFeedback, type PrFeedbackDeps } from "../pr_feedback.js";
 import { PR_REVIEW_COMMENTS_FILE } from "../../child/modes/feedback.js";
@@ -53,7 +53,6 @@ function makePr(overrides: Partial<PullRequest> = {}): PullRequest {
     isDraft: false,
     reviewDecision: "CHANGES_REQUESTED",
     reviews: [],
-    reviewThreads: [],
     comments: [],
     ...overrides,
   };
@@ -75,6 +74,7 @@ afterEach(async () => {
 function makeDeps(overrides: Partial<PrFeedbackDeps> = {}): {
   deps: PrFeedbackDeps;
   getPullRequest: ReturnType<typeof vi.fn>;
+  getReviewThreads: ReturnType<typeof vi.fn>;
   getRepoOwner: ReturnType<typeof vi.fn>;
   listOrphans: ReturnType<typeof vi.fn>;
   loadCodeownerLogins: ReturnType<typeof vi.fn>;
@@ -82,6 +82,7 @@ function makeDeps(overrides: Partial<PrFeedbackDeps> = {}): {
   emit: ReturnType<typeof vi.fn>;
 } {
   const getPullRequest = vi.fn(async () => makePr());
+  const getReviewThreads = vi.fn(async () => [] as PrReviewThread[]);
   const getRepoOwner = vi.fn(async () => "repoOwner");
   const listOrphans = vi.fn(async () => [] as Array<{ path: string; state?: State }>);
   const loadCodeownerLogins = vi.fn(async () => new Set<string>());
@@ -95,6 +96,7 @@ function makeDeps(overrides: Partial<PrFeedbackDeps> = {}): {
     resume,
     github: {
       getPullRequest: getPullRequest as unknown as typeof ghModule.getPullRequest,
+      getReviewThreads: getReviewThreads as unknown as typeof ghModule.getReviewThreads,
       getRepoOwner: getRepoOwner as unknown as typeof ghModule.getRepoOwner,
     },
     worktree: {
@@ -104,10 +106,55 @@ function makeDeps(overrides: Partial<PrFeedbackDeps> = {}): {
     emit,
     ...overrides,
   };
-  return { deps, getPullRequest, getRepoOwner, listOrphans, loadCodeownerLogins, resume, emit };
+  return { deps, getPullRequest, getReviewThreads, getRepoOwner, listOrphans, loadCodeownerLogins, resume, emit };
 }
 
 describe("pollPrFeedback", () => {
+  it("dispatches on a fresh COMMENTED review whose body has content", async () => {
+    const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
+    const ctx = makeDeps();
+    ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+    ctx.getPullRequest.mockResolvedValueOnce(
+      makePr({
+        reviewDecision: null,
+        reviews: [
+          {
+            author: { login: "RepoOwner" },
+            body: "Linewidths should be 120 characters",
+            state: "COMMENTED",
+            submittedAt: "2026-05-11T09:45:50Z",
+          },
+        ],
+      }),
+    );
+
+    await pollPrFeedback(ctx.deps);
+    expect(ctx.resume).toHaveBeenCalledTimes(1);
+    const fileContent = await readFile(join(path, PR_REVIEW_COMMENTS_FILE), "utf8");
+    expect(fileContent).toContain("Linewidths should be 120 characters");
+  });
+
+  it("ignores a COMMENTED review with an empty body (it is the GitHub container for inline comments)", async () => {
+    const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
+    const ctx = makeDeps();
+    ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+    ctx.getPullRequest.mockResolvedValueOnce(
+      makePr({
+        reviews: [
+          {
+            author: { login: "RepoOwner" },
+            body: "",
+            state: "COMMENTED",
+            submittedAt: "2026-05-11T09:45:50Z",
+          },
+        ],
+      }),
+    );
+
+    await pollPrFeedback(ctx.deps);
+    expect(ctx.resume).not.toHaveBeenCalled();
+  });
+
   it("renders fresh CHANGES_REQUESTED reviews and dispatches via resume", async () => {
     const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
     const ctx = makeDeps();
@@ -179,25 +226,21 @@ describe("pollPrFeedback", () => {
     const ctx = makeDeps();
     ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
     ctx.loadCodeownerLogins.mockResolvedValueOnce(new Set(["codeowner-alice"]));
-    ctx.getPullRequest.mockResolvedValueOnce(
-      makePr({
-        reviewDecision: "APPROVED",
-        reviewThreads: [
+    ctx.getPullRequest.mockResolvedValueOnce(makePr({ reviewDecision: "APPROVED" }));
+    ctx.getReviewThreads.mockResolvedValueOnce([
+      {
+        isResolved: false,
+        path: "src/foo.ts",
+        line: 3,
+        comments: [
           {
-            isResolved: false,
-            path: "src/foo.ts",
-            line: 3,
-            comments: [
-              {
-                author: { login: "codeowner-alice" },
-                body: "Add JSDoc here.",
-                createdAt: "2026-05-10T12:00:00Z",
-              },
-            ],
+            author: { login: "codeowner-alice" },
+            body: "Add JSDoc here.",
+            createdAt: "2026-05-10T12:00:00Z",
           },
         ],
-      }),
-    );
+      },
+    ] satisfies PrReviewThread[]);
 
     await pollPrFeedback(ctx.deps);
     expect(ctx.resume).toHaveBeenCalledTimes(1);
@@ -217,22 +260,22 @@ describe("pollPrFeedback", () => {
             submittedAt: "2026-05-10T12:00:00Z",
           },
         ],
-        reviewThreads: [
-          {
-            isResolved: true,
-            path: "x",
-            line: 1,
-            comments: [
-              {
-                author: { login: "repoOwner" },
-                body: "fixed",
-                createdAt: "2026-05-10T13:00:00Z",
-              },
-            ],
-          },
-        ],
       }),
     );
+    ctx.getReviewThreads.mockResolvedValueOnce([
+      {
+        isResolved: true,
+        path: "x",
+        line: 1,
+        comments: [
+          {
+            author: { login: "repoOwner" },
+            body: "fixed",
+            createdAt: "2026-05-10T13:00:00Z",
+          },
+        ],
+      },
+    ] satisfies PrReviewThread[]);
 
     await pollPrFeedback(ctx.deps);
     expect(ctx.resume).not.toHaveBeenCalled();
@@ -246,8 +289,21 @@ describe("pollPrFeedback", () => {
 
     await pollPrFeedback(ctx.deps);
     expect(ctx.resume).not.toHaveBeenCalled();
+    expect(ctx.getReviewThreads).not.toHaveBeenCalled();
     const warnings = ctx.emit.mock.calls.filter((c) => c[1] === "WARN").map((c) => String(c[3]));
     expect(warnings.some((m) => m.includes("gh pr view #101 failed"))).toBe(true);
+  });
+
+  it("logs a WARN and skips on gh.getReviewThreads failures", async () => {
+    const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
+    const ctx = makeDeps();
+    ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+    ctx.getReviewThreads.mockRejectedValueOnce(new Error("rest 500"));
+
+    await pollPrFeedback(ctx.deps);
+    expect(ctx.resume).not.toHaveBeenCalled();
+    const warnings = ctx.emit.mock.calls.filter((c) => c[1] === "WARN").map((c) => String(c[3]));
+    expect(warnings.some((m) => m.includes("gh api pulls/101/comments failed"))).toBe(true);
   });
 
   it("short-circuits when the issue is currently in-flight (no PR query)", async () => {

@@ -18,38 +18,6 @@
       "submittedAt": "2026-05-10T12:34:56Z"
     }
   ],
-  "reviewThreads": [
-    {
-      "id": "PRRT_kwDOA1",
-      "isResolved": true,
-      "path": "src/util.ts",
-      "line": 7,
-      "comments": [
-        {
-          "id": "PRRC_resolved",
-          "author": { "login": "RepoOwner" },
-          "body": "Already addressed in commit abc.",
-          "createdAt": "2026-05-09T10:00:00Z"
-        }
-      ]
-    },
-    {
-      "id": "PRRT_kwDOA2",
-      "isResolved": false,
-      "path": "src/util.ts",
-      "line": 22,
-      "comments": [
-        {
-          "id": "PRRC_owner_comment",
-          "author": { "login": "codeowner-alice" },
-          "body": "Please add a JSDoc to this function.",
-          "createdAt": "2026-05-10T11:00:00Z",
-          "path": "src/util.ts",
-          "line": 22
-        }
-      ]
-    }
-  ],
   "comments": [
     {
       "id": "IC_drive_by",
