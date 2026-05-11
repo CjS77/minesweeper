@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-11
+
+### Changed
+- `removeWorktree` now deletes the local branch that was checked out in the worktree after the `git worktree remove
+  --force` step, preventing stale branches from accumulating in the main repository over time. New internal helpers
+  `resolveWorktreeBranch` (reads `git rev-parse --abbrev-ref HEAD`, returns `null` for detached HEAD) and
+  `deleteBranchIfPresent` (runs `git branch -D` and swallows already-deleted branches via a `/not found/i` match on
+  stderr). Public signature is unchanged.
+
 ## [0.3.0] — 2026-05-11
 
 ### Added
@@ -109,7 +118,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/CjS77/minesweeper/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/CjS77/minesweeper/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CjS77/minesweeper/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/CjS77/minesweeper/releases/tag/v0.1.0
