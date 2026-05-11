@@ -17,6 +17,7 @@ import {
   GhMissingError,
   GhNotARepoError,
   getIssue,
+  addReactionToReviewComment,
   getPullRequest,
   getRepoOwner,
   getReviewThreads,
@@ -320,6 +321,23 @@ describe("getReviewThreads", () => {
   it("returns an empty array when the PR has no inline comments", async () => {
     mockExeca.mockResolvedValueOnce(ok("[]") as never);
     expect(await getReviewThreads(99)).toEqual([]);
+  });
+});
+
+describe("addReactionToReviewComment", () => {
+  it("POSTs to /repos/{o}/{r}/pulls/comments/{id}/reactions with the supplied content", async () => {
+    mockExeca.mockResolvedValueOnce(ok('{"id":1,"content":"+1"}') as never);
+    await addReactionToReviewComment(5001, "+1");
+    const { args } = lastCall();
+    expect(args.slice(0, 3)).toEqual(["api", "-X", "POST"]);
+    expect(args).toContain("repos/{owner}/{repo}/pulls/comments/5001/reactions");
+    expect(args).toContain("-f");
+    expect(args).toContain("content=+1");
+  });
+
+  it("surfaces gh failures as a thrown GhError", async () => {
+    mockExeca.mockResolvedValueOnce(fail("HTTP 422") as never);
+    await expect(addReactionToReviewComment(5001, "+1")).rejects.toBeInstanceOf(GhError);
   });
 });
 

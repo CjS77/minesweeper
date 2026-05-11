@@ -266,6 +266,37 @@ function toSyntheticThread(c: RestReviewComment): PrReviewThread {
 }
 
 /**
+ * Reactions content values accepted by GitHub's reactions API. See
+ * <https://docs.github.com/en/rest/reactions/reactions>.
+ */
+export type ReactionContent = "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
+
+/**
+ * Post a reaction (e.g. `+1`) to an inline PR review comment via
+ * `POST /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions`.
+ *
+ * Used by the AddressingPRFeedback mode to ack each reviewer comment
+ * the executor has just addressed and pushed. The endpoint is
+ * specifically for *review* comments (i.e. inline comments attached to
+ * a line of code in a PR); top-level PR reviews themselves are not
+ * reactable through the GitHub API.
+ *
+ * The call is idempotent on the GitHub side — re-running with the
+ * same `(comment, content)` simply returns the existing reaction
+ * rather than creating a duplicate.
+ */
+export async function addReactionToReviewComment(
+  commentId: number,
+  content: ReactionContent,
+  opts: GhOverridable = {},
+): Promise<void> {
+  await runGh(
+    ["api", "-X", "POST", `repos/{owner}/{repo}/pulls/comments/${commentId}/reactions`, "-f", `content=${content}`],
+    ghOpts(opts),
+  );
+}
+
+/**
  * Return the login of the repository owner (`gh repo view --json owner`).
  * Used to seed the authorised-reviewer allowlist alongside
  * `CODEOWNERS` entries.

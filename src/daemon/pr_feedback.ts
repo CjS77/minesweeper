@@ -57,7 +57,7 @@ import * as defaultWorktree from "../worktree.js";
 import { loadCodeownerLogins as defaultLoadCodeownerLogins } from "../codeowners.js";
 import type { State } from "../child/state.js";
 import * as defaultState from "../child/state.js";
-import { PR_REVIEW_COMMENTS_FILE } from "../child/modes/feedback.js";
+import { PR_REVIEW_COMMENTS_FILE, writePrReviewCommentAcks } from "../child/modes/feedback.js";
 
 /** Worktree-shaped argument the supervisor accepts in `resume`. */
 export interface ResumeArg {
@@ -188,6 +188,7 @@ async function processCandidate(args: ProcessCandidateArgs): Promise<void> {
 
   const rendered = renderFeedback(fresh);
   await writeFeedbackFile(candidate.path, rendered);
+  await writePrReviewCommentAcks(candidate.path, ackIdsFor(fresh));
 
   const watermark = newestTimestamp(fresh) ?? new Date().toISOString();
   const newState = await writeState(candidate.path, {
@@ -303,6 +304,25 @@ function formatThreadAnchor(thread: PrReviewThread, comment: PrReviewThreadComme
   const line = thread.line ?? comment.line ?? null;
   if (path === null) return "";
   return line === null ? path : `${path}:${line}`;
+}
+
+/**
+ * Extract the numeric REST IDs of fresh inline review comments so
+ * the feedback mode can post a `+1` reaction on each one after the
+ * executor commits its fix. `getReviewThreads` populates `comment.id`
+ * with `String(restId)`, so the integer round-trip is lossless; any
+ * comment without a parseable integer id is silently dropped (it
+ * shouldn't happen, but we'd rather skip an ack than crash the
+ * dispatch).
+ */
+function ackIdsFor(fresh: FreshFeedback): number[] {
+  const ids: number[] = [];
+  for (const { comment } of fresh.threadComments) {
+    if (comment.id === undefined) continue;
+    const parsed = Number(comment.id);
+    if (Number.isInteger(parsed) && parsed > 0) ids.push(parsed);
+  }
+  return ids;
 }
 
 async function writeFeedbackFile(worktreePath: string, content: string): Promise<void> {

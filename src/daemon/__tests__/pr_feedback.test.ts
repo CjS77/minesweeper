@@ -8,7 +8,11 @@ import type * as ghModule from "../../github/index.js";
 import type { PrReviewThread, PullRequest } from "../../github/index.js";
 import type * as worktreeModule from "../../worktree.js";
 import { pollPrFeedback, type PrFeedbackDeps } from "../pr_feedback.js";
-import { PR_REVIEW_COMMENTS_FILE } from "../../child/modes/feedback.js";
+import {
+  PR_REVIEW_COMMENT_ACKS_FILE,
+  PR_REVIEW_COMMENTS_FILE,
+  PrReviewCommentAcksSchema,
+} from "../../child/modes/feedback.js";
 import { initState, readState, writeState, type State } from "../../child/state.js";
 
 const config = loadConfig({}, { configFile: null });
@@ -229,11 +233,13 @@ describe("pollPrFeedback", () => {
     ctx.getPullRequest.mockResolvedValueOnce(makePr({ reviewDecision: "APPROVED" }));
     ctx.getReviewThreads.mockResolvedValueOnce([
       {
+        id: "5001",
         isResolved: false,
         path: "src/foo.ts",
         line: 3,
         comments: [
           {
+            id: "5001",
             author: { login: "codeowner-alice" },
             body: "Add JSDoc here.",
             createdAt: "2026-05-10T12:00:00Z",
@@ -244,6 +250,36 @@ describe("pollPrFeedback", () => {
 
     await pollPrFeedback(ctx.deps);
     expect(ctx.resume).toHaveBeenCalledTimes(1);
+
+    // Sidecar acks file should contain the REST IDs of the dispatched inline comments.
+    const acksJson = await readFile(join(path, PR_REVIEW_COMMENT_ACKS_FILE), "utf8");
+    const acks = PrReviewCommentAcksSchema.parse(JSON.parse(acksJson));
+    expect(acks.commentIds).toEqual([5001]);
+  });
+
+  it("writes an empty acks file when only a top-level review triggered the dispatch (no inline comments)", async () => {
+    const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
+    const ctx = makeDeps();
+    ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+    ctx.getPullRequest.mockResolvedValueOnce(
+      makePr({
+        reviews: [
+          {
+            author: { login: "RepoOwner" },
+            body: "Add a test.",
+            state: "CHANGES_REQUESTED",
+            submittedAt: "2026-05-10T12:00:00Z",
+          },
+        ],
+      }),
+    );
+
+    await pollPrFeedback(ctx.deps);
+    expect(ctx.resume).toHaveBeenCalledTimes(1);
+
+    const acksJson = await readFile(join(path, PR_REVIEW_COMMENT_ACKS_FILE), "utf8");
+    const acks = PrReviewCommentAcksSchema.parse(JSON.parse(acksJson));
+    expect(acks.commentIds).toEqual([]);
   });
 
   it("ignores resolved threads and drive-by users", async () => {
