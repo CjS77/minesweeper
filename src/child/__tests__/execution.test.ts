@@ -3,18 +3,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("execa", () => ({
+  execa: vi.fn(),
+}));
+
+import { execa } from "execa";
+
 import type { Config } from "../../config.js";
 import type { Issue } from "../../github/index.js";
 import { initState, readState, type State } from "../state.js";
 import {
   FINAL_PLAN_FILE,
   REVIEW_COMMENTS_FILE,
+  defaultGit,
+  isNonFastForwardRejection,
   parseReviewerVerdict,
   runExecution,
   type GitOps,
   type RunSubagentFn,
 } from "../modes/execution.js";
 import type { SubagentResult } from "../../claude/index.js";
+
+const mockExeca = vi.mocked(execa);
 
 const FAKE_CONFIG: Config = {
   defaultEligible: false,
@@ -545,5 +555,102 @@ describe("runExecution — PR body normalisation", () => {
     });
     const body = (createPr.mock.calls[0]?.[0] as Record<string, string>).body;
     expect(body.trim()).toBe("Fixes #42");
+  });
+});
+
+// Sample stderr the user reported (lines abridged from a real failure).
+const FETCH_FIRST_STDERR =
+  "To github.com:CjS77/minesweeper.git\n" +
+  " ! [rejected]        minesweeper-issue0019 -> minesweeper-issue0019 (fetch first)\n" +
+  "error: failed to push some refs to 'github.com:CjS77/minesweeper.git'\n";
+
+const NON_FAST_FORWARD_STDERR =
+  "To github.com:CjS77/minesweeper.git\n" +
+  " ! [rejected]        feat -> feat (non-fast-forward)\n" +
+  "error: failed to push some refs\n";
+
+describe("isNonFastForwardRejection", () => {
+  it("matches the `(fetch first)` rejection", () => {
+    expect(isNonFastForwardRejection(FETCH_FIRST_STDERR)).toBe(true);
+  });
+
+  it("matches the `(non-fast-forward)` rejection", () => {
+    expect(isNonFastForwardRejection(NON_FAST_FORWARD_STDERR)).toBe(true);
+  });
+
+  it("does not match unrelated stderr", () => {
+    expect(isNonFastForwardRejection("error: could not resolve host github.com\n")).toBe(false);
+  });
+
+  it("does not match a `[rejected]` literal that lacks the parenthesised marker", () => {
+    expect(isNonFastForwardRejection("commit msg: ! [rejected] some idea\n")).toBe(false);
+  });
+});
+
+describe("defaultGit.pushBranch", () => {
+  function pushFailure(stderr: string): Error & { stderr: string; stdout: string; exitCode: number } {
+    return Object.assign(new Error("Command failed with exit code 1"), { stderr, stdout: "", exitCode: 1 });
+  }
+
+  beforeEach(() => {
+    mockExeca.mockReset();
+  });
+
+  it("pushes once and returns when the push succeeds on the first try", async () => {
+    mockExeca.mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+
+    await defaultGit.pushBranch("/repo", "feat");
+
+    expect(mockExeca).toHaveBeenCalledTimes(1);
+    expect(mockExeca).toHaveBeenCalledWith("git", ["push", "-u", "origin", "feat"], { cwd: "/repo" });
+  });
+
+  it("rebases on the remote and retries when the push is rejected as fetch-first", async () => {
+    mockExeca
+      .mockRejectedValueOnce(pushFailure(FETCH_FIRST_STDERR))
+      .mockResolvedValueOnce({ stdout: "Successfully rebased.\n", stderr: "", exitCode: 0 } as never)
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+
+    await defaultGit.pushBranch("/repo", "feat");
+
+    expect(mockExeca).toHaveBeenCalledTimes(3);
+    expect(mockExeca).toHaveBeenNthCalledWith(1, "git", ["push", "-u", "origin", "feat"], { cwd: "/repo" });
+    expect(mockExeca).toHaveBeenNthCalledWith(2, "git", ["pull", "--rebase", "origin", "feat"], { cwd: "/repo" });
+    expect(mockExeca).toHaveBeenNthCalledWith(3, "git", ["push", "-u", "origin", "feat"], { cwd: "/repo" });
+  });
+
+  it("also retries on a `(non-fast-forward)` rejection", async () => {
+    mockExeca
+      .mockRejectedValueOnce(pushFailure(NON_FAST_FORWARD_STDERR))
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never)
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+
+    await defaultGit.pushBranch("/repo", "feat");
+
+    expect(mockExeca).toHaveBeenCalledTimes(3);
+    expect(mockExeca.mock.calls[1]?.[1]).toEqual(["pull", "--rebase", "origin", "feat"]);
+  });
+
+  it("aborts the rebase and propagates the original rebase error when the rebase hits a conflict", async () => {
+    const rebaseErr = pushFailure(
+      "Auto-merging README.md\nCONFLICT (content): Merge conflict in README.md\nerror: could not apply abc\n",
+    );
+    mockExeca
+      .mockRejectedValueOnce(pushFailure(FETCH_FIRST_STDERR))
+      .mockRejectedValueOnce(rebaseErr)
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+
+    await expect(defaultGit.pushBranch("/repo", "feat")).rejects.toBe(rebaseErr);
+
+    expect(mockExeca).toHaveBeenCalledTimes(3);
+    expect(mockExeca).toHaveBeenNthCalledWith(3, "git", ["rebase", "--abort"], { cwd: "/repo", reject: false });
+  });
+
+  it("propagates unrelated push failures without retrying", async () => {
+    const networkErr = pushFailure("ssh: connect to host github.com port 22: Connection timed out\n");
+    mockExeca.mockRejectedValueOnce(networkErr);
+
+    await expect(defaultGit.pushBranch("/repo", "feat")).rejects.toBe(networkErr);
+    expect(mockExeca).toHaveBeenCalledTimes(1);
   });
 });
