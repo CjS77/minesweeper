@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,9 +12,10 @@ vi.mock("execa", () => ({
 import chalk from "chalk";
 import { execa } from "execa";
 import { loadConfig } from "../../config.js";
+import { createLogger, resetLoggerForTest } from "../../logging.js";
 import type { Issue } from "../../github/index.js";
 import type { OrphanedWorktree } from "../../worktree.js";
-import { runIssueListCommand, runIssueNewCommand } from "../issues.js";
+import { parseIssueDraft, runIssueListCommand, runIssueNewCommand } from "../issues.js";
 
 // Force chalk to emit ANSI in tests; vitest's pipe stdout otherwise auto-disables colour.
 chalk.level = 3;
@@ -68,9 +69,16 @@ function fakeWorktree(orphans: OrphanedWorktree[]): { listOrphans: ReturnType<ty
 beforeEach(() => {
   mockExeca.mockReset();
   tmp = mkdtempSync(join(tmpdir(), "minesweeper-issues-"));
+  createLogger({
+    filePath: join(tmp, "logs", "test.log"),
+    quiet: true,
+    sync: true,
+    stdout: new PassThrough(),
+  });
 });
 
 afterEach(async () => {
+  resetLoggerForTest();
   mockExeca.mockReset();
   await rm(tmp, { recursive: true, force: true });
 });
@@ -245,10 +253,289 @@ describe("runIssueListCommand — eligibility tagging (Strategy B: module overri
   });
 });
 
+function strictDraft(title: string, body: string): string {
+  return `TITLE: ${title}\n---\n${body}`;
+}
+
+function fakeClaude(finalText: string): {
+  runSubagent: ReturnType<typeof vi.fn>;
+} {
+  return {
+    runSubagent: vi.fn().mockResolvedValue({
+      finalText,
+      events: 1,
+      durationMs: 10,
+      stopReason: "end_turn",
+      transcriptPath: "/tmp/fake-transcript.jsonl",
+    }),
+  };
+}
+
+function fakeGithubCreate(
+  number: number,
+  url: string,
+): {
+  createIssue: ReturnType<typeof vi.fn>;
+} {
+  return {
+    createIssue: vi.fn().mockResolvedValue({ number, url }),
+  };
+}
+
+const NOOP_EDIT = async (): Promise<void> => undefined;
+const EMPTY_STDIN = async (): Promise<string> => "";
+
+describe("parseIssueDraft", () => {
+  it("splits the strict TITLE:/--- form", () => {
+    const out = parseIssueDraft("TITLE: feat: do the thing\n---\n## Problem\n\nIt is broken.\n");
+    expect(out.title).toBe("feat: do the thing");
+    expect(out.body).toBe("## Problem\n\nIt is broken.");
+  });
+
+  it("falls back to first-line/rest when markers are missing", () => {
+    const out = parseIssueDraft("# bug: something\n\nA paragraph.\n");
+    expect(out.title).toBe("bug: something");
+    expect(out.body).toBe("A paragraph.");
+  });
+
+  it("returns empty title and body on whitespace-only input", () => {
+    const out = parseIssueDraft("   \n  \n");
+    expect(out).toEqual({ title: "", body: "" });
+  });
+});
+
 describe("runIssueNewCommand", () => {
-  it("writes the stub message to stdout", () => {
+  it("calls the issuewriter and createIssue, applying the autofix label by default", async () => {
     const out = makeStdout();
-    runIssueNewCommand({ stdout: out.stream });
-    expect(out.text()).toContain("not yet implemented");
+    const claude = fakeClaude(strictDraft("feat: hello", "## Problem\n\nworld."));
+    const github = fakeGithubCreate(42, "https://github.com/example/repo/issues/42");
+
+    const result = await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "hello world",
+      autoConfirm: true,
+      stdout: out.stream,
+      claude,
+      github,
+      readStdin: EMPTY_STDIN,
+      editDraft: NOOP_EDIT,
+    });
+
+    expect(result).toEqual({ issueNumber: 42, url: "https://github.com/example/repo/issues/42" });
+    expect(claude.runSubagent).toHaveBeenCalledTimes(1);
+    const claudeArgs = claude.runSubagent.mock.calls[0]?.[0] as { role: string; userPrompt: string };
+    expect(claudeArgs.role).toBe("issuewriter");
+    expect(claudeArgs.userPrompt).toContain("hello world");
+    expect(github.createIssue).toHaveBeenCalledTimes(1);
+    expect(github.createIssue.mock.calls[0]?.[0]).toMatchObject({
+      title: "feat: hello",
+      body: "## Problem\n\nworld.",
+      labels: ["autofix"],
+      cwd: tmp,
+    });
+  });
+
+  it("with -n omits the autofix label", async () => {
+    const claude = fakeClaude(strictDraft("t", "b"));
+    const github = fakeGithubCreate(1, "https://github.com/example/repo/issues/1");
+
+    await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "x",
+      autoConfirm: true,
+      addAutoFixLabel: false,
+      stdout: makeStdout().stream,
+      claude,
+      github,
+      readStdin: EMPTY_STDIN,
+      editDraft: NOOP_EDIT,
+    });
+
+    expect(github.createIssue.mock.calls[0]?.[0]).toMatchObject({ labels: [] });
+  });
+
+  it("with -y skips the editor confirmation step", async () => {
+    const claude = fakeClaude(strictDraft("t", "b"));
+    const github = fakeGithubCreate(1, "https://github.com/example/repo/issues/1");
+    const editDraft = vi.fn(NOOP_EDIT);
+
+    await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "x",
+      autoConfirm: true,
+      stdout: makeStdout().stream,
+      claude,
+      github,
+      readStdin: EMPTY_STDIN,
+      editDraft,
+    });
+
+    expect(editDraft).not.toHaveBeenCalled();
+  });
+
+  it("opens the editor when -y is omitted, then uses the saved file", async () => {
+    const claude = fakeClaude(strictDraft("original", "first body"));
+    const github = fakeGithubCreate(1, "https://github.com/example/repo/issues/1");
+    const editDraft = vi.fn(async (path: string) => {
+      writeFileSync(path, "TITLE: edited\n---\nrewritten body\n", "utf-8");
+    });
+
+    await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "x",
+      autoConfirm: false,
+      stdout: makeStdout().stream,
+      claude,
+      github,
+      readStdin: EMPTY_STDIN,
+      editDraft,
+    });
+
+    expect(editDraft).toHaveBeenCalledTimes(1);
+    expect(github.createIssue.mock.calls[0]?.[0]).toMatchObject({
+      title: "edited",
+      body: "rewritten body",
+    });
+  });
+
+  it("aborts (throws) when the editor leaves the draft empty", async () => {
+    const claude = fakeClaude(strictDraft("t", "b"));
+    const github = fakeGithubCreate(1, "https://github.com/example/repo/issues/1");
+    const editDraft = vi.fn(async (path: string) => {
+      writeFileSync(path, "", "utf-8");
+    });
+
+    await expect(
+      runIssueNewCommand({
+        config: loadConfig({}, { configFile: null }),
+        cwd: tmp,
+        message: "x",
+        autoConfirm: false,
+        stdout: makeStdout().stream,
+        claude,
+        github,
+        readStdin: EMPTY_STDIN,
+        editDraft,
+      }),
+    ).rejects.toThrow(/emptied in the editor/);
+    expect(github.createIssue).not.toHaveBeenCalled();
+  });
+
+  it("appends -f file contents to the user prompt", async () => {
+    const filePath = join(tmp, "extra.md");
+    writeFileSync(filePath, "EXTRA_CONTEXT_MARKER: panic when foo=42", "utf-8");
+    const claude = fakeClaude(strictDraft("t", "b"));
+    const github = fakeGithubCreate(1, "https://github.com/example/repo/issues/1");
+
+    await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "short framing",
+      filePath,
+      autoConfirm: true,
+      stdout: makeStdout().stream,
+      claude,
+      github,
+      readStdin: EMPTY_STDIN,
+      editDraft: NOOP_EDIT,
+    });
+
+    const prompt = claude.runSubagent.mock.calls[0]?.[0].userPrompt as string;
+    expect(prompt).toContain("short framing");
+    expect(prompt).toContain("EXTRA_CONTEXT_MARKER: panic when foo=42");
+  });
+
+  it("reads from stdin when message and -f are empty", async () => {
+    const claude = fakeClaude(strictDraft("t", "b"));
+    const github = fakeGithubCreate(1, "https://github.com/example/repo/issues/1");
+
+    await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "",
+      autoConfirm: true,
+      stdout: makeStdout().stream,
+      claude,
+      github,
+      readStdin: async () => "PIPED_INPUT: the daemon crashes on startup",
+      editDraft: NOOP_EDIT,
+    });
+
+    const prompt = claude.runSubagent.mock.calls[0]?.[0].userPrompt as string;
+    expect(prompt).toContain("PIPED_INPUT: the daemon crashes on startup");
+  });
+
+  it("throws when message, -f, and stdin are all empty", async () => {
+    const claude = fakeClaude(strictDraft("t", "b"));
+    const github = fakeGithubCreate(1, "https://github.com/example/repo/issues/1");
+
+    await expect(
+      runIssueNewCommand({
+        config: loadConfig({}, { configFile: null }),
+        cwd: tmp,
+        message: "",
+        autoConfirm: true,
+        stdout: makeStdout().stream,
+        claude,
+        github,
+        readStdin: EMPTY_STDIN,
+        editDraft: NOOP_EDIT,
+      }),
+    ).rejects.toThrow(/no input provided/);
+    expect(claude.runSubagent).not.toHaveBeenCalled();
+    expect(github.createIssue).not.toHaveBeenCalled();
+  });
+
+  it("falls back to first-line/rest when Claude's output has no TITLE:/--- markers", async () => {
+    const claude = fakeClaude("# loose: malformed draft\n\nbody paragraph\n");
+    const github = fakeGithubCreate(1, "https://github.com/example/repo/issues/1");
+
+    await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "x",
+      autoConfirm: true,
+      stdout: makeStdout().stream,
+      claude,
+      github,
+      readStdin: EMPTY_STDIN,
+      editDraft: NOOP_EDIT,
+    });
+
+    expect(github.createIssue.mock.calls[0]?.[0]).toMatchObject({
+      title: "loose: malformed draft",
+      body: "body paragraph",
+    });
+  });
+
+  it("writes the draft tmpfile and passes its path to editDraft", async () => {
+    const claude = fakeClaude(strictDraft("draft-title", "draft body"));
+    const github = fakeGithubCreate(1, "https://github.com/example/repo/issues/1");
+    let observedPath = "";
+    const editDraft = vi.fn(async (path: string) => {
+      observedPath = path;
+      // Leave the file unchanged.
+    });
+
+    await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "x",
+      autoConfirm: false,
+      stdout: makeStdout().stream,
+      claude,
+      github,
+      readStdin: EMPTY_STDIN,
+      editDraft,
+    });
+
+    expect(observedPath).toMatch(/issue-draft\.md$/);
+    const written = readFileSync(observedPath, "utf-8");
+    expect(written).toContain("TITLE: draft-title");
+    expect(written).toContain("draft body");
   });
 });

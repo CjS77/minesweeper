@@ -22,6 +22,7 @@ const FAKE_CONFIG: Config = {
   planningAgent: "p",
   reviewAgent: "r",
   executionAgent: "e",
+  issueWriterAgent: "i",
   worktreePath: "/tmp/wt",
   prBaseBranch: "main",
   pollIntervalSeconds: 60,

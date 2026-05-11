@@ -31,6 +31,7 @@ const FAKE_CONFIG: Config = {
   planningAgent: "opus-planning",
   reviewAgent: "sonnet-review",
   executionAgent: "opus-execution",
+  issueWriterAgent: "sonnet-issue-writer",
   worktreePath: "/tmp/wt",
   prBaseBranch: "main",
   pollIntervalSeconds: 60,
