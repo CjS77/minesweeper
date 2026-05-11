@@ -44,14 +44,20 @@
 
 import type { Config } from "../config.js";
 import * as defaultGithub from "../github/index.js";
-import type { Issue } from "../github/index.js";
 import { event as defaultEvent, type Logger } from "../logging.js";
+import { workItemIsOpen, workItemNumber, type WorkItem } from "../workitem.js";
 import { screenIssue as defaultScreenIssue, type ScreenResult } from "./screen.js";
 
-export function isEligible(issue: Issue, config: Config): boolean {
-  if (issue.state === "CLOSED") return false;
+/**
+ * Cheap synchronous eligibility check for a {@link WorkItem}. Issues run
+ * through the label hierarchy; alerts short-circuit on `config.alertsEligible`
+ * (alerts cannot carry labels and there is no per-alert opt-in mechanism).
+ */
+export function isEligible(item: WorkItem, config: Config): boolean {
+  if (!workItemIsOpen(item)) return false;
+  if (item.kind !== "issue") return config.alertsEligible;
 
-  const labels = new Set(issue.labels.map((l) => l.name));
+  const labels = new Set(item.labels.map((l) => l.name));
   const has = (name: string): boolean => labels.has(name);
 
   if (has(config.neverFixLabel)) return false;
@@ -91,23 +97,30 @@ export interface DecideEligibilityDeps {
 }
 
 /**
- * Decide whether an issue should be processed. Runs the label hierarchy
- * via {@link isEligible} for the cheap branches, then defers to the
- * screener for the catch-all `defaultEligible=true` case. On
- * `dangerous` / `uncertain` verdicts the issue is labelled
- * `possiblyDangerous`; on `dangerous` we also leave a polite comment
- * pointing at the override label.
+ * Decide whether a work item should be processed. Issues run through the
+ * label hierarchy and (for `tryFix` / `defaultEligible` branches) the
+ * screener. Alerts skip the screener entirely — they are eligible iff
+ * `config.alertsEligible` is true. Closed issues / non-open alerts are
+ * always ineligible.
  */
-export async function decideEligibility(issue: Issue, deps: DecideEligibilityDeps): Promise<EligibilityDecision> {
+export async function decideEligibility(item: WorkItem, deps: DecideEligibilityDeps): Promise<EligibilityDecision> {
   const { config, cwd } = deps;
   const emit = deps.emit ?? defaultEvent;
   const gh = deps.github ?? defaultGithub;
   const screen = deps.screenIssue ?? defaultScreenIssue;
 
-  if (issue.state === "CLOSED") {
-    return { eligible: false, reason: "issue is closed" };
+  if (!workItemIsOpen(item)) {
+    return { eligible: false, reason: item.kind === "issue" ? "issue is closed" : "alert is not open" };
   }
 
+  if (item.kind !== "issue") {
+    return {
+      eligible: config.alertsEligible,
+      reason: `${item.kind} (alertsEligible=${config.alertsEligible})`,
+    };
+  }
+
+  const issue = item;
   const labels = new Set(issue.labels.map((l) => l.name));
   if (labels.has(config.neverFixLabel)) {
     return { eligible: false, reason: `has ${config.neverFixLabel}` };
@@ -142,13 +155,13 @@ export async function decideEligibility(issue: Issue, deps: DecideEligibilityDep
   }
 
   if (screened.verdict === "dangerous") {
-    await applyDangerousLabel(gh, issue.number, config, cwd, emit);
-    await postScreenerComment(gh, issue.number, screened.verdict, config, cwd, emit);
+    await applyDangerousLabel(gh, workItemNumber(item), config, cwd, emit);
+    await postScreenerComment(gh, workItemNumber(item), screened.verdict, config, cwd, emit);
     return { eligible: false, reason: `${route}: dangerous`, screen: screened };
   }
 
   // uncertain
-  await applyDangerousLabel(gh, issue.number, config, cwd, emit);
+  await applyDangerousLabel(gh, workItemNumber(item), config, cwd, emit);
   return { eligible: false, reason: `${route}: uncertain`, screen: screened };
 }
 

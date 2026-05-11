@@ -168,3 +168,114 @@ export const PullRequestSchema = z
   })
   .loose();
 export type PullRequest = z.infer<typeof PullRequestSchema>;
+
+/**
+ * Alert state. Code-scanning uses `open | dismissed | fixed`; secret-scanning
+ * uses `open | resolved`. We model the union here so a single helper can ask
+ * "is this alert still actionable?" by comparing to `"open"`. `.loose()` is
+ * not used because the field is a small closed set we want to validate.
+ */
+export const AlertStateSchema = z.enum(["open", "dismissed", "fixed", "auto_dismissed", "resolved"]);
+export type AlertState = z.infer<typeof AlertStateSchema>;
+
+/**
+ * Code-scanning alert as returned by `GET /repos/{o}/{r}/code-scanning/alerts`.
+ * We project the fields the planner needs (rule id/severity, file location)
+ * and pass everything else through via `.loose()` so future additions do not
+ * break parsing.
+ */
+export const CodeScanningAlertSchema = z
+  .object({
+    number: z.number().int().positive(),
+    state: AlertStateSchema,
+    html_url: z.url(),
+    created_at: z.iso.datetime(),
+    updated_at: z.iso.datetime().optional(),
+    rule: z
+      .object({
+        id: z.string().optional(),
+        name: z.string().optional(),
+        severity: z.string().nullable().optional(),
+        security_severity_level: z.string().nullable().optional(),
+        description: z.string().optional(),
+        full_description: z.string().optional(),
+      })
+      .loose(),
+    tool: z
+      .object({
+        name: z.string().optional(),
+        version: z.string().nullable().optional(),
+      })
+      .loose()
+      .optional(),
+    most_recent_instance: z
+      .object({
+        ref: z.string().optional(),
+        commit_sha: z.string().optional(),
+        message: z
+          .object({
+            text: z.string().optional(),
+          })
+          .loose()
+          .optional(),
+        location: z
+          .object({
+            path: z.string().optional(),
+            start_line: z.number().int().optional(),
+            end_line: z.number().int().optional(),
+            start_column: z.number().int().optional(),
+            end_column: z.number().int().optional(),
+          })
+          .loose()
+          .optional(),
+      })
+      .loose()
+      .optional(),
+  })
+  .loose();
+export type CodeScanningAlert = z.infer<typeof CodeScanningAlertSchema>;
+export const CodeScanningAlertListSchema = z.array(CodeScanningAlertSchema);
+
+/**
+ * Secret-scanning alert as returned by
+ * `GET /repos/{o}/{r}/secret-scanning/alerts`. The actual `secret` value is
+ * intentionally omitted from the projection — Minesweeper never needs to
+ * touch the leaked credential, only the alert metadata.
+ */
+export const SecretScanningAlertSchema = z
+  .object({
+    number: z.number().int().positive(),
+    state: AlertStateSchema,
+    html_url: z.url(),
+    created_at: z.iso.datetime(),
+    updated_at: z.iso.datetime().nullable().optional(),
+    secret_type: z.string().optional(),
+    secret_type_display_name: z.string().optional(),
+    resolution: z.string().nullable().optional(),
+  })
+  .loose();
+export type SecretScanningAlert = z.infer<typeof SecretScanningAlertSchema>;
+export const SecretScanningAlertListSchema = z.array(SecretScanningAlertSchema);
+
+/**
+ * Locations API for a single secret-scanning alert
+ * (`GET /repos/{o}/{r}/secret-scanning/alerts/{n}/locations`). Returned as a
+ * flat array; we surface only the commit-path entries the planner needs.
+ */
+export const SecretScanningAlertLocationSchema = z
+  .object({
+    type: z.string().optional(),
+    details: z
+      .object({
+        path: z.string().optional(),
+        start_line: z.number().int().optional(),
+        end_line: z.number().int().optional(),
+        commit_sha: z.string().optional(),
+        blob_sha: z.string().optional(),
+      })
+      .loose()
+      .optional(),
+  })
+  .loose();
+export type SecretScanningAlertLocation = z.infer<typeof SecretScanningAlertLocationSchema>;
+export const SecretScanningAlertLocationListSchema = z.array(SecretScanningAlertLocationSchema);

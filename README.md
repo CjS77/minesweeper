@@ -149,6 +149,28 @@ malicious code via issue-hijacking or prompt injection. If the latter, it marks 
 `MINESWEEPER_POSSIBLY_DANGEROUS_LABEL` and skips it. Until that screen lands, keep `MINESWEEPER_DEFAULT_ELIGIBLE=false`
 and rely on the always-fix label.
 
+### Alerts (code-scanning, secret-scanning)
+
+In addition to issues, the daemon polls **GitHub Advanced Security** alerts via the REST API:
+
+- `GET /repos/{o}/{r}/code-scanning/alerts` — CodeQL & SARIF findings.
+- `GET /repos/{o}/{r}/secret-scanning/alerts` — leaked credentials.
+
+Alerts cannot carry GitHub labels, so the per-label opt-in / opt-out controls do not apply. Eligibility is gated by a
+single boolean: `MINESWEEPER_ALERTS_ELIGIBLE` (default `true`). When true, every open alert is treated as if it
+carried the always-fix label — eligible without a screen. When false, alerts are hard-ineligible and the daemon
+stops calling the alert APIs (so disabled-GHAS repos do not log a 403 every poll).
+
+Alerts share the rest of the pipeline with issues — worktree creation, planning, execution, PR opening — with two
+differences: branches are namespaced by kind (`{slug}-codeScanningAlert{NNNN}` / `{slug}-secretScanningAlert{NNNN}`),
+and the PR body trailer is a `## Closes alert` section linking to the alert URL instead of `Fixes #N` (alerts do not
+auto-close from PR-body keywords; code-scanning alerts close when the vulnerable code is removed, secret-scanning
+alerts must be manually dismissed). Dependabot alerts are out of scope today.
+
+The poller fetches issues, code-scanning alerts, and secret-scanning alerts in parallel; an outage in any single
+endpoint emits a `WARN` and continues with the rest, so a token without `security_events` scope does not stall issue
+polling.
+
 ### Planning mode
 
 In planning mode, the per-issue child process:
@@ -281,6 +303,7 @@ copy-pasteable template.
 | Environment Variable                   | Meaning                                                              | Default               |
 |----------------------------------------|----------------------------------------------------------------------|-----------------------|
 | `MINESWEEPER_DEFAULT_ELIGIBLE`         | Issues are eligible by default                                       | `false`               |
+| `MINESWEEPER_ALERTS_ELIGIBLE`          | Code-scanning & secret-scanning alerts are eligible (no labels)      | `true`                |
 | `MINESWEEPER_ALWAYS_FIX_LABEL`         | Issues labelled with this value are _always_ eligible                | `"autofix"`           |
 | `MINESWEEPER_TRY_FIX_LABEL`            | Issues labelled with this value are eligible _after_ the screener clears them | `"tryFix"`   |
 | `MINESWEEPER_NEVER_FIX_LABEL`          | Issues labelled with this value are _never_ eligible                 | `"manual"`            |
@@ -415,20 +438,19 @@ minesweeper log view executor-01 --max-lines 0
 
 # Bootstrap mode — using Minesweeper to develop Minesweeper
 
-Minesweeper is built to dogfood itself. From plan 10 onwards we file `autofix`-labelled issues against this very repo
-and let the daemon raise the PRs. While that's exciting, it's also where things can go sideways fastest, so the
-following safety rules apply during the bootstrap milestones (M1 → end of M2):
+Minesweeper was built to dogfood itself. During the run-up to **v0.2.0** we filed `autofix`-labelled issues against
+this very repo and let the daemon raise the PRs. While exciting, that was also where things could go sideways fastest,
+so the following safety rules applied throughout bootstrap:
 
-* **Run only against issues you filed yourself.** Do not point bootstrap-mode Minesweeper at issues filed by external
-  contributors until the prompt-injection screen lands in plan 11.
-* **Keep `MINESWEEPER_DEFAULT_ELIGIBLE=false`.** The always-fix label is the only opt-in path during bootstrap.
+* **Run only against issues you filed yourself.** Bootstrap-mode Minesweeper was not pointed at issues filed by external
+  contributors until the prompt-injection screen landed.
+* **Keep `MINESWEEPER_DEFAULT_ELIGIBLE=false`.** The always-fix label was the only opt-in path during bootstrap.
 * **The main checkout is never touched.** The daemon only ever operates inside generated worktrees, so uncommitted
-  work in your main checkout is safe by construction.
-* **Review every PR.** Bootstrap-mode Minesweeper opens PRs the same way a human contributor would — they go through
-  the normal CI + review path. Do not auto-merge.
-* **Stop on red.** If two consecutive runs produce broken PRs, stop the daemon and inspect the worktrees rather than
-  letting it churn.
+  work in the main checkout was safe by construction.
+* **Review every PR.** Bootstrap-mode Minesweeper opened PRs the same way a human contributor would — they went through
+  the normal CI + review path. Nothing was auto-merged.
+* **Stop on red.** If two consecutive runs produced broken PRs, the daemon was stopped and the worktrees inspected
+  rather than letting it churn.
 
-After the M1 self-hosting test (see `plans/10_eligibility_label_only_and_readme.md`) and M2 lands, these rules
-relax — at that point the prompt-injection screen makes external issues safer to accept, and assess/refine modes
-let Minesweeper decompose its own work.
+With v0.2.0 shipped, these rules have relaxed: the prompt-injection screen now makes external issues safer to accept,
+and assess/refine modes let Minesweeper decompose its own work.

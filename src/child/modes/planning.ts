@@ -39,12 +39,18 @@ import { dirname, join } from "node:path";
 
 import type { Config } from "../../config.js";
 import * as defaultGithub from "../../github/index.js";
-import type { Issue } from "../../github/index.js";
 import { event as defaultEvent, type Logger } from "../../logging.js";
 import { runSubagent as defaultRunSubagent } from "../../claude/index.js";
 import type { RunSubagentOptions, SubagentResult } from "../../claude/index.js";
 import * as defaultState from "../state.js";
 import type { State } from "../state.js";
+import {
+  asCodeScanningWorkItem,
+  asIssueWorkItem,
+  asSecretScanningWorkItem,
+  formatWorkItem,
+  type WorkItem,
+} from "../../workitem.js";
 
 /** Path (worktree-relative) where the in-progress plan is persisted. */
 export const CURRENT_PLAN_FILE = join(".minesweeper", "current_plan.md");
@@ -90,7 +96,7 @@ export interface PlanningDeps {
   /** State as just read from disk by the handler. */
   state: State;
   /** Override the GitHub wrapper (tests). */
-  github?: Pick<typeof defaultGithub, "getIssue">;
+  github?: Pick<typeof defaultGithub, "getIssue" | "getCodeScanningAlert" | "getSecretScanningAlert">;
   /** Override the subagent runner (tests). */
   runSubagent?: RunSubagentFn;
   /** Override the state writer (tests can wrap to assert call sequence). */
@@ -119,7 +125,7 @@ export async function runPlanning(deps: PlanningDeps): Promise<State> {
 
   emit("planner", "WORK", issueNumber, `planning starting at iteration ${state.iterations + 1}/${state.maxIterations}`);
 
-  const issue = await gh.getIssue(issueNumber, { cwd });
+  const item = await fetchWorkItem(gh, state, cwd);
   let currentPlan = await readFileIfExists(join(cwd, CURRENT_PLAN_FILE));
   let approved = false;
 
@@ -131,7 +137,7 @@ export async function runPlanning(deps: PlanningDeps): Promise<State> {
       const result = await runSubagent({
         role: "planner",
         config,
-        userPrompt: plannerPromptFor(issue, currentPlan),
+        userPrompt: plannerPromptFor(item, currentPlan),
         issueNumber,
         iteration,
         cwd,
@@ -149,7 +155,7 @@ export async function runPlanning(deps: PlanningDeps): Promise<State> {
     const result = await runSubagent({
       role: "critic",
       config,
-      userPrompt: criticPromptFor(issue, currentPlan),
+      userPrompt: criticPromptFor(item, currentPlan),
       issueNumber,
       iteration,
       cwd,
@@ -282,17 +288,17 @@ export function sanitisePlan(plan: string, emit: Logger["event"], issueNumber: n
   return trimmed.replace(/\s+$/, "");
 }
 
-function plannerPromptFor(issue: Issue, annotatedPlan: string | null): string {
-  const issueBlock = formatIssue(issue);
+function plannerPromptFor(item: WorkItem, annotatedPlan: string | null): string {
+  const block = formatWorkItem(item);
   if (annotatedPlan === null) {
     return [
-      issueBlock,
+      block,
       "",
-      "Produce an execution plan for this issue. Follow the output format described in your system prompt.",
+      "Produce an execution plan for this work item. Follow the output format described in your system prompt.",
     ].join("\n");
   }
   return [
-    issueBlock,
+    block,
     "",
     'Below is the prior execution plan with the critic\'s review appended under "## Execution Plan review".',
     "Produce a revised plan that addresses every bullet under that heading.",
@@ -301,28 +307,28 @@ function plannerPromptFor(issue: Issue, annotatedPlan: string | null): string {
   ].join("\n");
 }
 
-function criticPromptFor(issue: Issue, currentPlan: string): string {
-  return [formatIssue(issue), "", "Review the following execution plan.", "", currentPlan].join("\n");
+function criticPromptFor(item: WorkItem, currentPlan: string): string {
+  return [formatWorkItem(item), "", "Review the following execution plan.", "", currentPlan].join("\n");
 }
 
-function formatIssue(issue: Issue): string {
-  const labels = issue.labels.map((l) => l.name).join(", ") || "(none)";
-  const lines = [
-    `# GitHub issue #${issue.number}`,
-    `Title: ${issue.title}`,
-    `Author: ${issue.author.login}`,
-    `Labels: ${labels}`,
-    `URL: ${issue.url}`,
-    "",
-    "## Body",
-    "",
-    issue.body.length > 0 ? issue.body : "(empty body)",
-  ];
-  if (issue.comments && issue.comments.length > 0) {
-    lines.push("", "## Comments");
-    for (const c of issue.comments) {
-      lines.push("", `### ${c.author.login} — ${c.createdAt}`, "", c.body);
+/**
+ * Resolve the on-disk `state.kind` to a fresh GitHub fetch of the
+ * underlying work item. Used by the planner so the prompt always reflects
+ * the latest issue title / alert state, even after a child resume.
+ */
+async function fetchWorkItem(gh: NonNullable<PlanningDeps["github"]>, state: State, cwd: string): Promise<WorkItem> {
+  switch (state.kind) {
+    case "issue": {
+      const issue = await gh.getIssue(state.issueNumber, { cwd });
+      return asIssueWorkItem(issue);
+    }
+    case "codeScanningAlert": {
+      const alert = await gh.getCodeScanningAlert(state.issueNumber, { cwd });
+      return asCodeScanningWorkItem(alert);
+    }
+    case "secretScanningAlert": {
+      const alert = await gh.getSecretScanningAlert(state.issueNumber, { cwd });
+      return asSecretScanningWorkItem(alert);
     }
   }
-  return lines.join("\n");
 }

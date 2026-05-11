@@ -42,13 +42,13 @@ import { execaNode } from "execa";
 
 import type { Config } from "../config.js";
 import * as defaultGithub from "../github/index.js";
-import type { Issue } from "../github/index.js";
 import { event as defaultEvent, type Logger } from "../logging.js";
 import * as defaultWorktree from "../worktree.js";
 import * as defaultState from "../child/state.js";
-import type { State } from "../child/state.js";
+import type { State, WorkItemKind } from "../child/state.js";
 import { loadCodeownerLogins as defaultLoadCodeownerLogins } from "../codeowners.js";
 import { pollPrFeedback as defaultPollPrFeedback } from "./pr_feedback.js";
+import { branchSegmentForKind, workItemNumber, type WorkItem } from "../workitem.js";
 
 const ISSUE_NUMBER_PAD = 4;
 const FAILED_EXIT_CODE = -1;
@@ -64,6 +64,12 @@ export interface ChildHandle {
 export interface SpawnChildOptions {
   issueNumber: number;
   worktreePath: string;
+  /**
+   * Work-item kind. Defaults to `"issue"` for back-compat with existing
+   * tests. The CLI argument the child receives is the namespaced
+   * `parseHandleArg` form for non-issue kinds.
+   */
+  kind?: WorkItemKind;
 }
 
 export type SpawnChild = (opts: SpawnChildOptions) => ChildHandle;
@@ -84,7 +90,16 @@ export interface SupervisorDeps {
   /** Test/dev seam: how to spawn the per-issue child. Defaults to {@link defaultSpawnChild}. */
   spawnChild?: SpawnChild;
   /** Override the github carve-out (tests). */
-  github?: Pick<typeof defaultGithub, "addLabel" | "getIssue" | "getPullRequest" | "getReviewThreads" | "getRepoOwner">;
+  github?: Pick<
+    typeof defaultGithub,
+    | "addLabel"
+    | "getIssue"
+    | "getCodeScanningAlert"
+    | "getSecretScanningAlert"
+    | "getPullRequest"
+    | "getReviewThreads"
+    | "getRepoOwner"
+  >;
   /** Override worktree helpers (tests). */
   worktree?: Pick<typeof defaultWorktree, "addWorktree" | "archiveWorktreeState" | "removeWorktree" | "listOrphans">;
   /** Override `child/state.initState` (tests). */
@@ -103,11 +118,11 @@ export interface SupervisorDeps {
 
 export interface Supervisor {
   /**
-   * Take ownership of an issue: queue (or start immediately) a fresh
-   * dispatch. Returns `false` if already in flight, already queued, the
-   * worktree exists, or the supervisor has been drained.
+   * Take ownership of a {@link WorkItem}: queue (or start immediately) a
+   * fresh dispatch. Returns `false` if already in flight, already queued,
+   * the worktree exists, or the supervisor has been drained.
    */
-  dispatch(issue: Issue): Promise<boolean>;
+  dispatch(item: WorkItem): Promise<boolean>;
   /**
    * Re-spawn a child against an existing worktree (used at startup for
    * orphan recovery). Skips orphans whose state is `Failed` or already
@@ -128,8 +143,11 @@ export interface Supervisor {
    * mode. Errors talking to `gh` are logged and swallowed.
    */
   pollPrFeedback(): Promise<void>;
-  /** Issue numbers of currently in-flight children. */
-  inFlight(): readonly number[];
+  /**
+   * Identifiers of currently in-flight children. Strings of the form
+   * `${kind}:${number}` so issue #N and alert #N are distinguishable.
+   */
+  inFlight(): readonly string[];
   /** Number of items waiting for a free slot. */
   queueLength(): number;
   /** Stop accepting new work; drop the queue; await every running child. */
@@ -142,7 +160,11 @@ export interface DefaultSpawnChildOptions {
 }
 
 /**
- * Production spawner: `execa.node(childScript, ["handle", N], { cwd: worktreePath, stdio: "inherit" })`.
+ * Production spawner: `execa.node(childScript, ["handle", arg], { cwd: worktreePath, stdio: "inherit" })`.
+ * For issue work items the CLI arg is just the bare number (legacy form).
+ * For alert kinds it is the namespaced form `kind/N` consumed by
+ * `parseHandleArg` in `cli.ts`.
+ *
  * Tests pass a stub via {@link SupervisorDeps.spawnChild}.
  *
  * `reject: false` is set so a non-zero exit returns a result object rather
@@ -150,8 +172,9 @@ export interface DefaultSpawnChildOptions {
  * between the success and failure paths.
  */
 export function defaultSpawnChild(opts: DefaultSpawnChildOptions): SpawnChild {
-  return ({ issueNumber, worktreePath }: SpawnChildOptions): ChildHandle => {
-    const sub = execaNode(opts.childScript, ["handle", String(issueNumber)], {
+  return ({ issueNumber, worktreePath, kind = "issue" }: SpawnChildOptions): ChildHandle => {
+    const arg = kind === "issue" ? String(issueNumber) : `${kind}/${issueNumber}`;
+    const sub = execaNode(opts.childScript, ["handle", arg], {
       cwd: worktreePath,
       stdio: "inherit",
       detached: false,
@@ -171,17 +194,33 @@ export function defaultSpawnChild(opts: DefaultSpawnChildOptions): SpawnChild {
 }
 
 /**
- * Format the canonical per-issue branch name: `{slug}-issue{NNNN}`. Slug
- * is the basename of the repo root; numbers are zero-padded to four
- * digits (so 1 → "0001", 99 → "0099", 12345 → "12345" — pad does not
- * truncate).
+ * Format the canonical per-work-item branch name. Uses the kind as a
+ * namespace prefix so issue #N and alert #N (which share the same numeric
+ * keyspace inside their respective sources) cannot collide on disk:
+ *
+ *   - issue:               `{slug}-issue{NNNN}`
+ *   - codeScanningAlert:   `{slug}-codeScanningAlert{NNNN}`
+ *   - secretScanningAlert: `{slug}-secretScanningAlert{NNNN}`
+ *
+ * Slug is the basename of the repo root; numbers are zero-padded to four
+ * digits (1 → "0001", 99 → "0099", 12345 → "12345" — pad does not truncate).
  */
-export function branchNameFor(repoRoot: string, issueNumber: number): string {
+export function branchNameFor(repoRoot: string, issueNumber: number, kind: WorkItemKind = "issue"): string {
   const slug = basename(repoRoot);
-  return `${slug}-issue${String(issueNumber).padStart(ISSUE_NUMBER_PAD, "0")}`;
+  return `${slug}-${branchSegmentForKind(kind)}${String(issueNumber).padStart(ISSUE_NUMBER_PAD, "0")}`;
+}
+
+/**
+ * Composite key used to identify a work item across the inflight map and
+ * the queue. The numeric `issueNumber` is not unique on its own because
+ * issue #N and alert #N occupy distinct keyspaces.
+ */
+function workItemKey(kind: WorkItemKind, issueNumber: number): string {
+  return `${kind}:${issueNumber}`;
 }
 
 interface QueueEntry {
+  kind: WorkItemKind;
   issueNumber: number;
   branchName: string;
   /** Set for resume entries; absent for fresh dispatches. */
@@ -190,6 +229,7 @@ interface QueueEntry {
 }
 
 interface InFlight {
+  kind: WorkItemKind;
   issueNumber: number;
   worktreePath: string;
   /** Resolves when the child has exited AND post-exit cleanup has run. */
@@ -208,25 +248,30 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const spawn = deps.spawnChild ?? defaultSpawnChild({ childScript: requiredChildScript() });
 
   const queue: QueueEntry[] = [];
-  const inflight = new Map<number, InFlight>();
+  const inflight = new Map<string, InFlight>();
   let accepting = true;
 
-  /** Already known to the supervisor (running or queued)? */
-  const isKnown = (issueNumber: number): boolean =>
-    inflight.has(issueNumber) || queue.some((q) => q.issueNumber === issueNumber);
+  /** Already known to the supervisor (running or queued)? Keyed by `(kind, number)`. */
+  const isKnown = (kind: WorkItemKind, issueNumber: number): boolean => {
+    const key = workItemKey(kind, issueNumber);
+    return inflight.has(key) || queue.some((q) => workItemKey(q.kind, q.issueNumber) === key);
+  };
 
-  const dispatch = async (issue: Issue): Promise<boolean> => {
+  const dispatch = async (item: WorkItem): Promise<boolean> => {
     if (!accepting) return false;
-    if (isKnown(issue.number)) return false;
+    const number = workItemNumber(item);
+    if (isKnown(item.kind, number)) return false;
 
-    const branchName = branchNameFor(deps.repoRoot, issue.number);
+    const branchName = branchNameFor(deps.repoRoot, number, item.kind);
     const worktreePath = join(deps.worktreesRoot, branchName);
     if (await exists(worktreePath)) {
-      emit("daemon", "WARN", issue.number, `worktree already exists at ${worktreePath}; skipping dispatch`);
+      emit("daemon", "WARN", number, `worktree already exists at ${worktreePath}; skipping dispatch`, {
+        kind: item.kind,
+      });
       return false;
     }
 
-    queue.push({ issueNumber: issue.number, branchName, resume: false });
+    queue.push({ kind: item.kind, issueNumber: number, branchName, resume: false });
     void drain();
     return true;
   };
@@ -237,9 +282,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     // Complete orphans don't need a child re-run — the work is already done
     // and the worktree is just waiting for the closed-issue sweep.
     if (orphan.state.status === "Complete") return false;
-    if (isKnown(orphan.state.issueNumber)) return false;
+    if (isKnown(orphan.state.kind, orphan.state.issueNumber)) return false;
 
     queue.push({
+      kind: orphan.state.kind,
       issueNumber: orphan.state.issueNumber,
       branchName: orphan.state.branchName,
       worktreePath: orphan.path,
@@ -250,6 +296,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       "INFO",
       orphan.state.issueNumber,
       `recovering orphan worktree ${orphan.path} (mode=${orphan.state.mode}, status=${orphan.state.status})`,
+      { kind: orphan.state.kind },
     );
     void drain();
     return true;
@@ -259,34 +306,37 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     const orphans = await wt.listOrphans(deps.worktreesRoot);
     for (const orphan of orphans) {
       if (!orphan.state) continue;
-      const issueNumber = orphan.state.issueNumber;
-      if (inflight.has(issueNumber)) continue;
+      const { issueNumber, kind } = orphan.state;
+      if (inflight.has(workItemKey(kind, issueNumber))) continue;
 
-      let issueClosed: boolean;
+      let isClosed: boolean;
       try {
-        const issue = await gh.getIssue(issueNumber, { cwd: deps.repoRoot });
-        issueClosed = issue.state === "CLOSED";
+        isClosed = await isWorkItemClosed(gh, kind, issueNumber, deps.repoRoot);
       } catch (err) {
         emit(
           "daemon",
           "WARN",
           issueNumber,
-          `sweep: gh getIssue failed (${(err as Error).message}); leaving worktree at ${orphan.path}`,
+          `sweep: gh fetch failed (${(err as Error).message}); leaving worktree at ${orphan.path}`,
+          { kind },
         );
         continue;
       }
-      if (!issueClosed) continue;
+      if (!isClosed) continue;
 
       try {
         const archiveDir = await wt.archiveWorktreeState({
           worktreePath: orphan.path,
           archiveRoot: deps.archiveRoot,
           issueNumber,
+          kind,
         });
         await wt.removeWorktree(orphan.path);
-        emit("daemon", "OK", issueNumber, `issue closed; archived to ${archiveDir} and removed worktree`);
+        emit("daemon", "OK", issueNumber, `${kind} closed; archived to ${archiveDir} and removed worktree`, { kind });
       } catch (err) {
-        emit("daemon", "ERROR", issueNumber, `sweep: cleanup failed for ${orphan.path}: ${(err as Error).message}`);
+        emit("daemon", "ERROR", issueNumber, `sweep: cleanup failed for ${orphan.path}: ${(err as Error).message}`, {
+          kind,
+        });
       }
     }
   };
@@ -296,7 +346,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       config: deps.config,
       repoRoot: deps.repoRoot,
       worktreesRoot: deps.worktreesRoot,
-      isInFlight: (n) => inflight.has(n),
+      // pr_feedback today only re-dispatches issue-backed worktrees (state.prNumber
+      // is only ever set by the executor for kind="issue"). Check the issue key
+      // explicitly so the type stays narrow.
+      isInFlight: (n) => inflight.has(workItemKey("issue", n)),
       resume,
       github: gh,
       worktree: wt,
@@ -328,44 +381,63 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         });
         worktreePath = added.path;
         await initState(worktreePath, "Planning", {
+          kind: entry.kind,
           issueNumber: entry.issueNumber,
           branchName: added.branch,
           maxIterations: deps.config.maxPlanningIterations,
         });
-        emit("daemon", "WORK", entry.issueNumber, `dispatching → ${worktreePath}`);
+        emit("daemon", "WORK", entry.issueNumber, `dispatching → ${worktreePath}`, { kind: entry.kind });
       }
     } catch (err) {
-      emit("daemon", "ERROR", entry.issueNumber, `failed to set up worktree: ${(err as Error).message}`);
+      emit("daemon", "ERROR", entry.issueNumber, `failed to set up worktree: ${(err as Error).message}`, {
+        kind: entry.kind,
+      });
       return;
     }
 
-    const child = spawn({ issueNumber: entry.issueNumber, worktreePath });
-    const done = handleChildExit(entry.issueNumber, worktreePath, child).finally(() => {
-      inflight.delete(entry.issueNumber);
+    const child = spawn({ kind: entry.kind, issueNumber: entry.issueNumber, worktreePath });
+    const key = workItemKey(entry.kind, entry.issueNumber);
+    const done = handleChildExit(entry.kind, entry.issueNumber, worktreePath, child).finally(() => {
+      inflight.delete(key);
       void drain();
     });
-    inflight.set(entry.issueNumber, { issueNumber: entry.issueNumber, worktreePath, done });
+    inflight.set(key, { kind: entry.kind, issueNumber: entry.issueNumber, worktreePath, done });
   };
 
-  const handleChildExit = async (issueNumber: number, worktreePath: string, child: ChildHandle): Promise<void> => {
+  const handleChildExit = async (
+    kind: WorkItemKind,
+    issueNumber: number,
+    worktreePath: string,
+    child: ChildHandle,
+  ): Promise<void> => {
     const code = await child.exit;
     if (code === 0) {
-      emit("daemon", "OK", issueNumber, `child exited 0; worktree at ${worktreePath} kept until issue is closed`);
+      emit("daemon", "OK", issueNumber, `child exited 0; worktree at ${worktreePath} kept until issue is closed`, {
+        kind,
+      });
       return;
     }
 
-    try {
-      await gh.addLabel(issueNumber, deps.config.failedLabel, { cwd: deps.repoRoot });
-    } catch (err) {
-      emit(
-        "daemon",
-        "ERROR",
-        issueNumber,
-        `child exited ${code}; could not apply ${deps.config.failedLabel}: ${(err as Error).message}`,
-      );
-      // fall through and still log the worktree path below
+    if (kind === "issue") {
+      try {
+        await gh.addLabel(issueNumber, deps.config.failedLabel, { cwd: deps.repoRoot });
+      } catch (err) {
+        emit(
+          "daemon",
+          "ERROR",
+          issueNumber,
+          `child exited ${code}; could not apply ${deps.config.failedLabel}: ${(err as Error).message}`,
+        );
+        // fall through and still log the worktree path below
+      }
+    } else {
+      // Alerts cannot carry GitHub labels, so the failedLabel post-mortem is
+      // skipped — the worktree is left in place for an operator to inspect.
+      emit("daemon", "WARN", issueNumber, `${kind} cannot be labelled ${deps.config.failedLabel}; skipping`, { kind });
     }
-    emit("daemon", "ERROR", issueNumber, `child exited ${code}; left worktree at ${worktreePath} for post-mortem`);
+    emit("daemon", "ERROR", issueNumber, `child exited ${code}; left worktree at ${worktreePath} for post-mortem`, {
+      kind,
+    });
   };
 
   return {
@@ -402,4 +474,33 @@ function requiredChildScript(): string {
   throw new Error(
     "createSupervisor: pass deps.spawnChild (e.g. defaultSpawnChild({ childScript })) — no default child script available",
   );
+}
+
+/**
+ * Per-kind "is this work item still actionable?" check used by the
+ * closed-work-item sweep. Issues are closed when GitHub's `state` is
+ * `"CLOSED"`. Code-scanning alerts use `state ∈ {open, dismissed, fixed,
+ * auto_dismissed}`; secret-scanning alerts use `{open, resolved}`. In
+ * both cases anything other than `"open"` means "reap the worktree."
+ */
+async function isWorkItemClosed(
+  gh: NonNullable<SupervisorDeps["github"]>,
+  kind: WorkItemKind,
+  number: number,
+  cwd: string,
+): Promise<boolean> {
+  switch (kind) {
+    case "issue": {
+      const issue = await gh.getIssue(number, { cwd });
+      return issue.state === "CLOSED";
+    }
+    case "codeScanningAlert": {
+      const alert = await gh.getCodeScanningAlert(number, { cwd });
+      return alert.state !== "open";
+    }
+    case "secretScanningAlert": {
+      const alert = await gh.getSecretScanningAlert(number, { cwd });
+      return alert.state !== "open";
+    }
+  }
 }

@@ -32,7 +32,7 @@
 import { loadConfig as defaultLoadConfig, type Config } from "../config.js";
 import { event as defaultEvent, type Logger } from "../logging.js";
 import { readState as defaultReadState } from "./state.js";
-import type { Mode, State } from "./state.js";
+import type { Mode, State, WorkItemKind } from "./state.js";
 import { runPlanning as defaultRunPlanning, type PlanningDeps } from "./modes/planning.js";
 import { runExecution as defaultRunExecution, type ExecutionDeps } from "./modes/execution.js";
 import { runAssess as defaultRunAssess, type AssessDeps } from "./modes/assess.js";
@@ -55,8 +55,14 @@ export type RunRefineFn = (deps: RefineDeps) => Promise<State>;
 export type RunAddressingPrFeedbackFn = (deps: FeedbackDeps) => Promise<State>;
 
 export interface HandleChildOptions {
-  /** The issue number passed on the CLI. Cross-checked against state.json. */
+  /** The work-item number passed on the CLI. Cross-checked against state.json. */
   issueNumber: number;
+  /**
+   * Work-item kind passed on the CLI (via `parseHandleArg` in `cli.ts`).
+   * Defaults to `"issue"` for the back-compat path. Cross-checked against
+   * the on-disk state's `kind`.
+   */
+  kind?: WorkItemKind;
   /** Worktree root. Defaults to `process.cwd()`. */
   cwd?: string;
   /** Override config loader (tests). */
@@ -98,9 +104,10 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
   const emit = opts.emit ?? defaultEvent;
 
   let state = await readState(cwd);
-  if (state.issueNumber !== opts.issueNumber) {
+  const expectedKind: WorkItemKind = opts.kind ?? "issue";
+  if (state.issueNumber !== opts.issueNumber || state.kind !== expectedKind) {
     throw new Error(
-      `state mismatch: cwd state.json describes issue #${state.issueNumber} but child invoked with #${opts.issueNumber}`,
+      `state mismatch: cwd state.json describes ${state.kind} #${state.issueNumber} but child invoked with ${expectedKind} #${opts.issueNumber}`,
     );
   }
 

@@ -49,6 +49,7 @@ describe("loadConfig", () => {
     const cfg = loadConfig({}, { configFile: null });
     expect(cfg).toMatchObject({
       defaultEligible: false,
+      alertsEligible: true,
       alwaysFixLabel: "autofix",
       tryFixLabel: "tryFix",
       neverFixLabel: "manual",
@@ -94,6 +95,33 @@ describe("loadConfig", () => {
     ["off", false],
   ])("parses MINESWEEPER_DEFAULT_ELIGIBLE=%s as %s", (raw, expected) => {
     expect(loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: raw }, { configFile: null }).defaultEligible).toBe(expected);
+  });
+
+  it.each([
+    ["true", true],
+    ["false", false],
+    ["1", true],
+    ["0", false],
+  ])("parses MINESWEEPER_ALERTS_ELIGIBLE=%s as %s", (raw, expected) => {
+    expect(loadConfig({ MINESWEEPER_ALERTS_ELIGIBLE: raw }, { configFile: null }).alertsEligible).toBe(expected);
+  });
+
+  it("alertsEligible defaults to true when no env or file overrides it", () => {
+    const cfg = loadConfig({}, { configFile: null });
+    expect(cfg.alertsEligible).toBe(true);
+    expect(cfg.sources["alertsEligible"]?.source).toBe("default");
+  });
+
+  it("alertsEligible repo-config overrides global file but loses to envar", () => {
+    const globalPath = writeConfigFile({ alertsEligible: true });
+    writeRepoConfigFile(tmp, { alertsEligible: false });
+    const repoOnly = loadConfig({}, { configFile: globalPath, cwd: tmp });
+    expect(repoOnly.alertsEligible).toBe(false);
+    expect(repoOnly.sources["alertsEligible"]?.source).toBe("repo-config");
+
+    const withEnv = loadConfig({ MINESWEEPER_ALERTS_ELIGIBLE: "true" }, { configFile: globalPath, cwd: tmp });
+    expect(withEnv.alertsEligible).toBe(true);
+    expect(withEnv.sources["alertsEligible"]?.source).toBe("envar");
   });
 
   it("parses integer env vars", () => {
@@ -352,6 +380,7 @@ function captureError(fn: () => unknown): Error {
 
 const EXPECTED_SUMMARY_KEYS = [
   "defaultEligible",
+  "alertsEligible",
   "alwaysFixLabel",
   "tryFixLabel",
   "neverFixLabel",
@@ -375,7 +404,7 @@ const EXPECTED_SUMMARY_KEYS = [
 ] as const;
 
 describe("config.sources (provenance embedded in the resolved Config)", () => {
-  it("has all 21 non-derived keys with source 'default' when nothing is set", () => {
+  it("has all 22 non-derived keys with source 'default' when nothing is set", () => {
     const cfg = loadConfig({}, { configFile: null });
 
     expect(Object.keys(cfg.sources).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());

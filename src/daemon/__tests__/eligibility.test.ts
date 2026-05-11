@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { type Config, loadConfig } from "../../config.js";
-import type { Issue, IssueState } from "../../github/index.js";
+import type { CodeScanningAlert, Issue, IssueState, SecretScanningAlert } from "../../github/index.js";
 import { decideEligibility, isEligible, type ScreenIssueFn } from "../eligibility.js";
 import type { ScreenResult, ScreenVerdict } from "../screen.js";
+import {
+  asCodeScanningWorkItem,
+  asIssueWorkItem,
+  asSecretScanningWorkItem,
+  type IssueWorkItem,
+} from "../../workitem.js";
 
 const config = loadConfig({}, { configFile: null });
 
@@ -12,8 +18,8 @@ interface IssueOverrides {
   state?: IssueState;
 }
 
-function makeIssue({ number = 1, labels = [], state = "OPEN" }: IssueOverrides = {}): Issue {
-  return {
+function makeIssue({ number = 1, labels = [], state = "OPEN" }: IssueOverrides = {}): IssueWorkItem {
+  const issue: Issue = {
     number,
     title: "t",
     body: "b",
@@ -24,6 +30,29 @@ function makeIssue({ number = 1, labels = [], state = "OPEN" }: IssueOverrides =
     createdAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
   };
+  return asIssueWorkItem(issue);
+}
+
+function makeCodeScanningAlert(state: "open" | "fixed" | "dismissed" = "open", number = 7) {
+  const alert: CodeScanningAlert = {
+    number,
+    state,
+    html_url: `https://github.com/example/repo/security/code-scanning/${number}`,
+    created_at: "2026-01-01T00:00:00Z",
+    rule: { id: "js/zipslip", severity: "error" },
+  };
+  return asCodeScanningWorkItem(alert);
+}
+
+function makeSecretScanningAlert(state: "open" | "resolved" = "open", number = 3) {
+  const alert: SecretScanningAlert = {
+    number,
+    state,
+    html_url: `https://github.com/example/repo/security/secret-scanning/${number}`,
+    created_at: "2026-01-01T00:00:00Z",
+    secret_type: "github_personal_access_token",
+  };
+  return asSecretScanningWorkItem(alert);
 }
 
 describe("isEligible — label hierarchy", () => {
@@ -324,5 +353,77 @@ describe("decideEligibility", () => {
       screenIssue: screen,
     });
     expect(result.screen).toBe(sample);
+  });
+});
+
+describe("alerts eligibility", () => {
+  it("alertsEligible=true → code-scanning alert is eligible without invoking the screener", async () => {
+    const screen = fakeScreen("dangerous");
+    const result = await decideEligibility(makeCodeScanningAlert("open"), {
+      config, // alertsEligible defaults to true
+      cwd: "/tmp",
+      github: makeGhStub(),
+      screenIssue: screen,
+    });
+    expect(result.eligible).toBe(true);
+    expect(result.reason).toContain("alertsEligible=true");
+    expect(screen).not.toHaveBeenCalled();
+  });
+
+  it("alertsEligible=true → secret-scanning alert is eligible without invoking the screener", async () => {
+    const screen = fakeScreen("dangerous");
+    const result = await decideEligibility(makeSecretScanningAlert("open"), {
+      config,
+      cwd: "/tmp",
+      github: makeGhStub(),
+      screenIssue: screen,
+    });
+    expect(result.eligible).toBe(true);
+    expect(screen).not.toHaveBeenCalled();
+  });
+
+  it("alertsEligible=false → alerts are hard-ineligible", async () => {
+    const strict = loadConfig({ MINESWEEPER_ALERTS_ELIGIBLE: "false" }, { configFile: null });
+    const screen = fakeScreen("safe");
+    const csa = await decideEligibility(makeCodeScanningAlert("open"), {
+      config: strict,
+      cwd: "/tmp",
+      github: makeGhStub(),
+      screenIssue: screen,
+    });
+    const ssa = await decideEligibility(makeSecretScanningAlert("open"), {
+      config: strict,
+      cwd: "/tmp",
+      github: makeGhStub(),
+      screenIssue: screen,
+    });
+    expect(csa.eligible).toBe(false);
+    expect(ssa.eligible).toBe(false);
+    expect(screen).not.toHaveBeenCalled();
+  });
+
+  it("alerts whose state is not 'open' are ineligible regardless of the flag", async () => {
+    const fixed = await decideEligibility(makeCodeScanningAlert("fixed"), {
+      config, // alertsEligible=true (default)
+      cwd: "/tmp",
+      github: makeGhStub(),
+      screenIssue: fakeScreen("safe"),
+    });
+    const resolved = await decideEligibility(makeSecretScanningAlert("resolved"), {
+      config,
+      cwd: "/tmp",
+      github: makeGhStub(),
+      screenIssue: fakeScreen("safe"),
+    });
+    expect(fixed.eligible).toBe(false);
+    expect(resolved.eligible).toBe(false);
+  });
+
+  it("isEligible synchronous check honours the alertsEligible flag for alerts", () => {
+    const strict = loadConfig({ MINESWEEPER_ALERTS_ELIGIBLE: "false" }, { configFile: null });
+    expect(isEligible(makeCodeScanningAlert("open"), config)).toBe(true);
+    expect(isEligible(makeCodeScanningAlert("open"), strict)).toBe(false);
+    expect(isEligible(makeSecretScanningAlert("open"), config)).toBe(true);
+    expect(isEligible(makeSecretScanningAlert("resolved"), config)).toBe(false);
   });
 });

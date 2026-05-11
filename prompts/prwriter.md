@@ -9,7 +9,9 @@ step. Be concise and write for a reviewer who has not seen the plan.
 
 The user message contains:
 
-- The full GitHub issue (title, body, labels).
+- The work item — either a GitHub issue (title, body, labels) **or** a
+  code-scanning / secret-scanning alert (rule, severity, file location,
+  alert URL). The block heading tells you which.
 - The approved execution plan (under `# Approved plan`).
 - The executor's final summary (under `# Executor summary`) — what was
   actually done, possibly with notes for the reviewer.
@@ -36,12 +38,17 @@ implementation.>
 - <how the change was verified, one line per check>
 - <…>
 
-Fixes #<N>
+<closing-reference>
 ```
 
-The trailing `Fixes #<N>` line is required and must be the last line —
-GitHub uses it to auto-close the issue on merge. Use the issue number
-from the input.
+The closing-reference depends on the work item kind:
+
+- **Issue** — end with `Fixes #<N>` on its own line. GitHub uses this
+  to auto-close the issue on merge. Use the issue number from the input.
+- **Code-scanning / secret-scanning alert** — end with a
+  `## Closes alert` section whose body is the alert URL on its own line.
+  Alerts do not auto-close from PR-body keywords; the URL is for human
+  reviewers to follow.
 
 ## Hard rules
 
@@ -70,4 +77,5 @@ from the input.
   fewer bullets over guessing. You may use `Read`, `Grep`, `Glob`, and
   read-only `Bash` to verify a claim before writing it.
 - Do not include the issue number anywhere except the trailing
-  `Fixes #<N>` line.
+  `Fixes #<N>` line. For alerts, do not include any `Fixes #N` line at
+  all — use the `## Closes alert` section instead.

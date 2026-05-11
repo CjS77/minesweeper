@@ -391,4 +391,39 @@ describe("runPlanning", () => {
     expect(iterationsSeen).toContain(1);
     expect(iterationsSeen).toContain(2);
   });
+
+  it("dispatches on state.kind to the matching gh.get*Alert helper", async () => {
+    // Re-init state with kind=codeScanningAlert so the planner fetches via gh.getCodeScanningAlert.
+    await initState(tmp, "Planning", {
+      kind: "codeScanningAlert",
+      issueNumber: 42,
+      branchName: "minesweeper-codeScanningAlert0042",
+      maxIterations: 1,
+    });
+    const state = await readState(tmp);
+    const getIssue = vi.fn(async () => makeIssue(42));
+    const getCodeScanningAlert = vi.fn(async () => ({
+      number: 42,
+      state: "open" as const,
+      html_url: "https://example.com/repo/security/code-scanning/42",
+      created_at: "2026-05-01T00:00:00Z",
+      rule: { id: "js/zipslip", severity: "error", name: "js/zipslip" },
+    }));
+    const getSecretScanningAlert = vi.fn();
+    const { fn } = scriptedRunner([{ role: "planner", text: PLAN_BODY }]);
+
+    await runPlanning({
+      config: FAKE_CONFIG,
+      cwd: tmp,
+      state,
+      github: { getIssue, getCodeScanningAlert, getSecretScanningAlert },
+      runSubagent: fn,
+      emit: vi.fn(),
+    });
+
+    expect(getCodeScanningAlert).toHaveBeenCalledTimes(1);
+    expect(getCodeScanningAlert).toHaveBeenCalledWith(42, { cwd: tmp });
+    expect(getIssue).not.toHaveBeenCalled();
+    expect(getSecretScanningAlert).not.toHaveBeenCalled();
+  });
 });

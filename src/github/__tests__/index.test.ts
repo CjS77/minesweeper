@@ -16,14 +16,18 @@ import {
   GhError,
   GhMissingError,
   GhNotARepoError,
+  getCodeScanningAlert,
   getIssue,
+  getSecretScanningAlert,
   addReactionToReviewComment,
   getPullRequest,
   getRepoOwner,
   getReviewThreads,
+  listCodeScanningAlerts,
   listIssues,
   listLabels,
   listPullRequests,
+  listSecretScanningAlerts,
   removeLabel,
   runGh,
   upsertLabel,
@@ -348,6 +352,65 @@ describe("getRepoOwner", () => {
     expect(owner).toBe("RepoOwner");
     const { args } = lastCall();
     expect(args.slice(0, 4)).toEqual(["repo", "view", "--json", "owner"]);
+  });
+});
+
+describe("listCodeScanningAlerts", () => {
+  it("calls gh api with the documented path and parses the fixture", async () => {
+    mockExeca.mockResolvedValueOnce(ok(fixtureText("code_scanning_alert_list.json")) as never);
+    const alerts = await listCodeScanningAlerts({ state: "open", perPage: 50 });
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]?.rule.id).toBe("js/zipslip");
+
+    const { bin, args } = lastCall();
+    expect(bin).toBe("gh");
+    expect(args.slice(0, 2)).toEqual(["api", "--paginate"]);
+    expect(args[2]).toBe("repos/{owner}/{repo}/code-scanning/alerts?state=open&per_page=50");
+  });
+
+  it("omits the state query string when state is 'all'", async () => {
+    mockExeca.mockResolvedValueOnce(ok("[]") as never);
+    await listCodeScanningAlerts({ state: "all" });
+    const { args } = lastCall();
+    expect(args[2]).toBe("repos/{owner}/{repo}/code-scanning/alerts?per_page=30");
+  });
+
+  it("propagates a 404 from gh as a GhError so the poller can fail-soft around it", async () => {
+    mockExeca.mockResolvedValueOnce(fail("HTTP 404: Code scanning is not enabled") as never);
+    await expect(listCodeScanningAlerts()).rejects.toBeInstanceOf(GhError);
+  });
+});
+
+describe("getCodeScanningAlert", () => {
+  it("calls gh api for a single alert by number", async () => {
+    const list = JSON.parse(fixtureText("code_scanning_alert_list.json")) as unknown[];
+    mockExeca.mockResolvedValueOnce(ok(JSON.stringify(list[0])) as never);
+    const alert = await getCodeScanningAlert(4);
+    expect(alert.number).toBe(4);
+    const { args } = lastCall();
+    expect(args).toEqual(["api", "repos/{owner}/{repo}/code-scanning/alerts/4"]);
+  });
+});
+
+describe("listSecretScanningAlerts", () => {
+  it("calls gh api with the documented path and parses the fixture", async () => {
+    mockExeca.mockResolvedValueOnce(ok(fixtureText("secret_scanning_alert_list.json")) as never);
+    const alerts = await listSecretScanningAlerts();
+    expect(alerts).toHaveLength(2);
+    expect(alerts[1]?.state).toBe("resolved");
+    const { args } = lastCall();
+    expect(args[2]).toBe("repos/{owner}/{repo}/secret-scanning/alerts?state=open&per_page=30");
+  });
+});
+
+describe("getSecretScanningAlert", () => {
+  it("calls gh api for a single alert by number", async () => {
+    const list = JSON.parse(fixtureText("secret_scanning_alert_list.json")) as unknown[];
+    mockExeca.mockResolvedValueOnce(ok(JSON.stringify(list[0])) as never);
+    const alert = await getSecretScanningAlert(2);
+    expect(alert.number).toBe(2);
+    const { args } = lastCall();
+    expect(args).toEqual(["api", "repos/{owner}/{repo}/secret-scanning/alerts/2"]);
   });
 });
 

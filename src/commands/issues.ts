@@ -39,6 +39,7 @@ import { isEligible } from "../daemon/eligibility.js";
 import { event } from "../logging.js";
 import * as defaultWorktree from "../worktree.js";
 import type { Mode, Status } from "../child/state.js";
+import { asIssueWorkItem } from "../workitem.js";
 
 /** Hex colours match `buildLabelSpecs` in `src/commands/labels.ts`. */
 const ELIGIBLE_HEX = "#0e8a16";
@@ -129,7 +130,7 @@ function buildRow(issue: Issue, config: Config, stateMap: Map<number, { mode: Mo
   return {
     number: issue.number,
     title: issue.title,
-    eligible: isEligible(issue, config),
+    eligible: isEligible(asIssueWorkItem(issue), config),
     inProgress: stateMap.get(issue.number) ?? null,
   };
 }

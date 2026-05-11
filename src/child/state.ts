@@ -19,9 +19,13 @@
  *     execution mode when the PR is created) and
  *     `prFeedbackProcessedAt: string | null` (watermark used by the PR
  *     feedback poller to dedup already-processed reviews/comments).
+ *   - v4 (alerts): adds `kind: "issue" | "codeScanningAlert" |
+ *     "secretScanningAlert"` so the supervisor and child can dispatch the
+ *     right `gh` API on resume. Legacy state files are migrated with
+ *     `kind: "issue"` (every pre-v4 worktree was an issue worktree).
  *
- * Migrations run on read; v1 and v2 state files are upgraded
- * transparently. The migration chain is v1 → v2 → v3.
+ * Migrations run on read; v1, v2, and v3 state files are upgraded
+ * transparently. The migration chain is v1 → v2 → v3 → v4.
  */
 
 import { promises as fs } from "node:fs";
@@ -38,10 +42,20 @@ export type Status = z.infer<typeof Status>;
 export const Assessment = z.enum(["Execute", "Refine"]);
 export type Assessment = z.infer<typeof Assessment>;
 
-export const STATE_SCHEMA_VERSION = 3;
+/**
+ * Discriminator for the work-item kind a worktree was opened against. Issues
+ * are the legacy default; `codeScanningAlert` and `secretScanningAlert` are
+ * the GitHub Advanced Security sources added in v4. Branches and CLI args
+ * use the same string here as their human-readable namespace prefix.
+ */
+export const WorkItemKind = z.enum(["issue", "codeScanningAlert", "secretScanningAlert"]);
+export type WorkItemKind = z.infer<typeof WorkItemKind>;
+
+export const STATE_SCHEMA_VERSION = 4;
 
 export const StateSchema = z.object({
   version: z.literal(STATE_SCHEMA_VERSION),
+  kind: WorkItemKind,
   issueNumber: z.number().int().positive(),
   branchName: z.string().min(1),
   mode: Mode,
@@ -94,6 +108,26 @@ const StateV2Schema = z.object({
   updatedAt: z.iso.datetime(),
 });
 
+/**
+ * v3 schema, kept around purely for migration. Identical to the current
+ * `StateSchema` minus the v4 `kind` discriminator.
+ */
+const StateV3Schema = z.object({
+  version: z.literal(3),
+  issueNumber: z.number().int().positive(),
+  branchName: z.string().min(1),
+  mode: Mode,
+  status: Status,
+  iterations: z.number().int().min(0),
+  maxIterations: z.number().int().min(1),
+  assessment: Assessment.nullable(),
+  assessmentReason: z.string().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  prFeedbackProcessedAt: z.iso.datetime().nullable(),
+  startedAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
 export const STATE_DIR = ".minesweeper";
 export const STATE_FILE = "state.json";
 
@@ -106,6 +140,8 @@ export function statePath(cwd: string): string {
 }
 
 export interface InitStateOptions {
+  /** Defaults to `"issue"` for callers (and tests) that pre-date alert support. */
+  kind?: WorkItemKind;
   issueNumber: number;
   branchName: string;
   maxIterations: number;
@@ -124,6 +160,7 @@ export async function initState(cwd: string, mode: Mode, opts: InitStateOptions)
   const now = new Date().toISOString();
   const candidate: State = StateSchema.parse({
     version: STATE_SCHEMA_VERSION,
+    kind: opts.kind ?? "issue",
     issueNumber: opts.issueNumber,
     branchName: opts.branchName,
     mode,
@@ -163,9 +200,10 @@ export async function readState(cwd: string): Promise<State> {
  * parse — otherwise a v1/v2 file on disk would fail the v3 literal
  * check and silently disappear from `listOrphans`.
  *
- * The chain is v1 → v2 → v3. Each step is additive: v1 → v2 adds
+ * The chain is v1 → v2 → v3 → v4. Each step is additive: v1 → v2 adds
  * `assessmentReason: null`; v2 → v3 adds `prNumber: null` and
- * `prFeedbackProcessedAt: null`.
+ * `prFeedbackProcessedAt: null`; v3 → v4 adds `kind: "issue"` (legacy
+ * worktrees were always issues, never alerts).
  */
 export function migrateIfNeeded(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null) return raw;
@@ -180,6 +218,11 @@ export function migrateIfNeeded(raw: unknown): unknown {
   if (afterV1.version === 2) {
     const v2 = StateV2Schema.parse(current);
     current = { ...v2, version: 3, prNumber: null, prFeedbackProcessedAt: null };
+  }
+  const afterV2 = current as { version?: unknown };
+  if (afterV2.version === 3) {
+    const v3 = StateV3Schema.parse(current);
+    current = { ...v3, version: 4, kind: "issue" };
   }
   return current;
 }

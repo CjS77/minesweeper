@@ -2,11 +2,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { loadConfig } from "../../config.js";
 import type * as ghModule from "../../github/index.js";
-import type { Issue } from "../../github/index.js";
+import type { CodeScanningAlert, Issue, SecretScanningAlert } from "../../github/index.js";
 import type * as worktreeModule from "../../worktree.js";
 import type * as stateModule from "../../child/state.js";
 import { branchNameFor, createSupervisor, type ChildHandle, type SupervisorDeps } from "../supervisor.js";
-import type { State } from "../../child/state.js";
+import type { State, WorkItemKind } from "../../child/state.js";
+import { asCodeScanningWorkItem, asIssueWorkItem, asSecretScanningWorkItem, type WorkItem } from "../../workitem.js";
 
 interface FakeChild {
   handle: ChildHandle;
@@ -42,11 +43,43 @@ function makeIssue(number: number, labels: readonly string[] = ["autofix"]): Iss
   };
 }
 
-function makeOrphanState(issueNumber: number, status: State["status"] = "InProgress"): State {
+function makeIssueWorkItem(number: number, labels: readonly string[] = ["autofix"]): WorkItem {
+  return asIssueWorkItem(makeIssue(number, labels));
+}
+
+function makeCsaWorkItem(number: number, state: "open" | "fixed" = "open"): WorkItem {
+  const alert: CodeScanningAlert = {
+    number,
+    state,
+    html_url: `https://github.com/example/repo/security/code-scanning/${number}`,
+    created_at: "2026-01-01T00:00:00Z",
+    rule: { id: "js/test", severity: "error" },
+  };
+  return asCodeScanningWorkItem(alert);
+}
+
+function makeSsaWorkItem(number: number): WorkItem {
+  const alert: SecretScanningAlert = {
+    number,
+    state: "open",
+    html_url: `https://github.com/example/repo/security/secret-scanning/${number}`,
+    created_at: "2026-01-01T00:00:00Z",
+    secret_type: "generic_token",
+  };
+  return asSecretScanningWorkItem(alert);
+}
+
+function makeOrphanState(
+  issueNumber: number,
+  status: State["status"] = "InProgress",
+  kind: WorkItemKind = "issue",
+): State {
+  const branchPrefix = kind === "issue" ? "minesweeper-issue" : `minesweeper-${kind}`;
   return {
-    version: 3,
+    version: 4,
+    kind,
     issueNumber,
-    branchName: `minesweeper-issue${String(issueNumber).padStart(4, "0")}`,
+    branchName: `${branchPrefix}${String(issueNumber).padStart(4, "0")}`,
     mode: "Planning",
     status,
     iterations: 0,
@@ -65,6 +98,8 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   spawnChildMock: ReturnType<typeof vi.fn>;
   addLabelMock: ReturnType<typeof vi.fn>;
   getIssueMock: ReturnType<typeof vi.fn>;
+  getCodeScanningAlertMock: ReturnType<typeof vi.fn>;
+  getSecretScanningAlertMock: ReturnType<typeof vi.fn>;
   addWorktreeMock: ReturnType<typeof vi.fn>;
   archiveMock: ReturnType<typeof vi.fn>;
   removeMock: ReturnType<typeof vi.fn>;
@@ -75,15 +110,23 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   childrenSpawned: FakeChild[];
 } {
   const childrenSpawned: FakeChild[] = [];
-  const spawnChildMock = vi.fn(({ worktreePath }: { issueNumber: number; worktreePath: string }) => {
-    void worktreePath;
-    const child = fakeChild();
-    childrenSpawned.push(child);
-    return child.handle;
-  });
+  const spawnChildMock = vi.fn(
+    ({ worktreePath }: { kind?: WorkItemKind; issueNumber: number; worktreePath: string }) => {
+      void worktreePath;
+      const child = fakeChild();
+      childrenSpawned.push(child);
+      return child.handle;
+    },
+  );
 
   const addLabelMock = vi.fn(async () => undefined);
   const getIssueMock = vi.fn(async () => makeIssue(0));
+  const getCodeScanningAlertMock = vi.fn(async (): Promise<CodeScanningAlert> => {
+    throw new Error("getCodeScanningAlert not stubbed");
+  });
+  const getSecretScanningAlertMock = vi.fn(async (): Promise<SecretScanningAlert> => {
+    throw new Error("getSecretScanningAlert not stubbed");
+  });
   const addWorktreeMock = vi.fn(
     async ({ worktreesRoot, branchName }: { worktreesRoot: string; branchName: string }) => ({
       path: `${worktreesRoot}/${branchName}`,
@@ -106,6 +149,8 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
     github: {
       addLabel: addLabelMock as unknown as typeof ghModule.addLabel,
       getIssue: getIssueMock as unknown as typeof ghModule.getIssue,
+      getCodeScanningAlert: getCodeScanningAlertMock as unknown as typeof ghModule.getCodeScanningAlert,
+      getSecretScanningAlert: getSecretScanningAlertMock as unknown as typeof ghModule.getSecretScanningAlert,
     },
     worktree: {
       addWorktree: addWorktreeMock as unknown as typeof worktreeModule.addWorktree,
@@ -124,6 +169,8 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
     spawnChildMock,
     addLabelMock,
     getIssueMock,
+    getCodeScanningAlertMock,
+    getSecretScanningAlertMock,
     addWorktreeMock,
     archiveMock,
     removeMock,
@@ -148,6 +195,13 @@ describe("branchNameFor", () => {
     expect(branchNameFor("/tmp/repos/minesweeper", 99)).toBe("minesweeper-issue0099");
     expect(branchNameFor("/tmp/repos/my-repo", 12345)).toBe("my-repo-issue12345");
   });
+
+  it("namespaces alert kinds with their own branch prefix", () => {
+    expect(branchNameFor("/tmp/repos/minesweeper", 7, "codeScanningAlert")).toBe("minesweeper-codeScanningAlert0007");
+    expect(branchNameFor("/tmp/repos/minesweeper", 7, "secretScanningAlert")).toBe(
+      "minesweeper-secretScanningAlert0007",
+    );
+  });
 });
 
 describe("createSupervisor.dispatch", () => {
@@ -155,7 +209,7 @@ describe("createSupervisor.dispatch", () => {
     const ctx = makeDeps();
     const sup = createSupervisor(ctx.deps);
 
-    const accepted = await sup.dispatch(makeIssue(7));
+    const accepted = await sup.dispatch(makeIssueWorkItem(7));
     expect(accepted).toBe(true);
     await flush();
 
@@ -167,22 +221,77 @@ describe("createSupervisor.dispatch", () => {
     });
     expect(ctx.initStateMock).toHaveBeenCalledTimes(1);
     expect(ctx.initStateMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-issue0007", "Planning", {
+      kind: "issue",
       issueNumber: 7,
       branchName: "minesweeper-issue0007",
       maxIterations: ctx.deps.config.maxPlanningIterations,
     });
     expect(ctx.spawnChildMock).toHaveBeenCalledTimes(1);
     expect(ctx.spawnChildMock).toHaveBeenCalledWith({
+      kind: "issue",
       issueNumber: 7,
       worktreePath: "/tmp/wt/minesweeper-issue0007",
     });
-    expect(sup.inFlight()).toEqual([7]);
+    expect(sup.inFlight()).toEqual(["issue:7"]);
+  });
+
+  it("dispatches a code-scanning alert into an alert-prefixed worktree", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+
+    const accepted = await sup.dispatch(makeCsaWorkItem(42));
+    expect(accepted).toBe(true);
+    await flush();
+
+    expect(ctx.addWorktreeMock).toHaveBeenCalledWith({
+      repoRoot: "/tmp/repos/minesweeper",
+      worktreesRoot: "/tmp/wt",
+      branchName: "minesweeper-codeScanningAlert0042",
+    });
+    expect(ctx.spawnChildMock).toHaveBeenCalledWith({
+      kind: "codeScanningAlert",
+      issueNumber: 42,
+      worktreePath: "/tmp/wt/minesweeper-codeScanningAlert0042",
+    });
+    expect(sup.inFlight()).toEqual(["codeScanningAlert:42"]);
+  });
+
+  it("issue #N and alert #N are independent dispatches (no collision)", async () => {
+    const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "2" }, { configFile: null }) });
+    const sup = createSupervisor(ctx.deps);
+
+    await sup.dispatch(makeIssueWorkItem(5));
+    await sup.dispatch(makeCsaWorkItem(5));
+    await flush();
+
+    expect(ctx.spawnChildMock).toHaveBeenCalledTimes(2);
+    expect(sup.inFlight().sort()).toEqual(["codeScanningAlert:5", "issue:5"]);
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    ctx.childrenSpawned[1]!.resolve(0);
+    await sup.drain();
+  });
+
+  it("dispatches a secret-scanning alert into its own prefixed worktree", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+
+    const accepted = await sup.dispatch(makeSsaWorkItem(13));
+    expect(accepted).toBe(true);
+    await flush();
+
+    expect(ctx.addWorktreeMock).toHaveBeenCalledWith({
+      repoRoot: "/tmp/repos/minesweeper",
+      worktreesRoot: "/tmp/wt",
+      branchName: "minesweeper-secretScanningAlert0013",
+    });
+    expect(sup.inFlight()).toEqual(["secretScanningAlert:13"]);
   });
 
   it("leaves the worktree on disk on exit code 0 (sweep handles cleanup)", async () => {
     const ctx = makeDeps();
     const sup = createSupervisor(ctx.deps);
-    await sup.dispatch(makeIssue(7));
+    await sup.dispatch(makeIssueWorkItem(7));
     await flush();
 
     expect(ctx.childrenSpawned).toHaveLength(1);
@@ -193,13 +302,17 @@ describe("createSupervisor.dispatch", () => {
     expect(ctx.removeMock).not.toHaveBeenCalled();
     expect(ctx.addLabelMock).not.toHaveBeenCalled();
     expect(sup.inFlight()).toEqual([]);
-    expect(ctx.emitMock).toHaveBeenCalledWith("daemon", "OK", 7, expect.stringContaining("kept until issue is closed"));
+    expect(
+      ctx.emitMock.mock.calls.some(
+        (c) => c[0] === "daemon" && c[1] === "OK" && c[2] === 7 && String(c[3]).includes("kept until issue is closed"),
+      ),
+    ).toBe(true);
   });
 
   it("labels the issue and leaves the worktree on non-zero exit", async () => {
     const ctx = makeDeps();
     const sup = createSupervisor(ctx.deps);
-    await sup.dispatch(makeIssue(11));
+    await sup.dispatch(makeIssueWorkItem(11));
     await flush();
 
     ctx.childrenSpawned[0]!.resolve(2);
@@ -212,12 +325,29 @@ describe("createSupervisor.dispatch", () => {
     expect(ctx.removeMock).not.toHaveBeenCalled();
   });
 
+  it("does NOT label an alert (no label support) when its child exits non-zero", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+    await sup.dispatch(makeCsaWorkItem(11));
+    await flush();
+
+    ctx.childrenSpawned[0]!.resolve(2);
+    await sup.drain();
+
+    expect(ctx.addLabelMock).not.toHaveBeenCalled();
+    expect(
+      ctx.emitMock.mock.calls.some(
+        (c) => c[0] === "daemon" && c[1] === "WARN" && c[2] === 11 && String(c[3]).includes("cannot be labelled"),
+      ),
+    ).toBe(true);
+  });
+
   it("skips dispatch when the same issue is already in-flight", async () => {
     const ctx = makeDeps();
     const sup = createSupervisor(ctx.deps);
-    await sup.dispatch(makeIssue(7));
+    await sup.dispatch(makeIssueWorkItem(7));
     await flush();
-    const accepted = await sup.dispatch(makeIssue(7));
+    const accepted = await sup.dispatch(makeIssueWorkItem(7));
     expect(accepted).toBe(false);
     expect(ctx.spawnChildMock).toHaveBeenCalledTimes(1);
   });
@@ -226,7 +356,7 @@ describe("createSupervisor.dispatch", () => {
     const ctx = makeDeps();
     ctx.pathExistsMock.mockResolvedValueOnce(true);
     const sup = createSupervisor(ctx.deps);
-    const accepted = await sup.dispatch(makeIssue(7));
+    const accepted = await sup.dispatch(makeIssueWorkItem(7));
     expect(accepted).toBe(false);
     expect(ctx.addWorktreeMock).not.toHaveBeenCalled();
     expect(ctx.spawnChildMock).not.toHaveBeenCalled();
@@ -236,12 +366,12 @@ describe("createSupervisor.dispatch", () => {
     const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "1" }, { configFile: null }) });
     const sup = createSupervisor(ctx.deps);
 
-    await sup.dispatch(makeIssue(1));
-    await sup.dispatch(makeIssue(2));
+    await sup.dispatch(makeIssueWorkItem(1));
+    await sup.dispatch(makeIssueWorkItem(2));
     await flush();
 
     expect(ctx.spawnChildMock).toHaveBeenCalledTimes(1);
-    expect(sup.inFlight()).toEqual([1]);
+    expect(sup.inFlight()).toEqual(["issue:1"]);
     expect(sup.queueLength()).toBe(1);
 
     ctx.childrenSpawned[0]!.resolve(0);
@@ -249,7 +379,7 @@ describe("createSupervisor.dispatch", () => {
     await flush();
 
     expect(ctx.spawnChildMock).toHaveBeenCalledTimes(2);
-    expect(sup.inFlight()).toEqual([2]);
+    expect(sup.inFlight()).toEqual(["issue:2"]);
     expect(sup.queueLength()).toBe(0);
 
     ctx.childrenSpawned[1]!.resolve(0);
@@ -260,12 +390,12 @@ describe("createSupervisor.dispatch", () => {
     const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "2" }, { configFile: null }) });
     const sup = createSupervisor(ctx.deps);
 
-    await sup.dispatch(makeIssue(1));
-    await sup.dispatch(makeIssue(2));
+    await sup.dispatch(makeIssueWorkItem(1));
+    await sup.dispatch(makeIssueWorkItem(2));
     await flush();
 
     expect(ctx.spawnChildMock).toHaveBeenCalledTimes(2);
-    expect(sup.inFlight().sort()).toEqual([1, 2]);
+    expect(sup.inFlight().sort()).toEqual(["issue:1", "issue:2"]);
 
     ctx.childrenSpawned[0]!.resolve(0);
     ctx.childrenSpawned[1]!.resolve(0);
@@ -288,8 +418,30 @@ describe("createSupervisor.resume", () => {
     expect(ctx.addWorktreeMock).not.toHaveBeenCalled();
     expect(ctx.initStateMock).not.toHaveBeenCalled();
     expect(ctx.spawnChildMock).toHaveBeenCalledWith({
+      kind: "issue",
       issueNumber: 42,
       worktreePath: "/tmp/wt/minesweeper-issue0042",
+    });
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+  });
+
+  it("resumes an alert orphan with its kind preserved", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+
+    const accepted = await sup.resume({
+      path: "/tmp/wt/minesweeper-codeScanningAlert0042",
+      state: makeOrphanState(42, "InProgress", "codeScanningAlert"),
+    });
+    expect(accepted).toBe(true);
+    await flush();
+
+    expect(ctx.spawnChildMock).toHaveBeenCalledWith({
+      kind: "codeScanningAlert",
+      issueNumber: 42,
+      worktreePath: "/tmp/wt/minesweeper-codeScanningAlert0042",
     });
 
     ctx.childrenSpawned[0]!.resolve(0);
@@ -335,8 +487,47 @@ describe("createSupervisor.sweepClosedIssues", () => {
       worktreePath: "/tmp/wt/minesweeper-issue0042",
       archiveRoot: "/tmp/archive",
       issueNumber: 42,
+      kind: "issue",
     });
     expect(ctx.removeMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-issue0042");
+  });
+
+  it("dispatches on kind to the matching gh.get*Alert helper", async () => {
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValueOnce([
+      {
+        path: "/tmp/wt/minesweeper-codeScanningAlert0042",
+        state: makeOrphanState(42, "Complete", "codeScanningAlert"),
+      },
+      {
+        path: "/tmp/wt/minesweeper-secretScanningAlert0013",
+        state: makeOrphanState(13, "Complete", "secretScanningAlert"),
+      },
+    ]);
+    ctx.getCodeScanningAlertMock.mockResolvedValueOnce({
+      number: 42,
+      state: "fixed",
+      html_url: "https://example/x",
+      created_at: "2026-01-01T00:00:00Z",
+      rule: { id: "r", severity: "warning" },
+    });
+    ctx.getSecretScanningAlertMock.mockResolvedValueOnce({
+      number: 13,
+      state: "resolved",
+      html_url: "https://example/y",
+      created_at: "2026-01-01T00:00:00Z",
+      secret_type: "x",
+    });
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.sweepClosedIssues();
+
+    expect(ctx.getIssueMock).not.toHaveBeenCalled();
+    expect(ctx.getCodeScanningAlertMock).toHaveBeenCalledWith(42, { cwd: "/tmp/repos/minesweeper" });
+    expect(ctx.getSecretScanningAlertMock).toHaveBeenCalledWith(13, { cwd: "/tmp/repos/minesweeper" });
+    expect(ctx.archiveMock).toHaveBeenCalledTimes(2);
+    expect(ctx.archiveMock).toHaveBeenCalledWith(expect.objectContaining({ kind: "codeScanningAlert" }));
+    expect(ctx.archiveMock).toHaveBeenCalledWith(expect.objectContaining({ kind: "secretScanningAlert" }));
   });
 
   it("also reaps worktrees whose state is Failed once the issue is CLOSED", async () => {
@@ -370,7 +561,7 @@ describe("createSupervisor.sweepClosedIssues", () => {
   it("skips worktrees whose issue is currently in-flight", async () => {
     const ctx = makeDeps();
     const sup = createSupervisor(ctx.deps);
-    await sup.dispatch(makeIssue(7));
+    await sup.dispatch(makeIssueWorkItem(7));
     await flush();
 
     ctx.listOrphansMock.mockResolvedValueOnce([
@@ -398,7 +589,9 @@ describe("createSupervisor.sweepClosedIssues", () => {
 
     expect(ctx.archiveMock).not.toHaveBeenCalled();
     expect(ctx.removeMock).not.toHaveBeenCalled();
-    expect(ctx.emitMock).toHaveBeenCalledWith("daemon", "WARN", 42, expect.stringContaining("gh getIssue failed"));
+    expect(
+      ctx.emitMock.mock.calls.some((c) => c[1] === "WARN" && c[2] === 42 && String(c[3]).includes("gh fetch failed")),
+    ).toBe(true);
   });
 });
 
@@ -421,7 +614,7 @@ describe("createSupervisor.pollPrFeedback", () => {
     const pollPrFeedbackMock = vi.fn(async () => undefined);
     const sup = createSupervisor({ ...ctx.deps, pollPrFeedback: pollPrFeedbackMock });
 
-    await sup.dispatch(makeIssue(7));
+    await sup.dispatch(makeIssueWorkItem(7));
     await flush();
     await sup.pollPrFeedback();
 
@@ -438,19 +631,19 @@ describe("createSupervisor.drain", () => {
   it("stops accepting new work after drain begins", async () => {
     const ctx = makeDeps();
     const sup = createSupervisor(ctx.deps);
-    await sup.dispatch(makeIssue(1));
+    await sup.dispatch(makeIssueWorkItem(1));
     await flush();
     ctx.childrenSpawned[0]!.resolve(0);
     await sup.drain();
-    const accepted = await sup.dispatch(makeIssue(2));
+    const accepted = await sup.dispatch(makeIssueWorkItem(2));
     expect(accepted).toBe(false);
   });
 
   it("waits for every in-flight child to exit before resolving", async () => {
     const ctx = makeDeps({ config: loadConfig({ MINESWEEPER_MAX_CONCURRENCY: "2" }, { configFile: null }) });
     const sup = createSupervisor(ctx.deps);
-    await sup.dispatch(makeIssue(1));
-    await sup.dispatch(makeIssue(2));
+    await sup.dispatch(makeIssueWorkItem(1));
+    await sup.dispatch(makeIssueWorkItem(2));
     await flush();
 
     let drained = false;

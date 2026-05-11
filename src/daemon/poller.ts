@@ -24,20 +24,26 @@
  */
 
 import * as defaultGithub from "../github/index.js";
-import type { Issue } from "../github/index.js";
 import type { Config } from "../config.js";
 import { event as defaultEvent, type Logger } from "../logging.js";
 import { decideEligibility as defaultDecideEligibility, type EligibilityDecision } from "./eligibility.js";
 import type { ScreenIssueFn } from "./eligibility.js";
+import {
+  asCodeScanningWorkItem,
+  asIssueWorkItem,
+  asSecretScanningWorkItem,
+  workItemNumber,
+  type WorkItem,
+} from "../workitem.js";
 import cronParser from "cron-parser";
 
 /**
- * Predicate the poller uses to filter issues. Async because the
+ * Predicate the poller uses to filter work items. Async because the
  * default implementation may call out to the screener subagent. Tests
  * can inject a sync function — both `boolean` and `Promise<boolean>`
  * are accepted.
  */
-export type EligibilityFn = (issue: Issue, config: Config) => boolean | Promise<boolean>;
+export type EligibilityFn = (item: WorkItem, config: Config) => boolean | Promise<boolean>;
 
 /**
  * One entry in the poll-loop schedule list.
@@ -53,8 +59,15 @@ export interface PollerDeps {
   config: Config;
   /** Working directory for `gh` invocations (the parent repo root). */
   cwd: string;
-  /** Override `github.listIssues` / `addLabel` / `comment` (tests). */
-  github?: Pick<typeof defaultGithub, "listIssues" | "addLabel" | "comment">;
+  /**
+   * Override the `gh` carve-out used by the poller. Issues are always
+   * fetched; alert endpoints are fetched only when `config.alertsEligible`
+   * is true (so disabled-GHAS repos do not log a 403 every tick).
+   */
+  github?: Pick<
+    typeof defaultGithub,
+    "listIssues" | "listCodeScanningAlerts" | "listSecretScanningAlerts" | "addLabel" | "comment"
+  >;
   /** Override the eligibility predicate (tests). */
   isEligible?: EligibilityFn;
   /** Override the screener (passed through to {@link decideEligibility}). */
@@ -68,20 +81,27 @@ export interface PollerDeps {
 }
 
 /**
- * Run a single poll: list open issues, return the eligible ones.
+ * Run a single poll: list open issues + (optionally) open code-scanning
+ * and secret-scanning alerts, then return the eligible ones as a
+ * {@link WorkItem} list.
  *
  * The default predicate is {@link defaultDecideEligibility}, which may
  * apply the `possiblyDangerous` label or post a comment when the
  * screener flags an issue. Those side effects happen *during* the
  * `pollOnce` call — they are intentional, not an accident of polling.
+ *
+ * Each network source is wrapped in {@link safeList} so a 403/404 from
+ * one endpoint (e.g. `code-scanning/alerts` on a repo without GHAS)
+ * does not drop work items from the others — the offending source
+ * yields `[]` and emits a `WARN` log instead.
  */
-export async function pollOnce(deps: PollerDeps): Promise<Issue[]> {
+export async function pollOnce(deps: PollerDeps): Promise<WorkItem[]> {
   const gh = deps.github ?? defaultGithub;
   const emit = deps.emit ?? defaultEvent;
   const filter: EligibilityFn =
     deps.isEligible ??
-    (async (issue: Issue): Promise<boolean> => {
-      const decision: EligibilityDecision = await defaultDecideEligibility(issue, {
+    (async (item: WorkItem): Promise<boolean> => {
+      const decision: EligibilityDecision = await defaultDecideEligibility(item, {
         config: deps.config,
         cwd: deps.cwd,
         github: gh,
@@ -90,27 +110,56 @@ export async function pollOnce(deps: PollerDeps): Promise<Issue[]> {
       });
       emit(
         "daemon",
-        decision.eligible ? "INFO" : "INFO",
-        issue.number,
+        "INFO",
+        workItemNumber(item),
         `eligibility: ${decision.eligible ? "yes" : "no"} (${decision.reason})`,
+        { kind: item.kind },
       );
       return decision.eligible;
     });
-  const issues = await gh.listIssues({ cwd: deps.cwd, state: "open" });
-  const verdicts = await Promise.all(issues.map((issue) => Promise.resolve(filter(issue, deps.config))));
-  return issues.filter((_, i) => verdicts[i]);
+
+  const issuesP = safeList("issues", () => gh.listIssues({ cwd: deps.cwd, state: "open" }), emit);
+  const csaP = deps.config.alertsEligible
+    ? safeList("code-scanning alerts", () => gh.listCodeScanningAlerts({ cwd: deps.cwd, state: "open" }), emit)
+    : Promise.resolve([]);
+  const ssaP = deps.config.alertsEligible
+    ? safeList("secret-scanning alerts", () => gh.listSecretScanningAlerts({ cwd: deps.cwd, state: "open" }), emit)
+    : Promise.resolve([]);
+
+  const [issues, csa, ssa] = await Promise.all([issuesP, csaP, ssaP]);
+  const items: WorkItem[] = [
+    ...issues.map(asIssueWorkItem),
+    ...csa.map(asCodeScanningWorkItem),
+    ...ssa.map(asSecretScanningWorkItem),
+  ];
+  const verdicts = await Promise.all(items.map((item) => Promise.resolve(filter(item, deps.config))));
+  return items.filter((_, i) => verdicts[i]);
+}
+
+/**
+ * Run a `gh` list call and convert any failure to an empty result + a
+ * single WARN log line. The poller composes the three sources via this
+ * helper so an outage in one endpoint does not stall the daemon.
+ */
+async function safeList<T>(label: string, fn: () => Promise<T[]>, emit: Logger["event"]): Promise<T[]> {
+  try {
+    return await fn();
+  } catch (err) {
+    emit("daemon", "WARN", null, `poll: ${label} fetch failed (${(err as Error).message}); continuing without`);
+    return [];
+  }
 }
 
 export interface PollLoopOptions {
   /**
-   * Called once per eligible issue per poll tick. The supervisor's
-   * `dispatch` is the canonical implementation.
+   * Called once per eligible {@link WorkItem} per poll tick. The
+   * supervisor's `dispatch` is the canonical implementation.
    */
-  onIssue: (issue: Issue) => void | Promise<void>;
+  onWorkItem: (item: WorkItem) => void | Promise<void>;
   /**
-   * Called once at the end of every tick, after all `onIssue` callbacks
-   * have settled. The supervisor's `sweepClosedIssues` is the canonical
-   * implementation: it reaps worktrees whose issue has been closed.
+   * Called once at the end of every tick, after all `onWorkItem`
+   * callbacks have settled. The supervisor's sweep is the canonical
+   * implementation: it reaps worktrees whose work item has closed.
    */
   onTickEnd?: () => void | Promise<void>;
 }
@@ -137,8 +186,8 @@ export function runPollLoop(deps: PollerDeps, schedules: readonly Schedule[], op
     try {
       const eligible = await pollOnce(deps);
       emit("daemon", "INFO", null, `polled (${eligible.length} eligible)`);
-      for (const issue of eligible) {
-        await opts.onIssue(issue);
+      for (const item of eligible) {
+        await opts.onWorkItem(item);
       }
       if (opts.onTickEnd) {
         await opts.onTickEnd();
