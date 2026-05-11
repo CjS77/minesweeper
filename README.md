@@ -50,8 +50,13 @@ daemon polls, every open issue is run through the filter in this order — the f
 2. `MINESWEEPER_MANUALLY_APPROVED_LABEL` → eligible (human signed off).
 3. `MINESWEEPER_FAILED_LABEL` → ineligible (don't reattempt past failures automatically).
 4. `MINESWEEPER_POSSIBLY_DANGEROUS_LABEL` → ineligible (flagged by the screen, awaiting review).
-5. `MINESWEEPER_ALWAYS_FIX_LABEL` → eligible (the standard opt-in).
-6. Otherwise → fall back to `MINESWEEPER_DEFAULT_ELIGIBLE` (default `false`).
+5. `MINESWEEPER_ALWAYS_FIX_LABEL` → eligible (the standard opt-in; **skips the screener**).
+6. `MINESWEEPER_TRY_FIX_LABEL` → eligible **after the prompt-injection screener clears it**. Use this for issues you want
+   processed but want screened first — it runs the screener regardless of `MINESWEEPER_DEFAULT_ELIGIBLE`. A `dangerous`
+   verdict swaps the label for `MINESWEEPER_POSSIBLY_DANGEROUS_LABEL` and posts an explanatory comment; an `uncertain`
+   verdict applies the same label silently. Either way, a human can override by replacing the label with
+   `MINESWEEPER_MANUALLY_APPROVED_LABEL`.
+7. Otherwise → fall back to `MINESWEEPER_DEFAULT_ELIGIBLE` (default `false`); when `true`, the issue is screened.
 
 Closed issues are always ineligible.
 
@@ -171,6 +176,7 @@ copy-pasteable template.
 |----------------------------------------|----------------------------------------------------------------------|-----------------------|
 | `MINESWEEPER_DEFAULT_ELIGIBLE`         | Issues are eligible by default                                       | `false`               |
 | `MINESWEEPER_ALWAYS_FIX_LABEL`         | Issues labelled with this value are _always_ eligible                | `"autofix"`           |
+| `MINESWEEPER_TRY_FIX_LABEL`            | Issues labelled with this value are eligible _after_ the screener clears them | `"tryFix"`   |
 | `MINESWEEPER_NEVER_FIX_LABEL`          | Issues labelled with this value are _never_ eligible                 | `"manual"`            |
 | `MINESWEEPER_POSSIBLY_DANGEROUS_LABEL` | Issue might be malicious. Needs manual review                        | `"possiblyDangerous"` |
 | `MINESWEEPER_MANUALLY_APPROVED_LABEL`  | Issue has been manually reviewed and is ok                           | `"manuallyReviewed"`  |
@@ -211,8 +217,12 @@ gh issue edit <N> --add-label autofix
 node dist/cli.js labels --force
 ```
 
-The `labels` subcommand creates / updates every label Minesweeper relies on (`autofix`, `manual`,
+The `labels` subcommand creates / updates every label Minesweeper relies on (`autofix`, `tryFix`, `manual`,
 `possiblyDangerous`, `manuallyReviewed`, `minesweeperFailed`, `subtask`) with sensible colours and descriptions.
+
+For issues filed by people whose intent you trust less than your own — community contributors, or your past self in a
+hurry — apply `tryFix` instead of `autofix`. The issue still gets picked up automatically, but only after the
+prompt-injection screener (`prompts/screener.md`) clears it. The screener is a Haiku call costing ~$0.001 per issue.
 
 When filing issues you want Minesweeper to handle, use the **Autofix** issue template
 (`.github/ISSUE_TEMPLATE/autofix.md`) — it pre-applies the label and provides a body shaped for the planner prompt.

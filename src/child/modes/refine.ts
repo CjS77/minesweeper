@@ -16,13 +16,14 @@
  *     `Refine` in the prior mode.
  *   - The parent GitHub issue (used for the prompt context, the
  *     parent-link in each sub-issue body, and the
- *     `MINESWEEPER_ALWAYS_FIX_LABEL` propagation rule).
+ *     `alwaysFixLabel` / `tryFixLabel` propagation rules).
  *
  * Output side-effects (in order):
  *
  *   1. One `gh issue create` per parsed sub-task. Labels: the
  *      configured subtask label, plus the `alwaysFixLabel` iff the
- *      parent carries it.
+ *      parent carries it, plus the `tryFixLabel` iff the parent carries
+ *      *that* one (each child is still re-screened on its own merits).
  *   2. One `gh issue comment` on the parent containing a checklist
  *      that links each new sub-issue.
  *   3. State transitions to `Delegated/Complete`.
@@ -167,6 +168,9 @@ function inheritedLabelsFor(parent: Issue, config: Config): string[] {
   const parentLabelNames = new Set(parent.labels.map((l) => l.name));
   if (parentLabelNames.has(config.alwaysFixLabel)) {
     labels.add(config.alwaysFixLabel);
+  }
+  if (parentLabelNames.has(config.tryFixLabel)) {
+    labels.add(config.tryFixLabel);
   }
   return [...labels];
 }

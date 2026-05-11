@@ -87,7 +87,23 @@ describe("buildLabelSpecs", () => {
   it("covers every Minesweeper label exactly once", () => {
     const specs = buildLabelSpecs(loadConfig({}, { configFile: null }));
     const keys = specs.map((s) => s.key).sort();
-    expect(keys).toEqual(["alwaysFix", "failed", "manuallyApproved", "neverFix", "possiblyDangerous", "subtask"]);
+    expect(keys).toEqual([
+      "alwaysFix",
+      "failed",
+      "manuallyApproved",
+      "neverFix",
+      "possiblyDangerous",
+      "subtask",
+      "tryFix",
+    ]);
+  });
+
+  it("registers the tryFix label with the configured name and a non-default colour", () => {
+    const config = loadConfig({ MINESWEEPER_TRY_FIX_LABEL: "screen-me" }, { configFile: null });
+    const byKey = Object.fromEntries(buildLabelSpecs(config).map((s) => [s.key, s]));
+    expect(byKey["tryFix"]?.name).toBe("screen-me");
+    expect(byKey["tryFix"]?.color).toMatch(/^[0-9A-Fa-f]{6}$/);
+    expect(byKey["tryFix"]?.color).not.toBe(byKey["alwaysFix"]?.color);
   });
 
   it("uses 6-char hex colours without a leading hash", () => {
@@ -207,10 +223,11 @@ describe("runLabelsCommand confirmation flow", () => {
       stdout: out.stream,
     });
 
-    expect(result.upserted).toHaveLength(6);
+    expect(result.upserted).toHaveLength(7);
     const names = upsertCalls().map((a) => a[2]);
     expect(names).toEqual([
       "autofix",
+      "tryFix",
       "manual",
       "possiblyDangerous",
       "manuallyReviewed",
@@ -274,8 +291,8 @@ describe("runLabelsCommand confirmation flow", () => {
     });
 
     expect(prompt).toHaveBeenCalledTimes(1);
-    expect(result.upserted).toHaveLength(6);
-    expect(upsertCalls()).toHaveLength(6);
+    expect(result.upserted).toHaveLength(7);
+    expect(upsertCalls()).toHaveLength(7);
   });
 
   it("'new-only' skips existing labels and only creates the missing ones", async () => {
@@ -299,7 +316,7 @@ describe("runLabelsCommand confirmation flow", () => {
 
     expect(result.newOnly).toBe(true);
     const created = upsertCalls().map((a) => a[2]);
-    expect(created).toEqual(["manual", "possiblyDangerous", "manuallyReviewed", "minesweeperFailed"]);
+    expect(created).toEqual(["tryFix", "manual", "possiblyDangerous", "manuallyReviewed", "minesweeperFailed"]);
     // autofix and subtask must NOT be re-upserted.
     expect(created).not.toContain("autofix");
     expect(created).not.toContain("subtask");
@@ -308,6 +325,7 @@ describe("runLabelsCommand confirmation flow", () => {
   it("'new-only' is a no-op when every proposed label already exists", async () => {
     const allCanonical = [
       "autofix",
+      "tryFix",
       "manual",
       "possiblyDangerous",
       "manuallyReviewed",
@@ -381,6 +399,6 @@ describe("runLabelsCommand confirmation flow", () => {
         stdout: makeStdout().stream,
       }),
     ).rejects.toThrow(/422/);
-    expect(upsertCalls()).toHaveLength(6);
+    expect(upsertCalls()).toHaveLength(7);
   });
 });

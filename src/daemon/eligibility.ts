@@ -19,11 +19,14 @@
  *   3. `failedLabel`           → ineligible (don't reattempt past failures).
  *   4. `possiblyDangerousLabel`→ ineligible (already screened, awaits human).
  *   5. `alwaysFixLabel`        → eligible (human opt-in — skip screen).
- *   6. otherwise               → screen if `defaultEligible`; else ineligible.
+ *   6. `tryFixLabel`           → run the screener; route on the verdict
+ *                                (per-issue opt-in *with* a safety gate, even
+ *                                when `defaultEligible=false`).
+ *   7. otherwise               → screen if `defaultEligible`; else ineligible.
  *
  * Closed issues are always ineligible (checked first).
  *
- * Side effects on screener verdict (only at step 6):
+ * Side effects on screener verdict (steps 6 and 7):
  *
  *   - `safe`      → eligible.
  *   - `dangerous` → addLabel(possiblyDangerousLabel) + comment + ineligible.
@@ -56,6 +59,9 @@ export function isEligible(issue: Issue, config: Config): boolean {
   if (has(config.failedLabel)) return false;
   if (has(config.possiblyDangerousLabel)) return false;
   if (has(config.alwaysFixLabel)) return true;
+  // `tryFix` and the `defaultEligible` catch-all are both *potentially*
+  // eligible — `decideEligibility` resolves them via the screener.
+  if (has(config.tryFixLabel)) return true;
   return config.defaultEligible;
 }
 
@@ -119,26 +125,31 @@ export async function decideEligibility(issue: Issue, deps: DecideEligibilityDep
     return { eligible: true, reason: `has ${config.alwaysFixLabel}` };
   }
 
-  if (!config.defaultEligible) {
+  const viaTryFix = labels.has(config.tryFixLabel);
+  if (!viaTryFix && !config.defaultEligible) {
     return { eligible: false, reason: "no opt-in label and defaultEligible=false" };
   }
 
-  // Catch-all: screen the issue. The screener may apply labels/comments.
+  // Either the issue carries `tryFix` (per-issue opt-in with screen) or
+  // `defaultEligible=true` is letting it through. Both routes use the same
+  // screener and the same side effects on the verdict; they only differ in
+  // how they got here, which is reflected in the `reason` string.
+  const route = viaTryFix ? `screener (${config.tryFixLabel})` : "screener";
   const screened = await screen(issue, { config, cwd, emit });
 
   if (screened.verdict === "safe") {
-    return { eligible: true, reason: "screener: safe", screen: screened };
+    return { eligible: true, reason: `${route}: safe`, screen: screened };
   }
 
   if (screened.verdict === "dangerous") {
     await applyDangerousLabel(gh, issue.number, config, cwd, emit);
     await postScreenerComment(gh, issue.number, screened.verdict, config, cwd, emit);
-    return { eligible: false, reason: "screener: dangerous", screen: screened };
+    return { eligible: false, reason: `${route}: dangerous`, screen: screened };
   }
 
   // uncertain
   await applyDangerousLabel(gh, issue.number, config, cwd, emit);
-  return { eligible: false, reason: "screener: uncertain", screen: screened };
+  return { eligible: false, reason: `${route}: uncertain`, screen: screened };
 }
 
 async function applyDangerousLabel(

@@ -17,6 +17,7 @@ const mockedQuery = vi.mocked(query);
 const FAKE_CONFIG: Config = {
   defaultEligible: false,
   alwaysFixLabel: "autofix",
+  tryFixLabel: "tryFix",
   neverFixLabel: "manual",
   possiblyDangerousLabel: "danger",
   manuallyApprovedLabel: "ok",

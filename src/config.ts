@@ -21,6 +21,7 @@ import { z } from "zod";
 export const ConfigSchema = z.object({
   defaultEligible: z.boolean(),
   alwaysFixLabel: z.string().min(1),
+  tryFixLabel: z.string().min(1),
   neverFixLabel: z.string().min(1),
   possiblyDangerousLabel: z.string().min(1),
   manuallyApprovedLabel: z.string().min(1),
@@ -162,6 +163,7 @@ export function loadConfig(env: Env = process.env, opts: { configFile?: string |
   const candidate = {
     defaultEligible: readBool(env, "MINESWEEPER_DEFAULT_ELIGIBLE", file.defaultEligible ?? false),
     alwaysFixLabel: readString(env, "MINESWEEPER_ALWAYS_FIX_LABEL", file.alwaysFixLabel ?? "autofix"),
+    tryFixLabel: readString(env, "MINESWEEPER_TRY_FIX_LABEL", file.tryFixLabel ?? "tryFix"),
     neverFixLabel: readString(env, "MINESWEEPER_NEVER_FIX_LABEL", file.neverFixLabel ?? "manual"),
     possiblyDangerousLabel: readString(
       env,

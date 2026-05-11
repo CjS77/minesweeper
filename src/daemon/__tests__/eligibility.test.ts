@@ -30,11 +30,16 @@ describe("isEligible — label hierarchy", () => {
   it.each<[string, readonly string[], boolean]>([
     ["never-fix beats always-fix", [config.neverFixLabel, config.alwaysFixLabel], false],
     ["never-fix beats manually-approved", [config.neverFixLabel, config.manuallyApprovedLabel], false],
+    ["never-fix beats try-fix", [config.neverFixLabel, config.tryFixLabel], false],
     ["manually-approved beats failed", [config.manuallyApprovedLabel, config.failedLabel], true],
     ["manually-approved beats possibly-dangerous", [config.manuallyApprovedLabel, config.possiblyDangerousLabel], true],
     ["failed beats always-fix", [config.failedLabel, config.alwaysFixLabel], false],
+    ["failed beats try-fix", [config.failedLabel, config.tryFixLabel], false],
     ["possibly-dangerous beats always-fix", [config.possiblyDangerousLabel, config.alwaysFixLabel], false],
+    ["possibly-dangerous beats try-fix", [config.possiblyDangerousLabel, config.tryFixLabel], false],
     ["always-fix alone is eligible", [config.alwaysFixLabel], true],
+    // tryFix is *potentially* eligible — `decideEligibility` resolves it via the screener.
+    ["try-fix alone is potentially eligible (sync true)", [config.tryFixLabel], true],
     ["unrelated labels fall back to default (false)", ["bug", "p1"], false],
     ["no labels falls back to default (false)", [], false],
   ])("%s", (_name, labels, expected) => {
@@ -230,6 +235,78 @@ describe("decideEligibility", () => {
     });
     expect(result.eligible).toBe(false);
     expect(emit.mock.calls.some((c) => c[1] === "WARN")).toBe(true);
+  });
+
+  it("tryFix label runs the screener even when defaultEligible=false", async () => {
+    const screen = fakeScreen("safe");
+    const gh = makeGhStub();
+    const result = await decideEligibility(makeIssue({ labels: [config.tryFixLabel] }), {
+      config, // defaultEligible=false
+      cwd: "/tmp",
+      github: gh,
+      screenIssue: screen,
+    });
+    expect(result.eligible).toBe(true);
+    expect(screen).toHaveBeenCalledTimes(1);
+    expect(result.screen?.verdict).toBe("safe");
+    expect(result.reason).toContain(config.tryFixLabel);
+    expect(gh.addLabel).not.toHaveBeenCalled();
+  });
+
+  it("tryFix + dangerous verdict → labels possiblyDangerous, posts comment, ineligible", async () => {
+    const screen = fakeScreen("dangerous");
+    const gh = makeGhStub();
+    const result = await decideEligibility(makeIssue({ labels: [config.tryFixLabel], number: 77 }), {
+      config,
+      cwd: "/tmp",
+      github: gh,
+      screenIssue: screen,
+    });
+    expect(result.eligible).toBe(false);
+    expect(result.screen?.verdict).toBe("dangerous");
+    expect(result.reason).toContain(config.tryFixLabel);
+    expect(result.reason).toContain("dangerous");
+    expect(gh.addLabel).toHaveBeenCalledWith(77, config.possiblyDangerousLabel, { cwd: "/tmp" });
+    expect(gh.comment).toHaveBeenCalledTimes(1);
+  });
+
+  it("tryFix + uncertain verdict → labels possiblyDangerous, no comment, ineligible", async () => {
+    const screen = fakeScreen("uncertain");
+    const gh = makeGhStub();
+    const result = await decideEligibility(makeIssue({ labels: [config.tryFixLabel], number: 88 }), {
+      config,
+      cwd: "/tmp",
+      github: gh,
+      screenIssue: screen,
+    });
+    expect(result.eligible).toBe(false);
+    expect(result.screen?.verdict).toBe("uncertain");
+    expect(gh.addLabel).toHaveBeenCalledWith(88, config.possiblyDangerousLabel, { cwd: "/tmp" });
+    expect(gh.comment).not.toHaveBeenCalled();
+  });
+
+  it("manuallyApproved beats tryFix — screener is not invoked", async () => {
+    const screen = fakeScreen("dangerous");
+    const result = await decideEligibility(makeIssue({ labels: [config.manuallyApprovedLabel, config.tryFixLabel] }), {
+      config,
+      cwd: "/tmp",
+      github: makeGhStub(),
+      screenIssue: screen,
+    });
+    expect(result.eligible).toBe(true);
+    expect(screen).not.toHaveBeenCalled();
+  });
+
+  it("alwaysFix beats tryFix — screener is not invoked", async () => {
+    const screen = fakeScreen("dangerous");
+    const result = await decideEligibility(makeIssue({ labels: [config.alwaysFixLabel, config.tryFixLabel] }), {
+      config,
+      cwd: "/tmp",
+      github: makeGhStub(),
+      screenIssue: screen,
+    });
+    expect(result.eligible).toBe(true);
+    expect(screen).not.toHaveBeenCalled();
   });
 
   it("propagates the screen result so the caller can log/inspect it", async () => {

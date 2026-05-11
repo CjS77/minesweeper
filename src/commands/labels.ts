@@ -26,7 +26,7 @@ import { event } from "../logging.js";
 /** Specification for a single Minesweeper label. */
 export interface LabelSpec {
   /** Stable handle used in logs and tests; not the GitHub label name. */
-  key: "alwaysFix" | "neverFix" | "possiblyDangerous" | "manuallyApproved" | "failed" | "subtask";
+  key: "alwaysFix" | "tryFix" | "neverFix" | "possiblyDangerous" | "manuallyApproved" | "failed" | "subtask";
   /** The actual label name shown on GitHub, sourced from config. */
   name: string;
   /** GitHub label colour — 6-char hex, no leading `#`. */
@@ -48,6 +48,12 @@ export function buildLabelSpecs(config: Config): LabelSpec[] {
       name: config.alwaysFixLabel,
       color: "0e8a16",
       description: "Minesweeper will always pick up issues with this label.",
+    },
+    {
+      key: "tryFix",
+      name: config.tryFixLabel,
+      color: "fbca04",
+      description: "Minesweeper will pick up this issue, but only after the prompt-injection screener clears it.",
     },
     {
       key: "neverFix",

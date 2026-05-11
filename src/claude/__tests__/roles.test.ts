@@ -9,6 +9,7 @@ import { ROLE_NAMES, ROLES, getRole, modelFor } from "../roles.js";
 const FAKE_CONFIG: Config = {
   defaultEligible: false,
   alwaysFixLabel: "autofix",
+  tryFixLabel: "tryFix",
   neverFixLabel: "manual",
   possiblyDangerousLabel: "danger",
   manuallyApprovedLabel: "ok",

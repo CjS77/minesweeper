@@ -28,6 +28,7 @@ describe("loadConfig", () => {
     expect(cfg).toEqual({
       defaultEligible: false,
       alwaysFixLabel: "autofix",
+      tryFixLabel: "tryFix",
       neverFixLabel: "manual",
       possiblyDangerousLabel: "possiblyDangerous",
       manuallyApprovedLabel: "manuallyReviewed",
@@ -133,6 +134,17 @@ describe("loadConfig", () => {
     const err = captureError(() => loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "" }, { configFile: null }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_ALWAYS_FIX_LABEL");
+  });
+
+  it("overrides MINESWEEPER_TRY_FIX_LABEL from env", () => {
+    const cfg = loadConfig({ MINESWEEPER_TRY_FIX_LABEL: "screen-me" }, { configFile: null });
+    expect(cfg.tryFixLabel).toBe("screen-me");
+  });
+
+  it("rejects empty MINESWEEPER_TRY_FIX_LABEL", () => {
+    const err = captureError(() => loadConfig({ MINESWEEPER_TRY_FIX_LABEL: "" }, { configFile: null }));
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).envVar).toBe("MINESWEEPER_TRY_FIX_LABEL");
   });
 
   it("loads values from a JSON config file", () => {

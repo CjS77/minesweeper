@@ -10,6 +10,7 @@ import { initState, readState, writeState, type State } from "../state.js";
 const FAKE_CONFIG: Config = {
   defaultEligible: false,
   alwaysFixLabel: "autofix",
+  tryFixLabel: "tryFix",
   neverFixLabel: "manual",
   possiblyDangerousLabel: "danger",
   manuallyApprovedLabel: "ok",

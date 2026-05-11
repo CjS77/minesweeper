@@ -12,6 +12,7 @@ import { FINAL_PLAN_FILE, parseSubTasks, runRefine, type RunSubagentFn } from ".
 const FAKE_CONFIG: Config = {
   defaultEligible: false,
   alwaysFixLabel: "autofix",
+  tryFixLabel: "tryFix",
   neverFixLabel: "manual",
   possiblyDangerousLabel: "danger",
   manuallyApprovedLabel: "ok",
@@ -243,6 +244,30 @@ describe("runRefine", () => {
       const labels = (call[0] as { labels?: readonly string[] }).labels ?? [];
       expect(labels).toContain("subtask");
       expect(labels).not.toContain("autofix");
+    }
+  });
+
+  it("propagates the tryFixLabel when the parent carries it", async () => {
+    const issue = makeIssue(42, { labels: [{ name: "tryFix" }] });
+    const { createIssue } = await run({ issue });
+
+    expect(createIssue.mock.calls.length).toBeGreaterThan(0);
+    for (const call of createIssue.mock.calls) {
+      const labels = (call[0] as { labels?: readonly string[] }).labels ?? [];
+      expect(labels).toEqual(expect.arrayContaining(["subtask", "tryFix"]));
+      // tryFix is independent of autofix; the parent does not carry autofix here.
+      expect(labels).not.toContain("autofix");
+    }
+  });
+
+  it("does NOT propagate the tryFixLabel when the parent does not carry it", async () => {
+    const issue = makeIssue(42, { labels: [{ name: "bug" }] });
+    const { createIssue } = await run({ issue });
+
+    for (const call of createIssue.mock.calls) {
+      const labels = (call[0] as { labels?: readonly string[] }).labels ?? [];
+      expect(labels).toContain("subtask");
+      expect(labels).not.toContain("tryFix");
     }
   });
 

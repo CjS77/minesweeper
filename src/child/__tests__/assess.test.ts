@@ -12,6 +12,7 @@ import { FINAL_PLAN_FILE, parseAssessVerdict, runAssess, type RunSubagentFn } fr
 const FAKE_CONFIG: Config = {
   defaultEligible: false,
   alwaysFixLabel: "autofix",
+  tryFixLabel: "tryFix",
   neverFixLabel: "manual",
   possiblyDangerousLabel: "danger",
   manuallyApprovedLabel: "ok",
