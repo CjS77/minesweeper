@@ -117,16 +117,54 @@ export async function archiveWorktreeState(opts: ArchiveWorktreeStateOptions): P
 }
 
 /**
- * Remove a git worktree. Always called by the parent daemon — never the child — so the
- * child's process holds no handles on the directory by the time we run.
+ * Remove a git worktree and the local branch that was checked out in it.
+ *
+ * Always called by the parent daemon — never the child — so the child's process holds no
+ * handles on the directory by the time we run.
  *
  * The owning repo is discovered from the worktree itself via `git rev-parse --git-common-dir`,
  * so callers don't need to plumb `repoRoot` through. `--force` is used because the worktree
  * may legitimately contain uncommitted files (e.g. in-flight state writes) at teardown time.
+ *
+ * After the worktree is deregistered the function also runs `git branch -D <branch>` in the
+ * main repo to delete the per-issue branch that `addWorktree` created — otherwise every issue
+ * Minesweeper handles leaves a stale branch behind. A `not found` failure from `branch -D` is
+ * treated as success (the branch was already gone). Detached-HEAD worktrees skip the delete
+ * step entirely because there is no branch ref to remove.
  */
 export async function removeWorktree(worktreePath: string): Promise<void> {
   const mainRepo = await findMainRepoFromWorktree(worktreePath);
+  const branch = await resolveWorktreeBranch(worktreePath);
   await execa("git", ["worktree", "remove", "--force", worktreePath], { cwd: mainRepo });
+  if (branch !== null) {
+    await deleteBranchIfPresent(mainRepo, branch);
+  }
+}
+
+/**
+ * Read the currently-checked-out branch of `worktreePath`. Returns `null` for a detached HEAD
+ * (where `git rev-parse --abbrev-ref HEAD` prints the literal string `HEAD`) — in that case
+ * there is no branch ref to delete after the worktree is removed.
+ */
+async function resolveWorktreeBranch(worktreePath: string): Promise<string | null> {
+  const { stdout } = await execa("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: worktreePath });
+  const branch = stdout.trim();
+  return branch === "" || branch === "HEAD" ? null : branch;
+}
+
+/**
+ * Run `git branch -D <branch>` in `mainRepo`. Swallow the failure if git reports the branch
+ * does not exist (`error: branch '<name>' not found.`) — the goal is idempotent cleanup. Any
+ * other failure is propagated so the caller can log it.
+ *
+ * `-D` (force) rather than `-d` because the per-issue branch is local-only and may legitimately
+ * carry unmerged commits at teardown time (e.g. assessment ran but the PR was never opened).
+ */
+async function deleteBranchIfPresent(mainRepo: string, branch: string): Promise<void> {
+  const result = await execa("git", ["branch", "-D", branch], { cwd: mainRepo, reject: false });
+  if (result.exitCode === 0) return;
+  if (/not found/i.test(result.stderr)) return;
+  throw new Error(`git branch -D ${branch} failed (exit ${result.exitCode}): ${result.stderr.trim()}`);
 }
 
 /**
