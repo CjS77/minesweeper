@@ -219,6 +219,58 @@ copy-pasteable template.
 
 # Operating Minesweeper
 
+## Quick start
+
+From a fresh clone to a Minesweeper-opened PR in seven steps. Each step links out to its detailed sub-section below.
+
+1. **Install prerequisites.** `gh` (authenticated against the repo), Node.js 20+, `git` 2.20+, and Claude Agent SDK
+   auth — see [Prerequisites](#prerequisites).
+2. **Install and build:**
+
+   ```sh
+   npm install
+   npm run build
+   ```
+
+   The build is required because every command below invokes `node dist/cli.js …`.
+
+3. **Copy the env template:** `cp .env.sample .env` and adjust anything you want to override. Every variable is
+   optional — see [Environment variables](#environment-variables) for the full table.
+4. **Seed Minesweeper's labels** on the target repo:
+
+   ```sh
+   node dist/cli.js labels --force
+   ```
+
+   See [Labelling issues for autofix](#labelling-issues-for-autofix) for what each label means.
+
+5. **File an eligible issue.** Two options, and they are **not** interchangeable: `issue new` _opens_ issues, `run`
+   _consumes_ them.
+
+   - Apply the autofix label to an existing issue:
+
+     ```sh
+     gh issue edit <N> --add-label autofix
+     ```
+
+   - Or have Claude shape a fresh one for you:
+
+     ```sh
+     node dist/cli.js issue new "describe the bug or small feature"
+     ```
+
+6. **Start the daemon:**
+
+   ```sh
+   node dist/cli.js run
+   ```
+
+   It polls GitHub, dispatches the eligible issue into a worktree, and drives the planner → executor → reviewer loop.
+   See [Running the daemon](#running-the-daemon).
+
+7. **Watch for the PR.** Follow the pretty stream on stdout or tail the JSON log — see [Viewing logs](#viewing-logs).
+   On success the daemon prints the PR URL; on failure the worktree is preserved for post-mortem.
+
 ## Prerequisites
 
 1. Install `gh` and authenticate it against the target repo (`gh auth login`, or set `GH_TOKEN` / `GITHUB_TOKEN`).
@@ -257,6 +309,38 @@ node dist/cli.js run
 
 The daemon prints a pretty stream of events: `polled (N eligible) → dispatching → planning → executing → reviewing
 → PR opened`. Stop it with `Ctrl+C`; it drains in-flight children before exiting.
+
+## Viewing logs
+
+Minesweeper emits two streams of operational output while the daemon runs: a human-friendly stdout stream and a
+structured JSON file. For post-mortem inspection of a specific run, see [Logs and post-mortem](#logs-and-post-mortem)
+and [Inspecting transcripts](#inspecting-transcripts).
+
+**Pretty stdout.** `node dist/cli.js run` prints a chalk-coloured event stream — one line per state transition —
+suitable for watching live in a terminal. For example:
+
+```
+polled (2 eligible) → dispatching #32 → planning #32 → reviewing #32 → PR opened https://github.com/<owner>/<repo>/pull/57
+```
+
+**Structured JSON log.** Every event is also written as one JSON object per line to `.minesweeper/logs/daemon.log`
+(rotated by Minesweeper). Tail it with `jq` for a readable feed:
+
+```sh
+tail -f .minesweeper/logs/daemon.log | jq -r '"\(.time) [\(.level)] \(.role) #\(.issueNumber // "-")  \(.msg)"'
+```
+
+For example:
+
+```
+2026-05-11T09:14:02.118Z [INFO] daemon #-   polled (2 eligible)
+2026-05-11T09:14:02.404Z [INFO] daemon #32  dispatching child
+2026-05-11T09:14:38.910Z [INFO] planner #32 planning complete after 2 iterations
+```
+
+**Per-issue transcripts.** Full planner / critic / executor / reviewer conversations are captured under each
+worktree's `.minesweeper/planning_history/` and are best read with `minesweeper log view` — see
+[Inspecting transcripts](#inspecting-transcripts).
 
 ## Cron schedules and the JSON config file
 
@@ -306,6 +390,9 @@ minesweeper log view executor-01 --max-lines 0
 ```
 
 ## Logs and post-mortem
+
+For watching logs while the daemon runs, see [Viewing logs](#viewing-logs); this section covers post-mortem inspection
+of finished or failed worktrees.
 
 * **Structured logs** — JSON, one line per event, in `.minesweeper/logs/daemon.log` (rotated by Minesweeper). Useful
   with `jq`. Per-issue children write their own logs into `<worktree>/.minesweeper/logs/`.
