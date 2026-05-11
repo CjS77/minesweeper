@@ -1,8 +1,18 @@
-import { IssueListSchema, IssueSchema, LabelSchema, type Issue, type Label } from "./models.js";
+import {
+  IssueListSchema,
+  IssueSchema,
+  LabelSchema,
+  PullRequestSchema,
+  type Issue,
+  type Label,
+  type PullRequest,
+} from "./models.js";
 import { z } from "zod";
 import { runGh, type RunGhOptions } from "./process.js";
 
 const RepoLabelListSchema = z.array(LabelSchema);
+const PullRequestListSchema = z.array(PullRequestSchema);
+const RepoOwnerResponseSchema = z.object({ owner: z.object({ login: z.string() }) });
 
 export { GhError, GhMissingError, GhNotARepoError, runGh, type RunGhOptions } from "./process.js";
 export {
@@ -11,6 +21,11 @@ export {
   IssueSchema,
   IssueStateSchema,
   LabelSchema,
+  PrReviewDecisionSchema,
+  PrReviewSchema,
+  PrReviewStateSchema,
+  PrReviewThreadCommentSchema,
+  PrReviewThreadSchema,
   PrStateSchema,
   PullRequestSchema,
   UserSchema,
@@ -18,6 +33,11 @@ export {
   type Issue,
   type IssueState,
   type Label,
+  type PrReview,
+  type PrReviewDecision,
+  type PrReviewState,
+  type PrReviewThread,
+  type PrReviewThreadComment,
   type PrState,
   type PullRequest,
   type User,
@@ -25,6 +45,8 @@ export {
 
 const ISSUE_LIST_FIELDS = "number,title,body,labels,author,state,url,createdAt,updatedAt";
 const ISSUE_VIEW_FIELDS = `${ISSUE_LIST_FIELDS},comments`;
+const PR_LIST_FIELDS = "number,headRefName,baseRefName,state,author,url";
+const PR_VIEW_FIELDS = `${PR_LIST_FIELDS},title,body,reviews,reviewDecision,reviewThreads,comments`;
 
 interface CwdOnly {
   cwd?: string;
@@ -144,6 +166,53 @@ export async function createPr(opts: CreatePrOptions): Promise<{ number: number;
   const stdout = await runGh<string>(args, ghOpts(opts));
   const url = lastUrl(stdout);
   return { number: parsePrNumber(url), url };
+}
+
+export interface ListPullRequestsOptions extends GhOverridable {
+  state?: "open" | "closed" | "merged" | "all";
+  /** Filter on `headRefName` (branch name). */
+  head?: string;
+  /** Filter on author login (use `"@me"` for the authenticated user). */
+  author?: string;
+  /** Hard cap on rows returned by `gh pr list --limit`. Default 30. */
+  limit?: number;
+}
+
+/**
+ * `gh pr list` with the JSON projection Minesweeper needs to find its
+ * own open PRs. Returns the parsed list — review fields are not
+ * included here (use {@link getPullRequest} for those).
+ */
+export async function listPullRequests(opts: ListPullRequestsOptions = {}): Promise<PullRequest[]> {
+  const args = ["pr", "list", "--state", opts.state ?? "open", "--limit", String(opts.limit ?? 30)];
+  if (opts.head !== undefined) args.push("--head", opts.head);
+  if (opts.author !== undefined) args.push("--author", opts.author);
+  args.push("--json", PR_LIST_FIELDS);
+  const raw = await runGh(args, { ...ghOpts(opts), json: true });
+  return PullRequestListSchema.parse(raw);
+}
+
+/**
+ * `gh pr view --json` with the full set of fields the PR-feedback
+ * poller relies on, including `reviews`, `reviewDecision`,
+ * `reviewThreads`, and `comments`.
+ */
+export async function getPullRequest(number: number, opts: GhOverridable = {}): Promise<PullRequest> {
+  const raw = await runGh(["pr", "view", String(number), "--json", PR_VIEW_FIELDS], {
+    ...ghOpts(opts),
+    json: true,
+  });
+  return PullRequestSchema.parse(raw);
+}
+
+/**
+ * Return the login of the repository owner (`gh repo view --json owner`).
+ * Used to seed the authorised-reviewer allowlist alongside
+ * `CODEOWNERS` entries.
+ */
+export async function getRepoOwner(opts: GhOverridable = {}): Promise<string> {
+  const raw = await runGh(["repo", "view", "--json", "owner"], { ...ghOpts(opts), json: true });
+  return RepoOwnerResponseSchema.parse(raw).owner.login;
 }
 
 const URL_RE = /https?:\/\/\S+/g;

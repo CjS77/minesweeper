@@ -29,7 +29,7 @@ import { basename, join, isAbsolute, dirname } from "node:path";
 import chalk from "chalk";
 
 import { TRANSCRIPT_DIR } from "../claude/transcript.js";
-import { STATE_DIR, STATE_FILE, StateSchema } from "../child/state.js";
+import { migrateIfNeeded, STATE_DIR, STATE_FILE, StateSchema } from "../child/state.js";
 
 /** Thrown by `runLogViewCommand` when the requested transcript can't be located. */
 export class LogViewError extends Error {
@@ -510,7 +510,7 @@ function listFromArchive(issueNumber: number, worktreePath: string): string[] {
 function readStateOrNull(path: string): { issueNumber: number } | null {
   try {
     const raw = readFileSync(path, "utf8");
-    return StateSchema.parse(JSON.parse(raw));
+    return StateSchema.parse(migrateIfNeeded(JSON.parse(raw)));
   } catch {
     return null;
   }
