@@ -130,8 +130,27 @@ export interface GitOps {
   resetSoft(cwd: string, ref: string): Promise<void>;
   /** `git commit -m <message>`. The orchestrator-owned squash commit. */
   commit(cwd: string, message: string): Promise<void>;
-  /** `git push -u origin <branch>`. */
+  /**
+   * `git push -u origin <branch>`. If the remote rejects the push as
+   * non-fast-forward, fetches via `git pull --rebase origin <branch>`
+   * and retries once. If the rebase itself hits conflicts, the rebase
+   * is aborted and the error propagates so the caller can bail.
+   */
   pushBranch(cwd: string, branch: string): Promise<void>;
+}
+
+/**
+ * Matches the `! [rejected] <ref> -> <ref> (fetch first)` or
+ * `(non-fast-forward)` line git prints when a push would overwrite
+ * remote commits we don't have locally. Both variants are handled the
+ * same way (pull --rebase + retry). Anchored on the marker so unrelated
+ * `[rejected]` strings — e.g. inside a commit message — don't match.
+ */
+const PUSH_NEEDS_FETCH_RE = /\[rejected\][^\n]*\((?:fetch first|non-fast-forward)\)/i;
+
+/** Exported for tests: true if the stderr indicates a non-fast-forward push rejection. */
+export function isNonFastForwardRejection(stderr: string): boolean {
+  return PUSH_NEEDS_FETCH_RE.test(stderr);
 }
 
 /** Production implementation of {@link GitOps}, backed by `execa`. */
@@ -167,6 +186,23 @@ export const defaultGit: GitOps = {
     await execa("git", ["commit", "-m", message], { cwd });
   },
   async pushBranch(cwd, branch) {
+    try {
+      await execa("git", ["push", "-u", "origin", branch], { cwd });
+      return;
+    } catch (err) {
+      const stderr = (err as { stderr?: string }).stderr ?? "";
+      if (!isNonFastForwardRejection(stderr)) throw err;
+    }
+    // Remote has commits we don't have locally. Rebase our local
+    // commits on top, then retry. If the rebase hits conflicts we
+    // abort it so the worktree is left in a clean state for the caller
+    // (typically the supervisor, which will label the issue as failed).
+    try {
+      await execa("git", ["pull", "--rebase", "origin", branch], { cwd });
+    } catch (rebaseErr) {
+      await execa("git", ["rebase", "--abort"], { cwd, reject: false });
+      throw rebaseErr;
+    }
     await execa("git", ["push", "-u", "origin", branch], { cwd });
   },
 };
