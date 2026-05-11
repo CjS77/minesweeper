@@ -7,10 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-05-11
+
+### Added
+- Code-scanning and secret-scanning alerts are now polled as first-class work items and pushed through the same
+  dispatch → worktree → planning → execution → PR pipeline as issues. A new `WorkItem` discriminated union
+  (`src/workitem.ts`) threads the kind through eligibility, poller, supervisor, planning, and execution. Because alerts
+  cannot carry labels, a new `MINESWEEPER_ALERTS_ELIGIBLE` flag (default `true`) gates them at the same precedence as
+  the always-fix label. The poller fetches all three sources in parallel via `safeList` so an outage in one endpoint
+  emits a WARN and continues with the rest. Branches and worktree archive paths are kind-prefixed
+  (`{slug}-codeScanningAlert{NNNN}`) and the supervisor inflight map keys on `(kind, number)` so issue #N and alert #N
+  never collide. `minesweeper handle` keeps the bare-number form and adds `codeScanningAlert/N` / `secretScanningAlert/N`.
+  PR body trailer for alerts is `## Closes alert <url>` since `Fixes #N` keywords do not auto-close alerts. State
+  schema bumped v3 → v4 with a `kind` field; v3 → v4 migration defaults legacy state to `kind: "issue"`.
+- Layered config with a per-repo override at `<cwd>/.minesweeper/config.json`. Precedence is now
+  env > repo file > global file > defaults, merged per-key. `ConfigSource` gains `"repo-config"`; resolvers tag each
+  field's provenance accordingly. `loadConfig` takes a `{ repoConfigFile, cwd }` option pair and the CLI passes `cwd`
+  explicitly at every call site. Overridable via `MINESWEEPER_REPO_CONFIG_FILE`. README gains Installation, Working
+  directory, and Configuration sections plus a gitignore note on sharing repo-level config.
+- `.github/dependabot.yml` for automated dependency updates.
+
 ### Changed
 - `log view --issue <n> <name>` now treats `<name>` as a case-sensitive substring match against transcript basenames
   rather than compiling it as a regex. Closes #35 (untrusted regex compilation was a ReDoS surface). Migration: drop
   regex anchors and meta-characters — e.g. `^critic` becomes `critic`.
+- CI Node version bumped from 20 to 24 so `npm ci` uses npm 11, which handles the optional/wasm transitive deps that
+  Vitest v4 pulls in (`@rolldown/binding-wasm32-wasi`, `@emnapi/core`, `@emnapi/runtime`) without tripping
+  "Missing: ... from lock file".
+
+### Dependency updates
+- vitest: ^2.1.0 => ^4.1.6 (resolves GHSA-67mh-4wv8-2f99)
+- @vitest/coverage-v8: ^2.1.9 => ^4.1.6
+- typescript: 5.9.3 => 6.0.3
+- commander: 12.1.0 => 14.0.3
+- @types/node: 22.19.18 => 25.6.2
 
 ## [0.4.0] — 2026-05-11
 
@@ -123,7 +153,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/CjS77/minesweeper/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/CjS77/minesweeper/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/CjS77/minesweeper/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CjS77/minesweeper/compare/v0.1.0...v0.2.0
