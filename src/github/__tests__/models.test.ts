@@ -7,6 +7,7 @@ import {
   IssueSchema,
   IssueStateSchema,
   LabelSchema,
+  PrReviewDecisionSchema,
   PullRequestSchema,
   UserSchema,
 } from "../models.js";
@@ -105,5 +106,32 @@ describe("PullRequestSchema", () => {
     const pr = PullRequestSchema.parse(fixture("pull_request.json")) as Record<string, unknown>;
     expect(pr.additions).toBe(12);
     expect(pr.deletions).toBe(3);
+  });
+
+  it("parses reviews, reviewDecision, and PR-level comments (reviewThreads come from REST, not gh pr view)", () => {
+    const pr = PullRequestSchema.parse(fixture("pull_request_with_reviews.json"));
+    expect(pr.number).toBe(99);
+    expect(pr.reviews).toHaveLength(1);
+    expect(pr.reviews?.[0]?.state).toBe("CHANGES_REQUESTED");
+    expect(pr.reviews?.[0]?.author.login).toBe("RepoOwner");
+    expect(pr.reviewDecision).toBe("CHANGES_REQUESTED");
+    expect(pr.comments).toHaveLength(1);
+  });
+});
+
+describe("PrReviewDecisionSchema", () => {
+  it("normalises the empty string to null (gh's encoding of 'no decision yet')", () => {
+    expect(PrReviewDecisionSchema.parse("")).toBeNull();
+  });
+
+  it("accepts the GraphQL decision values", () => {
+    expect(PrReviewDecisionSchema.parse("APPROVED")).toBe("APPROVED");
+    expect(PrReviewDecisionSchema.parse("CHANGES_REQUESTED")).toBe("CHANGES_REQUESTED");
+    expect(PrReviewDecisionSchema.parse("REVIEW_REQUIRED")).toBe("REVIEW_REQUIRED");
+    expect(PrReviewDecisionSchema.parse(null)).toBeNull();
+  });
+
+  it("rejects unknown decision values", () => {
+    expect(() => PrReviewDecisionSchema.parse("MAYBE_APPROVED")).toThrow();
   });
 });

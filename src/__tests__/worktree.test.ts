@@ -229,6 +229,32 @@ describe("listOrphans", () => {
     expect(orphans).toEqual([]);
   });
 
+  it("migrates v2 state files on read so listOrphans does not silently drop them after a schema bump", async () => {
+    const { path: wt } = await addWorktree({ repoRoot, worktreesRoot, branchName: "legacy-v2" });
+    await fs.mkdir(join(wt, ".minesweeper"), { recursive: true });
+    const v2 = {
+      version: 2,
+      issueNumber: 77,
+      branchName: "legacy-v2",
+      mode: "Execution",
+      status: "Complete",
+      iterations: 0,
+      maxIterations: 3,
+      assessment: null,
+      assessmentReason: null,
+      startedAt: "2026-05-01T00:00:00.000Z",
+      updatedAt: "2026-05-01T00:00:00.000Z",
+    };
+    await fs.writeFile(statePath(wt), JSON.stringify(v2));
+
+    const orphans = await listOrphans(worktreesRoot);
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]?.state?.issueNumber).toBe(77);
+    expect(orphans[0]?.state?.version).toBe(3);
+    expect(orphans[0]?.state?.prNumber).toBeNull();
+    expect(orphans[0]?.state?.prFeedbackProcessedAt).toBeNull();
+  });
+
   it("skips entries whose state.json fails schema validation", async () => {
     const { path: wt } = await addWorktree({ repoRoot, worktreesRoot, branchName: "broken" });
     await fs.mkdir(join(wt, ".minesweeper"), { recursive: true });

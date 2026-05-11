@@ -8,16 +8,19 @@
  * to a terminal status inside this single process.
  *
  * Modes wired up (post-plan-12): `Planning`, `Assess`, `Execution`,
- * `Refine`. `Delegated` is terminal — it is the post-refine resting
- * state (`mode=Delegated`, `status=Complete`).
+ * `Refine`, `AddressingPRFeedback`. `Delegated` is terminal — it is
+ * the post-refine resting state (`mode=Delegated`, `status=Complete`).
  *
  * Multi-mode flows run inside one child invocation: each mode handler
  * persists its outgoing state to `.minesweeper/state.json` and
  * returns; the loop dispatches the next mode based on that state.
  * The full happy-path sequence is:
  *
- *   Planning → Assess → Execution → (terminal Complete)
- *                    └→ Refine    → (terminal Complete via Delegated)
+ *   Planning → Assess → Execution → (Complete, PR opened) ─┐
+ *                    └→ Refine    → (Complete via Delegated)
+ *                                                          │
+ *   On reviewer feedback the daemon re-spawns the worktree ┘
+ *   into AddressingPRFeedback → (Complete, branch pushed)
  *
  * The child only exits 0 once `status` reaches a terminal value
  * (`Complete` or `Failed`), at which point the supervisor archives
@@ -34,6 +37,7 @@ import { runPlanning as defaultRunPlanning, type PlanningDeps } from "./modes/pl
 import { runExecution as defaultRunExecution, type ExecutionDeps } from "./modes/execution.js";
 import { runAssess as defaultRunAssess, type AssessDeps } from "./modes/assess.js";
 import { runRefine as defaultRunRefine, type RefineDeps } from "./modes/refine.js";
+import { runAddressingPrFeedback as defaultRunAddressingPrFeedback, type FeedbackDeps } from "./modes/feedback.js";
 
 /** Test seam: the planning mode runner. Default delegates to `runPlanning`. */
 export type RunPlanningFn = (deps: PlanningDeps) => Promise<State>;
@@ -46,6 +50,9 @@ export type RunAssessFn = (deps: AssessDeps) => Promise<State>;
 
 /** Test seam: the refine mode runner. Default delegates to `runRefine`. */
 export type RunRefineFn = (deps: RefineDeps) => Promise<State>;
+
+/** Test seam: the PR-feedback mode runner. Default delegates to `runAddressingPrFeedback`. */
+export type RunAddressingPrFeedbackFn = (deps: FeedbackDeps) => Promise<State>;
 
 export interface HandleChildOptions {
   /** The issue number passed on the CLI. Cross-checked against state.json. */
@@ -64,6 +71,8 @@ export interface HandleChildOptions {
   runAssess?: RunAssessFn;
   /** Override the refine mode handler (tests). */
   runRefine?: RunRefineFn;
+  /** Override the PR-feedback mode handler (tests). */
+  runAddressingPrFeedback?: RunAddressingPrFeedbackFn;
   /** Override the logger event sink (tests). */
   emit?: Logger["event"];
 }
@@ -85,6 +94,7 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
   const runExecution = opts.runExecution ?? defaultRunExecution;
   const runAssess = opts.runAssess ?? defaultRunAssess;
   const runRefine = opts.runRefine ?? defaultRunRefine;
+  const runAddressingPrFeedback = opts.runAddressingPrFeedback ?? defaultRunAddressingPrFeedback;
   const emit = opts.emit ?? defaultEvent;
 
   let state = await readState(cwd);
@@ -104,7 +114,16 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
       `child handle: mode=${state.mode} status=${state.status} iterations=${state.iterations}/${state.maxIterations}`,
     );
     const before = progressKey(state);
-    state = await dispatch(state.mode, { config, cwd, state, runPlanning, runExecution, runAssess, runRefine });
+    state = await dispatch(state.mode, {
+      config,
+      cwd,
+      state,
+      runPlanning,
+      runExecution,
+      runAssess,
+      runRefine,
+      runAddressingPrFeedback,
+    });
     if (!isTerminal(state) && progressKey(state) === before) {
       throw new Error(
         `child handler: mode=${state.mode} returned without advancing state (status=${state.status}, iterations=${state.iterations}); refusing to loop`,
@@ -131,6 +150,7 @@ interface DispatchDeps {
   runExecution: RunExecutionFn;
   runAssess: RunAssessFn;
   runRefine: RunRefineFn;
+  runAddressingPrFeedback: RunAddressingPrFeedbackFn;
 }
 
 async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
@@ -143,6 +163,8 @@ async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
       return deps.runExecution({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "Refine":
       return deps.runRefine({ config: deps.config, cwd: deps.cwd, state: deps.state });
+    case "AddressingPRFeedback":
+      return deps.runAddressingPrFeedback({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "Delegated":
       throw new Error(
         `child handler: dispatched into terminal mode=${mode} with non-terminal status=${deps.state.status}`,

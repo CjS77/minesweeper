@@ -14,7 +14,7 @@
 import { promises as fs, type Dirent } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { execa } from "execa";
-import { STATE_DIR, STATE_FILE, StateSchema, type State } from "./child/state.js";
+import { STATE_DIR, STATE_FILE, StateSchema, migrateIfNeeded, type State } from "./child/state.js";
 
 export interface AddWorktreeOptions {
   /** Absolute path to the main repo (the one that owns the worktrees). */
@@ -167,7 +167,7 @@ async function readDirOrEmpty(path: string): Promise<Dirent[]> {
 async function readStateOrNull(path: string): Promise<State | null> {
   try {
     const raw = await fs.readFile(path, "utf8");
-    return StateSchema.parse(JSON.parse(raw));
+    return StateSchema.parse(migrateIfNeeded(JSON.parse(raw)));
   } catch {
     return null;
   }

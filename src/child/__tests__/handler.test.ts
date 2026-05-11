@@ -261,6 +261,37 @@ describe("handleChild", () => {
     expect(result.assessment).toBe("Refine");
   });
 
+  it("dispatches AddressingPRFeedback to runAddressingPrFeedback (DispatchDeps wiring)", async () => {
+    await initState(tmp, "AddressingPRFeedback", {
+      issueNumber: 13,
+      branchName: "minesweeper-issue0013",
+      maxIterations: 2,
+    });
+
+    const runAddressingPrFeedback = vi.fn(
+      async (deps: { state: State; cwd: string }): Promise<State> =>
+        writeState(deps.cwd, { ...deps.state, status: "Complete" }),
+    );
+    const runPlanning = vi.fn();
+    const runExecution = vi.fn();
+
+    const result = await handleChild({
+      issueNumber: 13,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      runPlanning,
+      runExecution,
+      runAddressingPrFeedback,
+      emit: vi.fn(),
+    });
+
+    expect(runAddressingPrFeedback).toHaveBeenCalledTimes(1);
+    expect(runPlanning).not.toHaveBeenCalled();
+    expect(runExecution).not.toHaveBeenCalled();
+    expect(result.mode).toBe("AddressingPRFeedback");
+    expect(result.status).toBe("Complete");
+  });
+
   it("returns immediately when state is already terminal (Delegated/Complete)", async () => {
     await initState(tmp, "Delegated", {
       issueNumber: 11,

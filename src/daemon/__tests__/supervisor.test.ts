@@ -44,7 +44,7 @@ function makeIssue(number: number, labels: readonly string[] = ["autofix"]): Iss
 
 function makeOrphanState(issueNumber: number, status: State["status"] = "InProgress"): State {
   return {
-    version: 1,
+    version: 3,
     issueNumber,
     branchName: `minesweeper-issue${String(issueNumber).padStart(4, "0")}`,
     mode: "Planning",
@@ -52,6 +52,9 @@ function makeOrphanState(issueNumber: number, status: State["status"] = "InProgr
     iterations: 0,
     maxIterations: 5,
     assessment: null,
+    assessmentReason: null,
+    prNumber: null,
+    prFeedbackProcessedAt: null,
     startedAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
   };
@@ -396,6 +399,38 @@ describe("createSupervisor.sweepClosedIssues", () => {
     expect(ctx.archiveMock).not.toHaveBeenCalled();
     expect(ctx.removeMock).not.toHaveBeenCalled();
     expect(ctx.emitMock).toHaveBeenCalledWith("daemon", "WARN", 42, expect.stringContaining("gh getIssue failed"));
+  });
+});
+
+describe("createSupervisor.pollPrFeedback", () => {
+  it("delegates to the injected pollPrFeedback with the supervisor's resume hook", async () => {
+    const ctx = makeDeps();
+    const pollPrFeedbackMock = vi.fn(async () => undefined);
+    const sup = createSupervisor({ ...ctx.deps, pollPrFeedback: pollPrFeedbackMock });
+    await sup.pollPrFeedback();
+    expect(pollPrFeedbackMock).toHaveBeenCalledTimes(1);
+    const args = pollPrFeedbackMock.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(args.repoRoot).toBe("/tmp/repos/minesweeper");
+    expect(args.worktreesRoot).toBe("/tmp/wt");
+    expect(typeof args.isInFlight).toBe("function");
+    expect(typeof args.resume).toBe("function");
+  });
+
+  it("propagates in-flight state to the poller's isInFlight predicate", async () => {
+    const ctx = makeDeps();
+    const pollPrFeedbackMock = vi.fn(async () => undefined);
+    const sup = createSupervisor({ ...ctx.deps, pollPrFeedback: pollPrFeedbackMock });
+
+    await sup.dispatch(makeIssue(7));
+    await flush();
+    await sup.pollPrFeedback();
+
+    const args = pollPrFeedbackMock.mock.calls[0]?.[0] as { isInFlight: (n: number) => boolean };
+    expect(args.isInFlight(7)).toBe(true);
+    expect(args.isInFlight(99)).toBe(false);
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
   });
 });
 

@@ -47,6 +47,8 @@ import { event as defaultEvent, type Logger } from "../logging.js";
 import * as defaultWorktree from "../worktree.js";
 import * as defaultState from "../child/state.js";
 import type { State } from "../child/state.js";
+import { loadCodeownerLogins as defaultLoadCodeownerLogins } from "../codeowners.js";
+import { pollPrFeedback as defaultPollPrFeedback } from "./pr_feedback.js";
 
 const ISSUE_NUMBER_PAD = 4;
 const FAILED_EXIT_CODE = -1;
@@ -82,11 +84,17 @@ export interface SupervisorDeps {
   /** Test/dev seam: how to spawn the per-issue child. Defaults to {@link defaultSpawnChild}. */
   spawnChild?: SpawnChild;
   /** Override the github carve-out (tests). */
-  github?: Pick<typeof defaultGithub, "addLabel" | "getIssue">;
+  github?: Pick<typeof defaultGithub, "addLabel" | "getIssue" | "getPullRequest" | "getReviewThreads" | "getRepoOwner">;
   /** Override worktree helpers (tests). */
   worktree?: Pick<typeof defaultWorktree, "addWorktree" | "archiveWorktreeState" | "removeWorktree" | "listOrphans">;
   /** Override `child/state.initState` (tests). */
   initState?: typeof defaultState.initState;
+  /** Override the codeowners loader (tests). */
+  loadCodeownerLogins?: typeof defaultLoadCodeownerLogins;
+  /** Override the state writer (tests). */
+  writeState?: typeof defaultState.writeState;
+  /** Override the PR-feedback poller (tests). */
+  pollPrFeedback?: typeof defaultPollPrFeedback;
   /** Override the logger event sink. */
   emit?: Logger["event"];
   /** Test seam for the worktree-exists pre-flight check. */
@@ -113,6 +121,13 @@ export interface Supervisor {
    * a transient GitHub failure does not take down the daemon.
    */
   sweepClosedIssues(): Promise<void>;
+  /**
+   * Inspect each Minesweeper-owned PR for fresh reviewer activity and,
+   * if any authorised reviewer requested changes since the worktree's
+   * watermark, re-dispatch the worktree into `AddressingPRFeedback`
+   * mode. Errors talking to `gh` are logged and swallowed.
+   */
+  pollPrFeedback(): Promise<void>;
   /** Issue numbers of currently in-flight children. */
   inFlight(): readonly number[];
   /** Number of items waiting for a free slot. */
@@ -186,6 +201,9 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const gh = deps.github ?? defaultGithub;
   const wt = deps.worktree ?? defaultWorktree;
   const initState = deps.initState ?? defaultState.initState;
+  const writeState = deps.writeState ?? defaultState.writeState;
+  const loadCodeownerLogins = deps.loadCodeownerLogins ?? defaultLoadCodeownerLogins;
+  const pollPrFeedbackFn = deps.pollPrFeedback ?? defaultPollPrFeedback;
   const exists = deps.pathExists ?? pathExistsImpl;
   const spawn = deps.spawnChild ?? defaultSpawnChild({ childScript: requiredChildScript() });
 
@@ -273,6 +291,21 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     }
   };
 
+  const pollPrFeedback = async (): Promise<void> => {
+    await pollPrFeedbackFn({
+      config: deps.config,
+      repoRoot: deps.repoRoot,
+      worktreesRoot: deps.worktreesRoot,
+      isInFlight: (n) => inflight.has(n),
+      resume,
+      github: gh,
+      worktree: wt,
+      loadCodeownerLogins,
+      writeState,
+      emit,
+    });
+  };
+
   /** Move queue entries into the inflight map until at capacity. */
   const drain = async (): Promise<void> => {
     while (inflight.size < deps.config.maxConcurrency && queue.length > 0) {
@@ -339,6 +372,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     dispatch,
     resume,
     sweepClosedIssues,
+    pollPrFeedback,
     inFlight: () => [...inflight.keys()],
     queueLength: () => queue.length,
     async drain(): Promise<void> {
