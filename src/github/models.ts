@@ -87,6 +87,15 @@ export const PrReviewSchema = z
   .loose();
 export type PrReview = z.infer<typeof PrReviewSchema>;
 
+/**
+ * Inline review-comment shape used by the PR-feedback poller. Each
+ * entry is a synthetic single-comment "thread" derived from the REST
+ * `/repos/{o}/{r}/pulls/{n}/comments` endpoint — see
+ * {@link getReviewThreads}. `isResolved` is approximated as `false`
+ * because REST does not expose thread resolution state; the
+ * `prFeedbackProcessedAt` watermark on `state.json` deduplicates
+ * already-handled comments across polls.
+ */
 export const PrReviewThreadCommentSchema = z
   .object({
     id: z.string().optional(),
@@ -110,6 +119,38 @@ export const PrReviewThreadSchema = z
   .loose();
 export type PrReviewThread = z.infer<typeof PrReviewThreadSchema>;
 
+/**
+ * REST user shape. The REST API returns `user.id` as a number whereas
+ * `UserSchema` (modelled on the GraphQL projection that `gh pr view`
+ * uses) expects a string, so we keep the REST variant separate rather
+ * than relaxing the shared `UserSchema`.
+ */
+const RestUserSchema = z
+  .object({
+    login: z.string(),
+    id: z.number().int().optional(),
+  })
+  .loose();
+
+/**
+ * Raw REST shape of a single PR review comment as returned by
+ * `GET /repos/{o}/{r}/pulls/{n}/comments`. Normalised into a
+ * {@link PrReviewThread} by `getReviewThreads`. Fields outside the set
+ * Minesweeper keys on are passed through via `.loose()`.
+ */
+export const RestReviewCommentSchema = z
+  .object({
+    id: z.number().int(),
+    user: RestUserSchema.nullable(),
+    body: z.string(),
+    created_at: z.iso.datetime(),
+    path: z.string().nullable().optional(),
+    line: z.number().int().nullable().optional(),
+    original_line: z.number().int().nullable().optional(),
+  })
+  .loose();
+export type RestReviewComment = z.infer<typeof RestReviewCommentSchema>;
+
 export const PullRequestSchema = z
   .object({
     number: z.number().int().positive(),
@@ -123,7 +164,6 @@ export const PullRequestSchema = z
     isDraft: z.boolean().optional(),
     reviews: z.array(PrReviewSchema).optional(),
     reviewDecision: PrReviewDecisionSchema.optional(),
-    reviewThreads: z.array(PrReviewThreadSchema).optional(),
     comments: z.array(CommentSchema).optional(),
   })
   .loose();

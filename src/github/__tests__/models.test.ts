@@ -108,15 +108,13 @@ describe("PullRequestSchema", () => {
     expect(pr.deletions).toBe(3);
   });
 
-  it("parses reviews, reviewThreads, reviewDecision, and PR-level comments", () => {
+  it("parses reviews, reviewDecision, and PR-level comments (reviewThreads come from REST, not gh pr view)", () => {
     const pr = PullRequestSchema.parse(fixture("pull_request_with_reviews.json"));
     expect(pr.number).toBe(99);
     expect(pr.reviews).toHaveLength(1);
     expect(pr.reviews?.[0]?.state).toBe("CHANGES_REQUESTED");
     expect(pr.reviews?.[0]?.author.login).toBe("RepoOwner");
     expect(pr.reviewDecision).toBe("CHANGES_REQUESTED");
-    expect(pr.reviewThreads).toHaveLength(2);
-    expect(pr.reviewThreads?.find((t) => !t.isResolved)?.comments[0]?.author.login).toBe("codeowner-alice");
     expect(pr.comments).toHaveLength(1);
   });
 });

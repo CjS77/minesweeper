@@ -17,8 +17,10 @@ import {
   GhMissingError,
   GhNotARepoError,
   getIssue,
+  addReactionToReviewComment,
   getPullRequest,
   getRepoOwner,
+  getReviewThreads,
   listIssues,
   listLabels,
   listPullRequests,
@@ -284,8 +286,6 @@ describe("getPullRequest", () => {
     expect(pr.reviewDecision).toBe("CHANGES_REQUESTED");
     expect(pr.reviews).toBeDefined();
     expect(pr.reviews?.[0]?.state).toBe("CHANGES_REQUESTED");
-    expect(pr.reviewThreads).toBeDefined();
-    expect(pr.reviewThreads?.find((t) => t.isResolved)).toBeDefined();
 
     const { args } = lastCall();
     expect(args.slice(0, 3)).toEqual(["pr", "view", "99"]);
@@ -293,7 +293,51 @@ describe("getPullRequest", () => {
     const jsonFields = args.at(-1) as string;
     expect(jsonFields).toContain("reviews");
     expect(jsonFields).toContain("reviewDecision");
-    expect(jsonFields).toContain("reviewThreads");
+    // reviewThreads is *not* a valid --json field for gh pr view; it must
+    // be fetched separately via getReviewThreads (REST).
+    expect(jsonFields).not.toContain("reviewThreads");
+  });
+});
+
+describe("getReviewThreads", () => {
+  it("calls gh api with the paginated comments endpoint and normalises into single-comment threads", async () => {
+    mockExeca.mockResolvedValueOnce(ok(fixtureText("pr_review_comments_rest.json")) as never);
+    const threads = await getReviewThreads(99);
+
+    expect(threads).toHaveLength(2);
+    expect(threads[0]?.isResolved).toBe(false);
+    expect(threads[0]?.comments[0]?.author.login).toBe("codeowner-alice");
+    expect(threads[0]?.comments[0]?.createdAt).toBe("2026-05-10T11:00:00Z");
+    expect(threads[0]?.comments[0]?.path).toBe("src/util.ts");
+    expect(threads[0]?.comments[0]?.line).toBe(22);
+    // Falls back to original_line when REST `line` is null (outdated comment).
+    expect(threads[1]?.comments[0]?.line).toBe(7);
+
+    const { args } = lastCall();
+    expect(args.slice(0, 2)).toEqual(["api", "--paginate"]);
+    expect(args).toContain("repos/{owner}/{repo}/pulls/99/comments");
+  });
+
+  it("returns an empty array when the PR has no inline comments", async () => {
+    mockExeca.mockResolvedValueOnce(ok("[]") as never);
+    expect(await getReviewThreads(99)).toEqual([]);
+  });
+});
+
+describe("addReactionToReviewComment", () => {
+  it("POSTs to /repos/{o}/{r}/pulls/comments/{id}/reactions with the supplied content", async () => {
+    mockExeca.mockResolvedValueOnce(ok('{"id":1,"content":"+1"}') as never);
+    await addReactionToReviewComment(5001, "+1");
+    const { args } = lastCall();
+    expect(args.slice(0, 3)).toEqual(["api", "-X", "POST"]);
+    expect(args).toContain("repos/{owner}/{repo}/pulls/comments/5001/reactions");
+    expect(args).toContain("-f");
+    expect(args).toContain("content=+1");
+  });
+
+  it("surfaces gh failures as a thrown GhError", async () => {
+    mockExeca.mockResolvedValueOnce(fail("HTTP 422") as never);
+    await expect(addReactionToReviewComment(5001, "+1")).rejects.toBeInstanceOf(GhError);
   });
 });
 

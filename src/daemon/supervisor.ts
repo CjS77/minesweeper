@@ -84,7 +84,7 @@ export interface SupervisorDeps {
   /** Test/dev seam: how to spawn the per-issue child. Defaults to {@link defaultSpawnChild}. */
   spawnChild?: SpawnChild;
   /** Override the github carve-out (tests). */
-  github?: Pick<typeof defaultGithub, "addLabel" | "getIssue" | "getPullRequest" | "getRepoOwner">;
+  github?: Pick<typeof defaultGithub, "addLabel" | "getIssue" | "getPullRequest" | "getReviewThreads" | "getRepoOwner">;
   /** Override worktree helpers (tests). */
   worktree?: Pick<typeof defaultWorktree, "addWorktree" | "archiveWorktreeState" | "removeWorktree" | "listOrphans">;
   /** Override `child/state.initState` (tests). */

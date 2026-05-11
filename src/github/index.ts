@@ -3,15 +3,19 @@ import {
   IssueSchema,
   LabelSchema,
   PullRequestSchema,
+  RestReviewCommentSchema,
   type Issue,
   type Label,
+  type PrReviewThread,
   type PullRequest,
+  type RestReviewComment,
 } from "./models.js";
 import { z } from "zod";
 import { runGh, type RunGhOptions } from "./process.js";
 
 const RepoLabelListSchema = z.array(LabelSchema);
 const PullRequestListSchema = z.array(PullRequestSchema);
+const RestReviewCommentListSchema = z.array(RestReviewCommentSchema);
 const RepoOwnerResponseSchema = z.object({ owner: z.object({ login: z.string() }) });
 
 export { GhError, GhMissingError, GhNotARepoError, runGh, type RunGhOptions } from "./process.js";
@@ -46,7 +50,7 @@ export {
 const ISSUE_LIST_FIELDS = "number,title,body,labels,author,state,url,createdAt,updatedAt";
 const ISSUE_VIEW_FIELDS = `${ISSUE_LIST_FIELDS},comments`;
 const PR_LIST_FIELDS = "number,headRefName,baseRefName,state,author,url";
-const PR_VIEW_FIELDS = `${PR_LIST_FIELDS},title,body,reviews,reviewDecision,reviewThreads,comments`;
+const PR_VIEW_FIELDS = `${PR_LIST_FIELDS},title,body,reviews,reviewDecision,comments`;
 
 interface CwdOnly {
   cwd?: string;
@@ -193,9 +197,11 @@ export async function listPullRequests(opts: ListPullRequestsOptions = {}): Prom
 }
 
 /**
- * `gh pr view --json` with the full set of fields the PR-feedback
- * poller relies on, including `reviews`, `reviewDecision`,
- * `reviewThreads`, and `comments`.
+ * `gh pr view --json` with the field set the PR-feedback poller needs:
+ * `reviews`, `reviewDecision`, and the PR-level `comments` (the
+ * issue-comment thread on the conversation tab). Inline review-thread
+ * comments are *not* fetched here — `gh pr view` does not expose them.
+ * Use {@link getReviewThreads} for those.
  */
 export async function getPullRequest(number: number, opts: GhOverridable = {}): Promise<PullRequest> {
   const raw = await runGh(["pr", "view", String(number), "--json", PR_VIEW_FIELDS], {
@@ -203,6 +209,91 @@ export async function getPullRequest(number: number, opts: GhOverridable = {}): 
     json: true,
   });
   return PullRequestSchema.parse(raw);
+}
+
+/**
+ * Fetch inline review-comment threads for a PR via the REST endpoint
+ * `GET /repos/{owner}/{repo}/pulls/{number}/comments`, paginated.
+ *
+ * `gh pr view --json` does not expose `reviewThreads` (that field only
+ * lives in the GraphQL API), so we fall back to REST. The REST shape
+ * is flat — one comment per row, no thread grouping or resolution
+ * state — so each comment becomes a synthetic single-comment thread
+ * with `isResolved: false`. The PR-feedback poller already dedupes via
+ * `prFeedbackProcessedAt`, so the loss of `isResolved` precision is
+ * accepted: every fresh authorised review comment triggers a dispatch,
+ * and the watermark prevents replay.
+ *
+ * `{owner}` / `{repo}` are auto-templated by `gh api` from the current
+ * working directory's git remote, so the caller only supplies the PR
+ * number.
+ */
+export async function getReviewThreads(number: number, opts: GhOverridable = {}): Promise<PrReviewThread[]> {
+  const raw = await runGh(["api", "--paginate", `repos/{owner}/{repo}/pulls/${number}/comments`], {
+    ...ghOpts(opts),
+    json: true,
+  });
+  const comments = RestReviewCommentListSchema.parse(raw);
+  return comments.map(toSyntheticThread);
+}
+
+/**
+ * Convert one REST review comment into a single-comment
+ * `PrReviewThread`. We synthesise per-comment threads (rather than
+ * grouping by `pull_request_review_id`) so the existing
+ * thread-oriented filter in `pr_feedback.ts` keeps working unchanged.
+ */
+function toSyntheticThread(c: RestReviewComment): PrReviewThread {
+  const line = c.line ?? c.original_line ?? null;
+  // REST `user.id` is numeric; drop it so the canonical (string-id) UserSchema is happy.
+  const author = c.user === null ? { login: "ghost" } : { login: c.user.login };
+  return {
+    id: String(c.id),
+    isResolved: false,
+    path: c.path ?? null,
+    line,
+    comments: [
+      {
+        id: String(c.id),
+        author,
+        body: c.body,
+        createdAt: c.created_at,
+        path: c.path ?? null,
+        line,
+      },
+    ],
+  };
+}
+
+/**
+ * Reactions content values accepted by GitHub's reactions API. See
+ * <https://docs.github.com/en/rest/reactions/reactions>.
+ */
+export type ReactionContent = "+1" | "-1" | "laugh" | "confused" | "heart" | "hooray" | "rocket" | "eyes";
+
+/**
+ * Post a reaction (e.g. `+1`) to an inline PR review comment via
+ * `POST /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions`.
+ *
+ * Used by the AddressingPRFeedback mode to ack each reviewer comment
+ * the executor has just addressed and pushed. The endpoint is
+ * specifically for *review* comments (i.e. inline comments attached to
+ * a line of code in a PR); top-level PR reviews themselves are not
+ * reactable through the GitHub API.
+ *
+ * The call is idempotent on the GitHub side — re-running with the
+ * same `(comment, content)` simply returns the existing reaction
+ * rather than creating a duplicate.
+ */
+export async function addReactionToReviewComment(
+  commentId: number,
+  content: ReactionContent,
+  opts: GhOverridable = {},
+): Promise<void> {
+  await runGh(
+    ["api", "-X", "POST", `repos/{owner}/{repo}/pulls/comments/${commentId}/reactions`, "-f", `content=${content}`],
+    ghOpts(opts),
+  );
 }
 
 /**
