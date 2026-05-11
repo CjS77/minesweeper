@@ -167,6 +167,28 @@ local `.claude/` settings, including default permissions.
 * Squash commits into a single commit message.
 * Push a new PR to GitHub against `$MINESWEEPER_PR_BASE_BRANCH`, referencing this issue.
 
+### Addressing PR review feedback
+
+Once a Minesweeper PR is open, the daemon keeps watching it. On every poll tick, for every worktree whose state is
+`mode = Execution, status = Complete` and has a recorded `prNumber`, the daemon checks the PR via `gh pr view`:
+
+* If the PR has a fresh `CHANGES_REQUESTED` review, or a fresh unresolved review-thread comment, from an **authorised
+  reviewer**, the daemon renders the new items to `.minesweeper/pr_review_comments.md`, flips the state to
+  `mode = AddressingPRFeedback, status = InProgress`, and re-runs the executor against the original plan plus the
+  rendered feedback.
+* Authorised reviewers are the **repo owner** (`gh repo view --json owner`) plus every bare `@username` listed in the
+  repo's `CODEOWNERS` file (one of `.github/CODEOWNERS`, `CODEOWNERS`, or `docs/CODEOWNERS`). `@org/team` entries are
+  ignored in v0 — resolving teams to member logins is deferred.
+* The executor's new commits are pushed with an **incremental `git push`** (no force, no re-squash) so the PR history
+  stays readable and never overwrites a reviewer's own pushed commits. GitHub's squash-merge button still produces a
+  single commit at merge time.
+* A watermark (`prFeedbackProcessedAt` on `state.json`) records the newest review/comment timestamp the daemon has
+  acted on, so the same feedback is never processed twice.
+* If a reviewer force-pushes to the PR branch, the incremental push will fail and Minesweeper bails out — the issue is
+  labelled with `$MINESWEEPER_FAILED_LABEL` and the worktree is preserved for a human to inspect.
+* The feedback loop ends naturally when the issue is closed (e.g. PR merged); the closed-issue sweep then archives and
+  removes the worktree as usual.
+
 ### Environment variables
 
 The defaults below are the canonical values; `src/config.ts` is the source of truth. See `.env.sample` for a

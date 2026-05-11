@@ -1,0 +1,61 @@
+{
+  "author": { "login": "minesweeper-bot", "id": "MDQ6VXNlcjEyMzQ1" },
+  "baseRefName": "main",
+  "body": "Closes #42.",
+  "headRefName": "minesweeper-issue0042",
+  "isDraft": false,
+  "number": 99,
+  "state": "OPEN",
+  "title": "Fix the thing",
+  "url": "https://github.com/example/repo/pull/99",
+  "reviewDecision": "CHANGES_REQUESTED",
+  "reviews": [
+    {
+      "id": "PRR_kwDOA1",
+      "author": { "login": "RepoOwner", "id": "MDQ6VXNlcjk5OTk5" },
+      "body": "Looks close but missing a test for the empty-input branch.",
+      "state": "CHANGES_REQUESTED",
+      "submittedAt": "2026-05-10T12:34:56Z"
+    }
+  ],
+  "reviewThreads": [
+    {
+      "id": "PRRT_kwDOA1",
+      "isResolved": true,
+      "path": "src/util.ts",
+      "line": 7,
+      "comments": [
+        {
+          "id": "PRRC_resolved",
+          "author": { "login": "RepoOwner" },
+          "body": "Already addressed in commit abc.",
+          "createdAt": "2026-05-09T10:00:00Z"
+        }
+      ]
+    },
+    {
+      "id": "PRRT_kwDOA2",
+      "isResolved": false,
+      "path": "src/util.ts",
+      "line": 22,
+      "comments": [
+        {
+          "id": "PRRC_owner_comment",
+          "author": { "login": "codeowner-alice" },
+          "body": "Please add a JSDoc to this function.",
+          "createdAt": "2026-05-10T11:00:00Z",
+          "path": "src/util.ts",
+          "line": 22
+        }
+      ]
+    }
+  ],
+  "comments": [
+    {
+      "id": "IC_drive_by",
+      "author": { "login": "passing-stranger" },
+      "body": "LGTM nice work",
+      "createdAt": "2026-05-10T13:00:00Z"
+    }
+  ]
+}

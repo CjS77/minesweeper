@@ -260,7 +260,7 @@ describe("parseReviewerVerdict", () => {
 });
 
 describe("runExecution — clean approval first round", () => {
-  it("runs executor once, reviewer once, then squashes, pushes, and opens a PR", async () => {
+  it("runs executor once, reviewer once, then squashes, pushes, opens a PR, and records the PR number", async () => {
     const { result, calls, git, createPr, runCheckHook, emit } = await run({
       responses: [
         { role: "executor", text: "# Execution summary\n\ndone\n", newHeadSha: "AFTER_SHA" },
@@ -268,6 +268,8 @@ describe("runExecution — clean approval first round", () => {
         DEFAULT_PRWRITER_RESPONSE,
       ],
     });
+
+    expect(result.prNumber).toBe(101);
 
     expect(calls.map((c) => c.role)).toEqual(["executor", "reviewer", "prwriter"]);
     expect(calls[0]?.iteration).toBe(1);

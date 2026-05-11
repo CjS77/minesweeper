@@ -12,6 +12,10 @@ The user message contains:
 - The approved plan (from `.minesweeper/final_plan.md`).
 - For follow-up iterations, the reviewer's comments under
   `# Review feedback`. Treat each bullet there as a required fix.
+- For PR-feedback iterations (after the PR is open and a human
+  reviewer requested changes), the comments appear under
+  `# Review Comments` instead. Same directive: address each item,
+  then commit.
 - The full repository (your cwd is the issue's git worktree).
 
 ## Process

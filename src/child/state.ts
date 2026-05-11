@@ -12,8 +12,16 @@
  *     Delegated`; assessment was a nullable `Execute | Refine`.
  *   - v2 (plan 12): adds `Assess` and `Refine` to the mode enum and
  *     adds `assessmentReason: string | null` so we can store the
- *     assessor's rationale alongside its verdict. v1 state files are
- *     migrated on read by adding `assessmentReason: null`.
+ *     assessor's rationale alongside its verdict.
+ *   - v3 (issue #18): adds `AddressingPRFeedback` to the mode enum so
+ *     the daemon can re-dispatch a worktree against PR review comments
+ *     after the PR is opened. Adds `prNumber: number | null` (set by
+ *     execution mode when the PR is created) and
+ *     `prFeedbackProcessedAt: string | null` (watermark used by the PR
+ *     feedback poller to dedup already-processed reviews/comments).
+ *
+ * Migrations run on read; v1 and v2 state files are upgraded
+ * transparently. The migration chain is v1 → v2 → v3.
  */
 
 import { promises as fs } from "node:fs";
@@ -21,7 +29,7 @@ import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 
-export const Mode = z.enum(["Planning", "Assess", "Refine", "Execution", "Delegated"]);
+export const Mode = z.enum(["Planning", "Assess", "Refine", "Execution", "AddressingPRFeedback", "Delegated"]);
 export type Mode = z.infer<typeof Mode>;
 
 export const Status = z.enum(["InProgress", "Writing", "Reviewing", "FixingReviewComments", "Complete", "Failed"]);
@@ -30,7 +38,7 @@ export type Status = z.infer<typeof Status>;
 export const Assessment = z.enum(["Execute", "Refine"]);
 export type Assessment = z.infer<typeof Assessment>;
 
-export const STATE_SCHEMA_VERSION = 2;
+export const STATE_SCHEMA_VERSION = 3;
 
 export const StateSchema = z.object({
   version: z.literal(STATE_SCHEMA_VERSION),
@@ -42,6 +50,8 @@ export const StateSchema = z.object({
   maxIterations: z.number().int().min(1),
   assessment: Assessment.nullable(),
   assessmentReason: z.string().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  prFeedbackProcessedAt: z.iso.datetime().nullable(),
   startedAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -61,6 +71,25 @@ const StateV1Schema = z.object({
   iterations: z.number().int().min(0),
   maxIterations: z.number().int().min(1),
   assessment: Assessment.nullable(),
+  startedAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+/**
+ * v2 schema, kept around purely for migration. Mirrors the v2 enum set
+ * (no `AddressingPRFeedback`) and lacks the v3 `prNumber` /
+ * `prFeedbackProcessedAt` fields.
+ */
+const StateV2Schema = z.object({
+  version: z.literal(2),
+  issueNumber: z.number().int().positive(),
+  branchName: z.string().min(1),
+  mode: z.enum(["Planning", "Assess", "Refine", "Execution", "Delegated"]),
+  status: Status,
+  iterations: z.number().int().min(0),
+  maxIterations: z.number().int().min(1),
+  assessment: Assessment.nullable(),
+  assessmentReason: z.string().nullable(),
   startedAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -87,6 +116,7 @@ const INITIAL_STATUS: Record<Mode, Status> = {
   Assess: "InProgress",
   Refine: "InProgress",
   Execution: "Writing",
+  AddressingPRFeedback: "InProgress",
   Delegated: "Complete",
 };
 
@@ -102,6 +132,8 @@ export async function initState(cwd: string, mode: Mode, opts: InitStateOptions)
     maxIterations: opts.maxIterations,
     assessment: null,
     assessmentReason: null,
+    prNumber: null,
+    prFeedbackProcessedAt: null,
     startedAt: now,
     updatedAt: now,
   });
@@ -121,17 +153,35 @@ export async function readState(cwd: string): Promise<State> {
 }
 
 /**
- * Convert a v1 state object to v2 by adding `assessmentReason: null`.
- * Anything that is not a plain object with `version === 1` is returned
- * unchanged so the caller's strict v2 parse can produce the canonical
- * error message for it.
+ * Walk a state object through every available migration up to the
+ * current `STATE_SCHEMA_VERSION`. Anything that is not a plain object
+ * with a recognised `version` is returned unchanged so the caller's
+ * strict parse can produce the canonical error message for it.
+ *
+ * Exported so callers that swallow parse errors (notably
+ * `worktree.readStateOrNull`) can apply the migration before the strict
+ * parse — otherwise a v1/v2 file on disk would fail the v3 literal
+ * check and silently disappear from `listOrphans`.
+ *
+ * The chain is v1 → v2 → v3. Each step is additive: v1 → v2 adds
+ * `assessmentReason: null`; v2 → v3 adds `prNumber: null` and
+ * `prFeedbackProcessedAt: null`.
  */
-function migrateIfNeeded(raw: unknown): unknown {
+export function migrateIfNeeded(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null) return raw;
   const versioned = raw as { version?: unknown };
-  if (versioned.version !== 1) return raw;
-  const v1 = StateV1Schema.parse(raw);
-  return { ...v1, version: STATE_SCHEMA_VERSION, assessmentReason: null };
+
+  let current: unknown = raw;
+  if (versioned.version === 1) {
+    const v1 = StateV1Schema.parse(current);
+    current = { ...v1, version: 2, assessmentReason: null };
+  }
+  const afterV1 = current as { version?: unknown };
+  if (afterV1.version === 2) {
+    const v2 = StateV2Schema.parse(current);
+    current = { ...v2, version: 3, prNumber: null, prFeedbackProcessedAt: null };
+  }
+  return current;
 }
 
 export async function writeState(cwd: string, state: State): Promise<State> {

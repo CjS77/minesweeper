@@ -17,8 +17,11 @@ import {
   GhMissingError,
   GhNotARepoError,
   getIssue,
+  getPullRequest,
+  getRepoOwner,
   listIssues,
   listLabels,
+  listPullRequests,
   removeLabel,
   runGh,
   upsertLabel,
@@ -230,6 +233,77 @@ describe("createPr", () => {
     mockExeca.mockResolvedValueOnce(ok("https://github.com/example/repo/pull/3\n") as never);
     await createPr({ base: "main", head: "x", title: "t", body: "b" });
     expect(lastCall().args).not.toContain("--draft");
+  });
+});
+
+describe("listPullRequests", () => {
+  it("invokes gh pr list with the documented flags and parses the response", async () => {
+    mockExeca.mockResolvedValueOnce(
+      ok(
+        JSON.stringify([
+          {
+            number: 5,
+            headRefName: "minesweeper-issue0005",
+            baseRefName: "main",
+            state: "OPEN",
+            author: { login: "minesweeper-bot" },
+            url: "https://github.com/example/repo/pull/5",
+            title: "ignored field",
+          },
+        ]),
+      ) as never,
+    );
+    const prs = await listPullRequests({ state: "open", head: "minesweeper-issue0005", author: "@me", limit: 50 });
+    expect(prs).toHaveLength(1);
+    expect(prs[0]?.number).toBe(5);
+
+    const { args } = lastCall();
+    expect(args.slice(0, 6)).toEqual(["pr", "list", "--state", "open", "--limit", "50"]);
+    expect(args).toContain("--head");
+    expect(args[args.indexOf("--head") + 1]).toBe("minesweeper-issue0005");
+    expect(args).toContain("--author");
+    expect(args[args.indexOf("--author") + 1]).toBe("@me");
+    expect(args).toContain("--json");
+  });
+
+  it("omits --head and --author when not provided and defaults limit to 30", async () => {
+    mockExeca.mockResolvedValueOnce(ok("[]") as never);
+    await listPullRequests();
+    const { args } = lastCall();
+    expect(args).not.toContain("--head");
+    expect(args).not.toContain("--author");
+    expect(args).toContain("30");
+  });
+});
+
+describe("getPullRequest", () => {
+  it("invokes gh pr view with the documented fields and parses reviews + reviewDecision", async () => {
+    mockExeca.mockResolvedValueOnce(ok(fixtureText("pull_request_with_reviews.json")) as never);
+    const pr = await getPullRequest(99);
+    expect(pr.number).toBe(99);
+    expect(pr.reviewDecision).toBe("CHANGES_REQUESTED");
+    expect(pr.reviews).toBeDefined();
+    expect(pr.reviews?.[0]?.state).toBe("CHANGES_REQUESTED");
+    expect(pr.reviewThreads).toBeDefined();
+    expect(pr.reviewThreads?.find((t) => t.isResolved)).toBeDefined();
+
+    const { args } = lastCall();
+    expect(args.slice(0, 3)).toEqual(["pr", "view", "99"]);
+    expect(args).toContain("--json");
+    const jsonFields = args.at(-1) as string;
+    expect(jsonFields).toContain("reviews");
+    expect(jsonFields).toContain("reviewDecision");
+    expect(jsonFields).toContain("reviewThreads");
+  });
+});
+
+describe("getRepoOwner", () => {
+  it("returns the owner.login from gh repo view", async () => {
+    mockExeca.mockResolvedValueOnce(ok(JSON.stringify({ owner: { login: "RepoOwner" } })) as never);
+    const owner = await getRepoOwner();
+    expect(owner).toBe("RepoOwner");
+    const { args } = lastCall();
+    expect(args.slice(0, 4)).toEqual(["repo", "view", "--json", "owner"]);
   });
 });
 

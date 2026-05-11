@@ -335,7 +335,7 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
   const pr = await gh.createPr({ base: baseBranch, head: branch, title, body: prBody, cwd });
   emit("daemon", "SHIP", issueNumber, `opened PR #${pr.number}: ${pr.url}`);
 
-  return writeState(cwd, { ...state, status: "Complete" });
+  return writeState(cwd, { ...state, status: "Complete", prNumber: pr.number });
 }
 
 async function readFinalPlan(path: string): Promise<string> {
