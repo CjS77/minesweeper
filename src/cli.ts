@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import chalk from "chalk";
 import { Command, Option } from "commander";
 
-import { loadConfig, type ConfigSummary } from "./config.js";
+import { loadConfig, redactSecrets } from "./config.js";
 import { createLogger, event, getActiveLogger } from "./logging.js";
 import { createSupervisor, defaultSpawnChild, runPollLoop, type Schedule, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
@@ -33,13 +33,14 @@ program
 
 const LOGGER_FREE_COMMANDS = new Set(["models", "log view", "issue list"]);
 
-// Closure passed as `loadConfig`'s `onSummary` from any call site that has
-// an active logger. The `preAction` hook above guarantees the logger is
-// initialised before the command's action runs, so `event()` here will not
-// trigger lazy logger creation in the wrong cwd.
-const emitConfigSummary = (summary: ConfigSummary): void => {
-  event("daemon", "INFO", null, "config loaded", { config: summary });
-};
+// Emits a single "config loaded" line for each command that runs with an
+// active logger. The `preAction` hook above guarantees the logger is up
+// before the command's action runs, so `event()` here will not trigger
+// lazy logger creation in the wrong cwd. The redaction step is name-driven
+// and reads from `config.sources`.
+function logConfigSummary(config: ReturnType<typeof loadConfig>): void {
+  event("daemon", "INFO", null, "config loaded", { config: redactSecrets(config) });
+}
 
 function commandPath(cmd: Command): string {
   const parts: string[] = [];
@@ -82,7 +83,8 @@ program
   .addOption(new Option("--ls").hideHelp())
   .option("-f, --force", "skip the confirmation prompt and apply changes immediately")
   .action(async (opts: { list?: boolean; ls?: boolean; force?: boolean }) => {
-    const config = loadConfig(process.env, { onSummary: emitConfigSummary });
+    const config = loadConfig();
+    logConfigSummary(config);
     await runLabelsCommand({
       config,
       cwd: process.cwd(),
@@ -142,7 +144,8 @@ issue
   .option("-y, --yes", "skip the $EDITOR confirmation step")
   .option("-n, --no-autofix", "do not apply the autofix label")
   .action(async (message: string[] = [], opts: { file?: string; yes?: boolean; autofix?: boolean } = {}) => {
-    const config = loadConfig(process.env, { onSummary: emitConfigSummary });
+    const config = loadConfig();
+    logConfigSummary(config);
     await runIssueNewCommand({
       config,
       cwd: process.cwd(),
@@ -173,7 +176,8 @@ async function handleFatal(err: unknown): Promise<never> {
 }
 
 async function runDaemon(): Promise<void> {
-  const config = loadConfig(process.env, { onSummary: emitConfigSummary });
+  const config = loadConfig();
+  logConfigSummary(config);
   const repoRoot = process.cwd();
   const worktreesRoot = resolve(config.worktreePath, "worktrees");
   const archiveRoot = resolve(config.worktreePath, "archive");

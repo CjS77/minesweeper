@@ -6,13 +6,12 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
-  buildConfigSummary,
   ConfigError,
   loadConfig,
+  redactSecrets,
   SECRET_NAME_RE,
   type Config,
-  type ConfigFile,
-  type ConfigSummary,
+  type ConfigFieldSource,
 } from "../config.js";
 import { createLogger, event, resetLoggerForTest } from "../logging.js";
 
@@ -35,7 +34,7 @@ function writeConfigFile(contents: unknown): string {
 describe("loadConfig", () => {
   it("returns the documented defaults when no env vars are set", () => {
     const cfg = loadConfig({}, { configFile: null });
-    expect(cfg).toEqual({
+    expect(cfg).toMatchObject({
       defaultEligible: false,
       alwaysFixLabel: "autofix",
       tryFixLabel: "tryFix",
@@ -60,6 +59,8 @@ describe("loadConfig", () => {
       pollCooldownMs: 120_000,
       maxConcurrency: 1,
     });
+    // `sources` is asserted in detail in the dedicated describe block below.
+    expect(cfg.sources).toBeDefined();
   });
 
   it("ignores irrelevant env vars", () => {
@@ -272,95 +273,51 @@ const EXPECTED_SUMMARY_KEYS = [
   "maxConcurrency",
 ] as const;
 
-function captureSummary(fn: (onSummary: (s: ConfigSummary) => void) => Config): {
-  config: Config;
-  summary: ConfigSummary;
-} {
-  let captured: ConfigSummary | undefined;
-  const config = fn((s) => {
-    captured = s;
-  });
-  if (captured === undefined) throw new Error("onSummary was not invoked");
-  return { config, summary: captured };
-}
+describe("config.sources (provenance embedded in the resolved Config)", () => {
+  it("has all 21 non-derived keys with source 'default' when nothing is set", () => {
+    const cfg = loadConfig({}, { configFile: null });
 
-describe("buildConfigSummary", () => {
-  it("emits all 21 non-derived keys with source 'default' when nothing is set", () => {
-    const { summary } = captureSummary((onSummary) => loadConfig({}, { configFile: null, onSummary }));
-
-    expect(Object.keys(summary).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());
+    expect(Object.keys(cfg.sources).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());
     for (const key of EXPECTED_SUMMARY_KEYS) {
-      expect(summary[key]?.source).toBe("default");
+      expect(cfg.sources[key]?.source).toBe("default");
+      expect(cfg.sources[key]?.secret).toBe(false);
     }
-    expect(summary["pollIntervalMs"]).toBeUndefined();
-    expect(summary["pollCooldownMs"]).toBeUndefined();
+    expect(cfg.sources["pollIntervalMs"]).toBeUndefined();
+    expect(cfg.sources["pollCooldownMs"]).toBeUndefined();
   });
 
-  it("tags env-var-supplied fields as 'envar' with the resolved value", () => {
-    const { summary } = captureSummary((onSummary) =>
-      loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, onSummary }),
-    );
-    expect(summary["alwaysFixLabel"]).toEqual({ value: "from-env", source: "envar" });
-    expect(summary["tryFixLabel"]?.source).toBe("default");
+  it("tags env-var-supplied fields as 'envar' and leaves the value at the top level", () => {
+    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null });
+    expect(cfg.alwaysFixLabel).toBe("from-env");
+    expect(cfg.sources["alwaysFixLabel"]).toEqual<ConfigFieldSource>({ source: "envar", secret: false });
+    expect(cfg.sources["tryFixLabel"]?.source).toBe("default");
   });
 
-  it("tags config-file-supplied fields as 'config-file' with the resolved value", () => {
+  it("tags config-file-supplied fields as 'config-file'", () => {
     const path = writeConfigFile({ tryFixLabel: "from-file", maxPlanningIterations: 9 });
-    const { summary } = captureSummary((onSummary) => loadConfig({}, { configFile: path, onSummary }));
-    expect(summary["tryFixLabel"]).toEqual({ value: "from-file", source: "config-file" });
-    expect(summary["maxPlanningIterations"]).toEqual({ value: 9, source: "config-file" });
+    const cfg = loadConfig({}, { configFile: path });
+    expect(cfg.tryFixLabel).toBe("from-file");
+    expect(cfg.maxPlanningIterations).toBe(9);
+    expect(cfg.sources["tryFixLabel"]).toEqual<ConfigFieldSource>({ source: "config-file", secret: false });
+    expect(cfg.sources["maxPlanningIterations"]).toEqual<ConfigFieldSource>({ source: "config-file", secret: false });
   });
 
   it("env beats file in the source tag when both are set", () => {
     const path = writeConfigFile({ alwaysFixLabel: "from-file" });
-    const { summary } = captureSummary((onSummary) =>
-      loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: path, onSummary }),
-    );
-    expect(summary["alwaysFixLabel"]).toEqual({ value: "from-env", source: "envar" });
+    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: path });
+    expect(cfg.alwaysFixLabel).toBe("from-env");
+    expect(cfg.sources["alwaysFixLabel"]?.source).toBe("envar");
   });
 
   it("resolves the schedule source correctly (no env-var counterpart)", () => {
-    const { summary: defaulted } = captureSummary((onSummary) => loadConfig({}, { configFile: null, onSummary }));
-    expect(defaulted["schedule"]).toEqual({ value: [], source: "default" });
+    const defaulted = loadConfig({}, { configFile: null });
+    expect(defaulted.schedule).toEqual([]);
+    expect(defaulted.sources["schedule"]?.source).toBe("default");
 
     const path = writeConfigFile({ schedule: ["*/15 * * * *"] });
-    const { summary: fromFile } = captureSummary((onSummary) => loadConfig({}, { configFile: path, onSummary }));
-    expect(fromFile["schedule"]).toEqual({ value: ["*/15 * * * *"], source: "config-file" });
-  });
-
-  it("called directly with synthesized inputs returns the documented shape", () => {
-    const env = { MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" } as const;
-    const file: ConfigFile = { tryFixLabel: "from-file" };
-    const config: Config = {
-      defaultEligible: false,
-      alwaysFixLabel: "from-env",
-      tryFixLabel: "from-file",
-      neverFixLabel: "manual",
-      possiblyDangerousLabel: "possiblyDangerous",
-      manuallyApprovedLabel: "manuallyReviewed",
-      failedLabel: "minesweeperFailed",
-      subtaskLabel: "subtask",
-      maxPlanningIterations: 5,
-      maxReviewRounds: 3,
-      eligibilityAgent: "claude-haiku-4-5-20251001",
-      planningAgent: "claude-opus-4-7",
-      reviewAgent: "claude-sonnet-4-6",
-      executionAgent: "claude-opus-4-7",
-      issueWriterAgent: "claude-sonnet-4-6",
-      worktreePath: "/tmp/minesweeper",
-      prBaseBranch: "main",
-      pollIntervalSeconds: 300,
-      pollIntervalMs: 300_000,
-      schedule: [],
-      pollCooldownSeconds: 120,
-      pollCooldownMs: 120_000,
-      maxConcurrency: 1,
-    };
-    const summary = buildConfigSummary(env, file, config);
-    expect(summary["alwaysFixLabel"]).toEqual({ value: "from-env", source: "envar" });
-    expect(summary["tryFixLabel"]).toEqual({ value: "from-file", source: "config-file" });
-    expect(summary["maxConcurrency"]).toEqual({ value: 1, source: "default" });
-    expect(Object.keys(summary)).toHaveLength(EXPECTED_SUMMARY_KEYS.length);
+    const fromFile = loadConfig({}, { configFile: path });
+    expect(fromFile.schedule).toEqual(["*/15 * * * *"]);
+    expect(fromFile.sources["schedule"]?.source).toBe("config-file");
   });
 
   it("redaction predicate matches secret-shaped names and rejects non-secret names", () => {
@@ -373,40 +330,43 @@ describe("buildConfigSummary", () => {
     expect(SECRET_NAME_RE.test("schedule")).toBe(false);
   });
 
-  it("today's Config has no secret-named field — no redaction occurs in any summary", () => {
-    const { summary } = captureSummary((onSummary) => loadConfig({}, { configFile: null, onSummary }));
+  it("flags no field as secret today — every entry has `secret: false`", () => {
+    const cfg = loadConfig({}, { configFile: null });
     for (const key of EXPECTED_SUMMARY_KEYS) {
-      expect(summary[key]?.value).not.toBe("<redacted>");
+      expect(cfg.sources[key]?.secret).toBe(false);
     }
-  });
-
-  it("does not invoke onSummary when loadConfig throws a ConfigError", () => {
-    let calls = 0;
-    const onSummary = (): void => {
-      calls += 1;
-    };
-    expect(() => loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "maybe" }, { configFile: null, onSummary })).toThrow(
-      ConfigError,
-    );
-    expect(calls).toBe(0);
-  });
-
-  it("invokes onSummary exactly once on a successful load", () => {
-    let calls = 0;
-    loadConfig(
-      {},
-      {
-        configFile: null,
-        onSummary: () => {
-          calls += 1;
-        },
-      },
-    );
-    expect(calls).toBe(1);
   });
 });
 
-describe("loadConfig + onSummary integration with the real logger", () => {
+describe("redactSecrets", () => {
+  it("is a no-op when no field is flagged secret", () => {
+    const cfg = loadConfig({}, { configFile: null });
+    expect(redactSecrets(cfg)).toEqual(cfg);
+  });
+
+  it("replaces the top-level value of any field flagged secret and keeps the sources map intact", () => {
+    const cfg = loadConfig({}, { configFile: null });
+    // Synthesise a Config whose `sources` claims one field is secret. We do not
+    // mutate `cfg` — `redactSecrets` is pure, so we can hand it any Config.
+    const withSecret: Config = {
+      ...cfg,
+      sources: {
+        ...cfg.sources,
+        alwaysFixLabel: { source: "envar", secret: true },
+      },
+    };
+    const redacted = redactSecrets(withSecret);
+    expect(redacted.alwaysFixLabel).toBe("<redacted>");
+    // unrelated field untouched
+    expect(redacted.tryFixLabel).toBe(cfg.tryFixLabel);
+    // sources map preserved so operators still see the source tag
+    expect(redacted.sources["alwaysFixLabel"]).toEqual<ConfigFieldSource>({ source: "envar", secret: true });
+    // input is not mutated
+    expect(withSecret.alwaysFixLabel).toBe(cfg.alwaysFixLabel);
+  });
+});
+
+describe("loadConfig + redactSecrets integration with the real logger", () => {
   let logTmp: string;
   let stdout: PassThrough;
 
@@ -421,17 +381,12 @@ describe("loadConfig + onSummary integration with the real logger", () => {
     rmSync(logTmp, { recursive: true, force: true });
   });
 
-  it("emits one 'config loaded' record with the 21-key summary as meta", () => {
+  it("emits one 'config loaded' record carrying the resolved values and the sources map", () => {
     const filePath = join(logTmp, "logs", "daemon.log");
     createLogger({ filePath, stdout, sync: true });
 
-    loadConfig(
-      {},
-      {
-        configFile: null,
-        onSummary: (summary) => event("daemon", "INFO", null, "config loaded", { config: summary }),
-      },
-    );
+    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null });
+    event("daemon", "INFO", null, "config loaded", { config: redactSecrets(cfg) });
 
     const records = readFileSync(filePath, "utf8")
       .split("\n")
@@ -442,9 +397,9 @@ describe("loadConfig + onSummary integration with the real logger", () => {
     expect(loaded).toHaveLength(1);
     const [record] = loaded;
     expect(record).toMatchObject({ role: "daemon", tag: "INFO", issueNumber: null, msg: "config loaded" });
-    const cfg = record?.["config"] as Record<string, { value: unknown; source: string }>;
-    expect(Object.keys(cfg).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());
-    expect(cfg["alwaysFixLabel"]?.source).toBe("default");
-    expect(cfg["alwaysFixLabel"]?.value).toBe("autofix");
+    const logged = record?.["config"] as Config;
+    expect(logged.alwaysFixLabel).toBe("from-env");
+    expect(logged.sources["alwaysFixLabel"]).toEqual({ source: "envar", secret: false });
+    expect(Object.keys(logged.sources).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());
   });
 });
