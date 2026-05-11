@@ -9,6 +9,7 @@ export const ROLE_NAMES = [
   "reviewer",
   "prwriter",
   "screener",
+  "issuewriter",
 ] as const;
 
 export type RoleName = (typeof ROLE_NAMES)[number];
@@ -24,7 +25,7 @@ export type RolePermissionMode = "default" | "plan" | "acceptEdits";
  * Which Config field holds the model name for each role. Constrained to the
  * agent fields so that a typo in role configuration is a type error.
  */
-export type ModelEnvVar = "planningAgent" | "reviewAgent" | "executionAgent" | "eligibilityAgent";
+export type ModelEnvVar = "planningAgent" | "reviewAgent" | "executionAgent" | "eligibilityAgent" | "issueWriterAgent";
 
 export interface Role {
   readonly name: RoleName;
@@ -89,6 +90,13 @@ export const ROLES: Record<RoleName, Role> = {
     modelEnvVar: "eligibilityAgent",
     systemPromptPath: "prompts/screener.md",
     allowedTools: ["Read", "Grep"],
+    permissionMode: "plan",
+  },
+  issuewriter: {
+    name: "issuewriter",
+    modelEnvVar: "issueWriterAgent",
+    systemPromptPath: "prompts/issuewriter.md",
+    allowedTools: ["Read", "Grep", "Glob"],
     permissionMode: "plan",
   },
 };

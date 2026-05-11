@@ -40,6 +40,7 @@ describe("loadConfig", () => {
       planningAgent: "claude-opus-4-7",
       reviewAgent: "claude-sonnet-4-6",
       executionAgent: "claude-opus-4-7",
+      issueWriterAgent: "claude-sonnet-4-6",
       worktreePath: "/tmp/minesweeper",
       prBaseBranch: "main",
       pollIntervalSeconds: 300,

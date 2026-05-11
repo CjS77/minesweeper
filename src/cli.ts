@@ -31,7 +31,7 @@ program
     createLogger({ quiet: Boolean(opts.quiet) });
   });
 
-const LOGGER_FREE_COMMANDS = new Set(["models", "log view", "issue list", "issue new"]);
+const LOGGER_FREE_COMMANDS = new Set(["models", "log view", "issue list"]);
 
 function commandPath(cmd: Command): string {
   const parts: string[] = [];
@@ -127,9 +127,22 @@ issue
 
 issue
   .command("new")
-  .description("Create a new issue from the CLI (not yet implemented).")
-  .action(() => {
-    runIssueNewCommand();
+  .alias("create")
+  .description("Open a new GitHub issue, shaped by Claude into the autofix template.")
+  .argument("[message...]", "free-text issue description (joined with spaces)")
+  .option("-f, --file <path>", "append the contents of <path> to the message")
+  .option("-y, --yes", "skip the $EDITOR confirmation step")
+  .option("-n, --no-autofix", "do not apply the autofix label")
+  .action(async (message: string[] = [], opts: { file?: string; yes?: boolean; autofix?: boolean } = {}) => {
+    const config = loadConfig();
+    await runIssueNewCommand({
+      config,
+      cwd: process.cwd(),
+      message: message.join(" "),
+      filePath: opts.file,
+      autoConfirm: Boolean(opts.yes),
+      addAutoFixLabel: opts.autofix !== false,
+    });
   });
 
 program.parseAsync(process.argv).catch(handleFatal);
