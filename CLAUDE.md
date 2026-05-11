@@ -1,15 +1,5 @@
 The specification for the project is given is @README.md.
 
-If you want the overall implementation plan, read `~/.claude/plans/i-need-an-application-snazzy-axolotl.md` first.
-
-This plan is broken into smaller chunks, and saved in @plans/*.md.
-Read @plans/00_index.md first to get a view of the plan structure.
-
-When you start a new plan, change status to "In Progress".
-If it's already marked as "Done", then tell the user and stop.
-
-Once plans are complete, mark them as "## Status: done".
-
 ## Repo layout
 
 Top-level:
@@ -17,8 +7,6 @@ Top-level:
 - `src/` — TypeScript source. Entry points: `index.ts` (library exports) and `cli.ts` (the `minesweeper` binary).
 - `prompts/` — Markdown prompt files for each Claude role (`planner.md`, `critic.md`, `executor.md`, `reviewer.md`,
   `assessor.md`, `refiner.md`). Loaded by `src/claude/roles.ts`.
-- `plans/` — Sequenced implementation plans (`00_index.md` first, then `01..12_*.md`). See `CLAUDE.md` for status
-  conventions.
 - `.minesweeper/` — Runtime state for the daemon (`state.json`, `logs/`). Created at runtime; not for hand-editing.
 - `README.md` — Product/architecture spec. Source of truth for behaviour.
 - `.env.sample` — Template for the env vars consumed by `src/config.ts`.

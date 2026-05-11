@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-05-11
+
+### Added
+- Autonomous PR-review feedback loop. After Minesweeper opens a PR, the daemon keeps watching it: for every worktree
+  whose state is `mode = Execution, status = Complete` with a recorded `prNumber`, the poll tick fetches the PR via
+  `gh pr view` plus the REST `pulls/{n}/comments` endpoint. A fresh `CHANGES_REQUESTED` review, an inline review-thread
+  comment, or a `COMMENTED` review with a non-empty body from an **authorised reviewer** (repo owner plus the bare
+  `@username` entries in `.github/CODEOWNERS`, `CODEOWNERS`, or `docs/CODEOWNERS`; `@org/team` entries are deferred)
+  renders the new items to `.minesweeper/pr_review_comments.md`, flips the state to
+  `mode = AddressingPRFeedback, status = InProgress`, and re-runs the executor against the original plan plus the
+  rendered feedback. New commits are pushed with an **incremental `git push`** — no force, no re-squash — so reviewer
+  pushes are never overwritten. A `prFeedbackProcessedAt` watermark records the newest acted-on timestamp so the same
+  feedback is never replayed. The loop ends when the issue is closed; the closed-issue sweep then archives the
+  worktree as usual. Inline review comments that triggered a dispatch get a `+1` reaction after the fix is pushed,
+  written via `POST repos/{owner}/{repo}/pulls/comments/{id}/reactions`.
+- `config loaded` startup log line. Every command that runs with an active logger now emits a single structured `info`
+  entry listing each non-derived config field alongside the source that provided it — `envar`, `config-file`, or
+  `default`. Fields whose names match `key|secret|token` are replaced with `<redacted>`. Provenance is captured at the
+  point of resolution and stored on `config.sources`; the logging boundary just redacts and emits.
+
+### Changed
+- Package renamed from `@cjs77/minesweeper` to `cc-minesweeper` on npm to avoid registry clashes. The binary is still
+  `minesweeper`.
+- On-disk state schema bumped v2 → v3 with the new `prNumber`, `prFeedbackProcessedAt`, and `AddressingPRFeedback`
+  mode. `migrateIfNeeded` is now exported and chains v1 → v2 → v3, and `readStateOrNull` runs it so `listOrphans` does
+  not silently drop pre-v3 worktrees.
+
+### Fixed
+- `gh pr view --json reviewThreads` is not a valid `gh` field — that data is GraphQL-only. PR-feedback polling now
+  fetches inline review comments via REST (`repos/{owner}/{repo}/pulls/{n}/comments`, paginated), so feedback runs no
+  longer fail wholesale with `Unknown JSON field: "reviewThreads"`.
+- The actionable-review filter now also matches `COMMENTED` reviews whose body is non-empty. Empty-bodied `COMMENTED`
+  reviews are the GitHub container that wraps inline comments and were causing double-dispatch.
+
 ## [0.2.0] — 2026-05-11
 
 ### Added
@@ -75,6 +109,7 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/CjS77/minesweeper/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/CjS77/minesweeper/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/CjS77/minesweeper/releases/tag/v0.1.0
