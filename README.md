@@ -20,6 +20,90 @@ Minesweeper periodically:
 * Node.js 20 or later.
 * `git` 2.20+ (for `git worktree`).
 
+# Installation
+
+Minesweeper is published on npm as `cc-minesweeper` and installs the `minesweeper` binary on your PATH:
+
+```sh
+npm install -g cc-minesweeper
+minesweeper --version
+```
+
+Once installed, `minesweeper` is the single command for everything — daemon, one-shot helpers, label management, and
+log inspection (see `minesweeper --help`). The Requirements above are runtime prerequisites: `gh` must already be
+authenticated (`gh auth login`) and the Claude Agent SDK must be able to find credentials (either via an existing
+Claude Code login on the machine, or `ANTHROPIC_API_KEY` in the environment).
+
+If you'd rather run from a checkout (for development or to pin a specific commit), `git clone` this repo, run
+`npm install && npm run build`, and either `npm link` to expose `minesweeper` globally or invoke `node dist/cli.js`
+directly.
+
+# Working directory
+
+Minesweeper acts on the GitHub repo of whatever directory you launch it from. Concretely:
+
+* `gh` (and therefore the issue poller, label commands, and PR creation) resolves the target repo from the current
+  working directory's git remotes -- `cd` into a checkout of the repo you want serviced, then run `minesweeper run`.
+* Daemon logs are written under `<cwd>/.minesweeper/logs/`. Per-issue worktrees and their archives live under
+  `$MINESWEEPER_WORKTREE_PATH` (default `/tmp/minesweeper`), not inside the repo checkout.
+* Branches are namespaced per-project, so for example `/tmp/minesweeper/projectA-issue0001` and  `/tmp/minesweeper/projectB-issue0015` 
+  represent worktrees for issue #1 of Project A and #15 of Project B respectively.
+* The **per-repo config file** is read from `<cwd>/.minesweeper/config.json` (see *Configuration* below).
+
+The typical operator workflow is therefore:
+
+```sh
+cd ~/code/my-repo                 # the repo whose issues you want Minesweeper to triage
+minesweeper labels --force        # one-off: seed the labels Minesweeper relies on
+minesweeper run                   # start the daemon
+```
+
+# Configuration
+
+Minesweeper merges configuration from four layers. Higher layers override lower layers on a per-key basis:
+
+1. **Environment variables** (`MINESWEEPER_*`) — set in your shell or a `.env` file you source.
+2. **Per-repo JSON file** at `<cwd>/.minesweeper/config.json` (override the path with `MINESWEEPER_REPO_CONFIG_FILE`).
+3. **Global JSON file** at `~/.minesweeper/config.json` (override the path with `MINESWEEPER_CONFIG_FILE`).
+4. **Hard-coded defaults** baked into `src/config.ts`.
+
+Both JSON files use the same schema and any subset of keys is fine. For example:
+
+```jsonc
+// ~/.minesweeper/config.json -- cross-repo defaults
+{
+  "planningAgent": "claude-opus-4-7",
+  "reviewAgent": "claude-sonnet-4-6",
+  "pollIntervalSeconds": 600
+}
+```
+
+```jsonc
+// <repo>/.minesweeper/config.json -- overrides for this one repo
+{
+  "alwaysFixLabel": "ready-to-ship",
+  "prBaseBranch": "develop",
+  "schedule": ["0 9 * * 1-5", "0 17 * * 1-5"]
+}
+```
+
+A `minesweeper run` (or any command that emits structured logs) writes one `config loaded` record at startup whose
+`sources` map records where each value was resolved from (`envar` / `repo-config` / `config-file` / `default`). That
+record is the source of truth when debugging "why is field X set to Y?".
+
+**Gitignore note.** `.minesweeper/` is conventionally gitignored (it holds logs, transcripts, and per-issue state),
+so `<repo>/.minesweeper/config.json` is by default a per-checkout override that lives only on your machine. To share
+repo-level settings with a team, either:
+
+* add `!.minesweeper/config.json` after `.minesweeper/` in your `.gitignore`, then commit the file; or
+* keep the file outside `.minesweeper/` (e.g. `minesweeper.config.json` at the repo root) and point
+  `MINESWEEPER_REPO_CONFIG_FILE` at it.
+
+The full list of settable fields is documented in the table under [Environment variables](#environment-variables)
+below — every `MINESWEEPER_*` env var in that table maps to a camelCase JSON key (drop the prefix, lowercase the
+first letter, e.g. `MINESWEEPER_ALWAYS_FIX_LABEL` → `alwaysFixLabel`). `schedule` (cron expressions) is the one
+exception: it is **JSON-only** because cron lists contain commas that can't round-trip through an env var.
+
 # Architecture
 
 The detailed architecture and decision log live in `~/.claude/plans/i-need-an-application-snazzy-axolotl.md`. The
@@ -214,18 +298,20 @@ copy-pasteable template.
 | `MINESWEEPER_PR_BASE_BRANCH`           | Base branch for pull requests opened by Minesweeper                  | `"main"`              |
 | `MINESWEEPER_POLL_INTERVAL_SECONDS`    | How often the daemon polls GitHub for new issues                     | `300`                 |
 | `MINESWEEPER_POLL_COOLDOWN`            | Minimum seconds between successive ticks; `0` disables the gate      | `120`                 |
-| `MINESWEEPER_CONFIG_FILE`              | Path to the JSON config file that supplies file-level defaults       | `~/.minesweeper/config.json` |
+| `MINESWEEPER_CONFIG_FILE`              | Path to the **global** JSON config file (cross-repo defaults)        | `~/.minesweeper/config.json` |
+| `MINESWEEPER_REPO_CONFIG_FILE`         | Path to the **per-repo** JSON config file (overrides the global one) | `<cwd>/.minesweeper/config.json` |
 | `MINESWEEPER_MAX_CONCURRENCY`          | Maximum issue children running in parallel (v0 is single-threaded)   | `1`                   |
 
 # Operating Minesweeper
 
 ## Prerequisites
 
-1. Install `gh` and authenticate it against the target repo (`gh auth login`, or set `GH_TOKEN` / `GITHUB_TOKEN`).
-2. Install Node.js 20+ and run `npm install` in this checkout.
+1. Install Node.js 20+ and Minesweeper itself: `npm install -g cc-minesweeper` (see [Installation](#installation)).
+2. Install `gh` and authenticate it against the target repo (`gh auth login`, or set `GH_TOKEN` / `GITHUB_TOKEN`).
 3. Authenticate the Claude Agent SDK. The simplest path is to log in once with the Claude Code CLI; alternatively
    set `ANTHROPIC_API_KEY` in the environment.
-4. Copy `.env.sample` to `.env` and adjust any values you want to override. Every variable is optional.
+4. Optional: copy `.env.sample` into a shell-sourced `.env`, or write a `~/.minesweeper/config.json` / per-repo
+   `.minesweeper/config.json` (see [Configuration](#configuration)). Every setting is optional and defaults sensibly.
 
 ## Labelling issues for autofix
 
@@ -236,7 +322,7 @@ The simplest workflow is to apply the always-fix label to issues you want Minesw
 gh issue edit <N> --add-label autofix
 
 # Or seed the labels on a fresh repo first:
-node dist/cli.js labels --force
+minesweeper labels --force
 ```
 
 The `labels` subcommand creates / updates every label Minesweeper relies on (`autofix`, `tryFix`, `manual`,
@@ -252,7 +338,7 @@ When filing issues you want Minesweeper to handle, use the **Autofix** issue tem
 ## Running the daemon
 
 ```sh
-node dist/cli.js run
+minesweeper run
 ```
 
 The daemon prints a pretty stream of events: `polled (N eligible) → dispatching → planning → executing → reviewing
@@ -263,8 +349,9 @@ The daemon prints a pretty stream of events: `polled (N eligible) → dispatchin
 The daemon's poll cadence is configurable in two ways. By default it polls every
 `MINESWEEPER_POLL_INTERVAL_SECONDS` seconds (the legacy fixed interval). For
 operators who want polling concentrated into known windows — say, every fifteen
-minutes during business hours plus one nightly sweep — the config file at
-`~/.minesweeper/config.json` accepts a list of cron expressions:
+minutes during business hours plus one nightly sweep — either of the two JSON
+config files (global `~/.minesweeper/config.json` or per-repo
+`<cwd>/.minesweeper/config.json`) accepts a list of cron expressions:
 
 ```json
 {
@@ -275,11 +362,12 @@ minutes during business hours plus one nightly sweep — the config file at
 
 Notes:
 
-- Configuration precedence is `env > file > defaults`. Anything in the JSON file
-  is overridable from the environment. The path is overridable via
-  `MINESWEEPER_CONFIG_FILE`.
-- `schedule` is **file-only** — cron list fields contain commas, which can't
-  round-trip through a comma-delimited env var.
+- Configuration precedence is `env > repo file > global file > defaults` (see
+  the [Configuration](#configuration) section above for the full picture).
+  Anything in either JSON file is overridable from the environment.
+- `schedule` is **JSON-file-only** — cron list fields contain commas, which
+  can't round-trip through a comma-delimited env var. A `schedule` array in
+  the per-repo file replaces (rather than appends to) the global one.
 - Schedules are interpreted in the daemon process's local timezone.
 - A single global `pollCooldownSeconds` (default 120) gates every tick. Two
   schedules that align cannot both fire inside the cooldown window — the second

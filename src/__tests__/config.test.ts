@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -27,6 +27,19 @@ afterEach(() => {
 
 function writeConfigFile(contents: unknown): string {
   const path = join(tmp, "config.json");
+  writeFileSync(path, typeof contents === "string" ? contents : JSON.stringify(contents));
+  return path;
+}
+
+/**
+ * Materialise a per-repo config under `<repoDir>/.minesweeper/config.json`.
+ * Used by the repo-config tests below, which always pass an explicit `cwd`
+ * so they never accidentally read the real project's `.minesweeper/`.
+ */
+function writeRepoConfigFile(repoDir: string, contents: unknown): string {
+  const dir = join(repoDir, ".minesweeper");
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "config.json");
   writeFileSync(path, typeof contents === "string" ? contents : JSON.stringify(contents));
   return path;
 }
@@ -237,6 +250,94 @@ describe("loadConfig", () => {
     writeConfigFile({ alwaysFixLabel: "should-not-be-read" });
     const cfg = loadConfig({}, { configFile: null });
     expect(cfg.alwaysFixLabel).toBe("autofix");
+  });
+});
+
+// Every test below pins both file layers explicitly (`cwd: tmp` plus the
+// global path, or a `null` sentinel) so they never read the real project's
+// `~/.minesweeper/config.json` or `<project>/.minesweeper/config.json`.
+describe("repo config file layer", () => {
+  it("loads values from <cwd>/.minesweeper/config.json when present", () => {
+    writeRepoConfigFile(tmp, { alwaysFixLabel: "from-repo", maxPlanningIterations: 7 });
+    const cfg = loadConfig({}, { configFile: null, cwd: tmp });
+    expect(cfg.alwaysFixLabel).toBe("from-repo");
+    expect(cfg.maxPlanningIterations).toBe(7);
+    expect(cfg.sources["alwaysFixLabel"]).toEqual<ConfigFieldSource>({ source: "repo-config", secret: false });
+    expect(cfg.sources["maxPlanningIterations"]).toEqual<ConfigFieldSource>({ source: "repo-config", secret: false });
+  });
+
+  it("repo config overrides the global config on a per-key basis", () => {
+    const globalPath = writeConfigFile({ alwaysFixLabel: "from-global", tryFixLabel: "from-global-try" });
+    writeRepoConfigFile(tmp, { alwaysFixLabel: "from-repo" });
+    const cfg = loadConfig({}, { configFile: globalPath, cwd: tmp });
+    // repo wins for the overlapping key, global still supplies the rest
+    expect(cfg.alwaysFixLabel).toBe("from-repo");
+    expect(cfg.tryFixLabel).toBe("from-global-try");
+    expect(cfg.sources["alwaysFixLabel"]?.source).toBe("repo-config");
+    expect(cfg.sources["tryFixLabel"]?.source).toBe("config-file");
+  });
+
+  it("env vars beat the repo config", () => {
+    writeRepoConfigFile(tmp, { alwaysFixLabel: "from-repo" });
+    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, cwd: tmp });
+    expect(cfg.alwaysFixLabel).toBe("from-env");
+    expect(cfg.sources["alwaysFixLabel"]?.source).toBe("envar");
+  });
+
+  it("treats a missing repo config file as empty (falls through to global → default)", () => {
+    // No file written; tmp/.minesweeper/config.json does not exist.
+    const cfg = loadConfig({}, { configFile: null, cwd: tmp });
+    expect(cfg.alwaysFixLabel).toBe("autofix");
+    expect(cfg.sources["alwaysFixLabel"]?.source).toBe("default");
+  });
+
+  it("rejects malformed JSON in the repo config file", () => {
+    writeRepoConfigFile(tmp, "{ not json");
+    const err = captureError(() => loadConfig({}, { configFile: null, cwd: tmp }));
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).envVar).toBe("MINESWEEPER_REPO_CONFIG_FILE");
+  });
+
+  it("rejects unknown keys in the repo config file", () => {
+    writeRepoConfigFile(tmp, { bogus: 1 });
+    const err = captureError(() => loadConfig({}, { configFile: null, cwd: tmp }));
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).envVar).toBe("MINESWEEPER_REPO_CONFIG_FILE");
+  });
+
+  it("MINESWEEPER_REPO_CONFIG_FILE env beats opts.repoConfigFile", () => {
+    const fileA = join(tmp, "a.json");
+    writeFileSync(fileA, JSON.stringify({ alwaysFixLabel: "from-A" }));
+    const fileB = join(tmp, "b.json");
+    writeFileSync(fileB, JSON.stringify({ alwaysFixLabel: "from-B" }));
+    const cfg = loadConfig(
+      { MINESWEEPER_REPO_CONFIG_FILE: fileA },
+      { configFile: null, repoConfigFile: fileB, cwd: tmp },
+    );
+    expect(cfg.alwaysFixLabel).toBe("from-A");
+    expect(cfg.sources["alwaysFixLabel"]?.source).toBe("repo-config");
+  });
+
+  it("opts.repoConfigFile=null skips repo file loading even when one exists at <cwd>/.minesweeper/config.json", () => {
+    writeRepoConfigFile(tmp, { alwaysFixLabel: "should-not-be-read" });
+    const cfg = loadConfig({}, { configFile: null, repoConfigFile: null, cwd: tmp });
+    expect(cfg.alwaysFixLabel).toBe("autofix");
+    expect(cfg.sources["alwaysFixLabel"]?.source).toBe("default");
+  });
+
+  it("schedule from repo config replaces schedule from global config", () => {
+    const globalPath = writeConfigFile({ schedule: ["*/15 * * * *"] });
+    writeRepoConfigFile(tmp, { schedule: ["0 9 * * *", "0 17 * * *"] });
+    const cfg = loadConfig({}, { configFile: globalPath, cwd: tmp });
+    expect(cfg.schedule).toEqual(["0 9 * * *", "0 17 * * *"]);
+    expect(cfg.sources["schedule"]?.source).toBe("repo-config");
+  });
+
+  it("rejects invalid cron in the repo config schedule", () => {
+    writeRepoConfigFile(tmp, { schedule: ["definitely not cron"] });
+    const err = captureError(() => loadConfig({}, { configFile: null, cwd: tmp }));
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).envVar).toBe("schedule");
   });
 });
 

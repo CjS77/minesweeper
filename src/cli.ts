@@ -83,7 +83,7 @@ program
   .addOption(new Option("--ls").hideHelp())
   .option("-f, --force", "skip the confirmation prompt and apply changes immediately")
   .action(async (opts: { list?: boolean; ls?: boolean; force?: boolean }) => {
-    const config = loadConfig();
+    const config = loadConfig(process.env, { cwd: process.cwd() });
     logConfigSummary(config);
     await runLabelsCommand({
       config,
@@ -114,7 +114,8 @@ log
   .option("--max-lines <n>", "max body lines per message (0 = unlimited)", "40")
   .action((name: string | undefined, opts: { issue?: string; color?: boolean; maxLines?: string }) => {
     const issueNumber = opts.issue !== undefined ? parseIssueArg(opts.issue) : undefined;
-    const worktreePath = issueNumber !== undefined ? loadConfig().worktreePath : undefined;
+    const worktreePath =
+      issueNumber !== undefined ? loadConfig(process.env, { cwd: process.cwd() }).worktreePath : undefined;
     runLogViewCommand({
       name,
       issueNumber,
@@ -131,7 +132,7 @@ issue
   .command("list")
   .description("List the repository's open issues, marking eligible and in-progress ones.")
   .action(async () => {
-    const config = loadConfig();
+    const config = loadConfig(process.env, { cwd: process.cwd() });
     await runIssueListCommand({ config, cwd: process.cwd() });
   });
 
@@ -144,7 +145,7 @@ issue
   .option("-y, --yes", "skip the $EDITOR confirmation step")
   .option("-n, --no-autofix", "do not apply the autofix label")
   .action(async (message: string[] = [], opts: { file?: string; yes?: boolean; autofix?: boolean } = {}) => {
-    const config = loadConfig();
+    const config = loadConfig(process.env, { cwd: process.cwd() });
     logConfigSummary(config);
     await runIssueNewCommand({
       config,
@@ -176,9 +177,9 @@ async function handleFatal(err: unknown): Promise<never> {
 }
 
 async function runDaemon(): Promise<void> {
-  const config = loadConfig();
-  logConfigSummary(config);
   const repoRoot = process.cwd();
+  const config = loadConfig(process.env, { cwd: repoRoot });
+  logConfigSummary(config);
   const worktreesRoot = resolve(config.worktreePath, "worktrees");
   const archiveRoot = resolve(config.worktreePath, "archive");
   const childScript = fileURLToPath(import.meta.url);

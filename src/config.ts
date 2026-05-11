@@ -1,11 +1,13 @@
 /**
  * Environment- and file-driven configuration loader for Minesweeper.
  *
- * Configuration sources, in order of precedence:
+ * Configuration sources, in order of precedence (highest wins):
  *   1. Process environment variables (`MINESWEEPER_*`).
- *   2. JSON file at `~/.minesweeper/config.json` (path overridable via
- *      `MINESWEEPER_CONFIG_FILE`).
- *   3. Hard-coded defaults baked into this module.
+ *   2. Per-repo JSON file at `<cwd>/.minesweeper/config.json` (path
+ *      overridable via `MINESWEEPER_REPO_CONFIG_FILE`).
+ *   3. Global JSON file at `~/.minesweeper/config.json` (path overridable
+ *      via `MINESWEEPER_CONFIG_FILE`).
+ *   4. Hard-coded defaults baked into this module.
  *
  * The single exported `loadConfig()` is called once at the CLI entry and
  * threaded through DI. Library code should never call it directly.
@@ -25,13 +27,13 @@ import cronParser from "cron-parser";
 import { z } from "zod";
 
 /**
- * Which layer supplied a single resolved `Config` field. `envar` wins over
- * `config-file`, which wins over the built-in `default`.
+ * Which layer supplied a single resolved `Config` field. Order of precedence,
+ * highest first: `envar` > `repo-config` > `config-file` (global) > `default`.
  */
-export type ConfigSource = "envar" | "config-file" | "default";
+export type ConfigSource = "envar" | "repo-config" | "config-file" | "default";
 
 const ConfigFieldSourceSchema = z.object({
-  source: z.enum(["envar", "config-file", "default"]),
+  source: z.enum(["envar", "repo-config", "config-file", "default"]),
   secret: z.boolean(),
 });
 
@@ -128,7 +130,13 @@ interface Resolved<T> {
   source: ConfigSource;
 }
 
-function readBool(env: Env, name: string, fileVal: boolean | undefined, defaultVal: boolean): Resolved<boolean> {
+function readBool(
+  env: Env,
+  name: string,
+  repoVal: boolean | undefined,
+  fileVal: boolean | undefined,
+  defaultVal: boolean,
+): Resolved<boolean> {
   const raw = env[name];
   if (raw !== undefined) {
     const s = raw.trim().toLowerCase();
@@ -136,6 +144,7 @@ function readBool(env: Env, name: string, fileVal: boolean | undefined, defaultV
     if (FALSE_VALUES.has(s)) return { value: false, source: "envar" };
     throw new ConfigError(name, `expected a boolean (true/false/1/0/yes/no), got ${JSON.stringify(raw)}`);
   }
+  if (repoVal !== undefined) return { value: repoVal, source: "repo-config" };
   if (fileVal !== undefined) return { value: fileVal, source: "config-file" };
   return { value: defaultVal, source: "default" };
 }
@@ -144,6 +153,7 @@ function readInt(
   env: Env,
   name: string,
   min: number,
+  repoVal: number | undefined,
   fileVal: number | undefined,
   defaultVal: number,
 ): Resolved<number> {
@@ -158,16 +168,24 @@ function readInt(
     if (n < min) throw new ConfigError(name, `must be >= ${min}, got ${n}`);
     return { value: n, source: "envar" };
   }
+  if (repoVal !== undefined) return { value: repoVal, source: "repo-config" };
   if (fileVal !== undefined) return { value: fileVal, source: "config-file" };
   return { value: defaultVal, source: "default" };
 }
 
-function readString(env: Env, name: string, fileVal: string | undefined, defaultVal: string): Resolved<string> {
+function readString(
+  env: Env,
+  name: string,
+  repoVal: string | undefined,
+  fileVal: string | undefined,
+  defaultVal: string,
+): Resolved<string> {
   const raw = env[name];
   if (raw !== undefined) {
     if (raw.length === 0) throw new ConfigError(name, "expected a non-empty string");
     return { value: raw, source: "envar" };
   }
+  if (repoVal !== undefined) return { value: repoVal, source: "repo-config" };
   if (fileVal !== undefined) return { value: fileVal, source: "config-file" };
   return { value: defaultVal, source: "default" };
 }
@@ -176,7 +194,11 @@ function readString(env: Env, name: string, fileVal: string | undefined, default
  * `schedule` is file-only — there is no `MINESWEEPER_SCHEDULE` env var — so
  * it has its own resolver rather than overloading `readString`.
  */
-function readSchedule(fileVal: readonly string[] | undefined): Resolved<string[]> {
+function readSchedule(
+  repoVal: readonly string[] | undefined,
+  fileVal: readonly string[] | undefined,
+): Resolved<string[]> {
+  if (repoVal !== undefined) return { value: [...repoVal], source: "repo-config" };
   if (fileVal !== undefined) return { value: [...fileVal], source: "config-file" };
   return { value: [], source: "default" };
 }
@@ -195,7 +217,42 @@ export function validateCron(expression: string): void {
 }
 
 /**
- * Read and validate `~/.minesweeper/config.json` (or the explicit path).
+ * Read and validate a JSON config file at `resolvedPath`. Missing files are
+ * not an error (returns `{}`); JSON / schema / cron failures throw a
+ * `ConfigError` keyed on `envVarName` so the operator sees which layer is
+ * misconfigured. Shared by the global and per-repo loaders below.
+ */
+function loadAndValidate(resolvedPath: string, envVarName: string): ConfigFile {
+  let raw: string;
+  try {
+    raw = readFileSync(resolvedPath, "utf8");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    throw new ConfigError(envVarName, `failed to read ${resolvedPath}: ${(err as Error).message}`);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new ConfigError(envVarName, `failed to parse ${resolvedPath} as JSON: ${(err as Error).message}`);
+  }
+
+  const result = ConfigFileSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new ConfigError(envVarName, `invalid config in ${resolvedPath}: ${result.error.message}`);
+  }
+
+  for (const expression of result.data.schedule ?? []) {
+    validateCron(expression);
+  }
+
+  return result.data;
+}
+
+/**
+ * Read and validate the global `~/.minesweeper/config.json` (or the explicit
+ * path).
  *
  * - `path === null`: skip file loading entirely (test sentinel).
  * - `path === undefined`: use the default path under `$HOME`.
@@ -205,32 +262,19 @@ export function validateCron(expression: string): void {
 export function readConfigFile(path: string | null | undefined): ConfigFile {
   if (path === null) return {};
   const resolved = path ?? join(homedir(), ".minesweeper", "config.json");
+  return loadAndValidate(resolved, "MINESWEEPER_CONFIG_FILE");
+}
 
-  let raw: string;
-  try {
-    raw = readFileSync(resolved, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw new ConfigError("MINESWEEPER_CONFIG_FILE", `failed to read ${resolved}: ${(err as Error).message}`);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    throw new ConfigError("MINESWEEPER_CONFIG_FILE", `failed to parse ${resolved} as JSON: ${(err as Error).message}`);
-  }
-
-  const result = ConfigFileSchema.safeParse(parsed);
-  if (!result.success) {
-    throw new ConfigError("MINESWEEPER_CONFIG_FILE", `invalid config in ${resolved}: ${result.error.message}`);
-  }
-
-  for (const expression of result.data.schedule ?? []) {
-    validateCron(expression);
-  }
-
-  return result.data;
+/**
+ * Read and validate the per-repo `<cwd>/.minesweeper/config.json` (or the
+ * explicit path). Same sentinel rules as `readConfigFile`. The default path
+ * is anchored to `cwd` rather than `$HOME` so each working tree carries its
+ * own overrides.
+ */
+export function readRepoConfigFile(cwd: string, path: string | null | undefined): ConfigFile {
+  if (path === null) return {};
+  const resolved = path ?? join(cwd, ".minesweeper", "config.json");
+  return loadAndValidate(resolved, "MINESWEEPER_REPO_CONFIG_FILE");
 }
 
 /**
@@ -247,53 +291,140 @@ export function redactSecrets(config: Config): Config {
   return redacted as Config;
 }
 
-export function loadConfig(env: Env = process.env, opts: { configFile?: string | null } = {}): Config {
-  // Resolve the file path explicitly: a bare `??` would coerce `null` (the
+export function loadConfig(
+  env: Env = process.env,
+  opts: { configFile?: string | null; repoConfigFile?: string | null; cwd?: string } = {},
+): Config {
+  // Resolve each file path explicitly: a bare `??` would coerce `null` (the
   // "skip file" sentinel) to `undefined`, defeating the test injection point.
   const envPath = env["MINESWEEPER_CONFIG_FILE"];
   const filePath: string | null | undefined = envPath !== undefined ? envPath : opts.configFile;
   const file = readConfigFile(filePath);
 
+  const envRepoPath = env["MINESWEEPER_REPO_CONFIG_FILE"];
+  const repoPath: string | null | undefined = envRepoPath !== undefined ? envRepoPath : opts.repoConfigFile;
+  const cwd = opts.cwd ?? process.cwd();
+  const repoFile = readRepoConfigFile(cwd, repoPath);
+
   // Resolve every user-settable field as a `{ value, source }` pair so the
   // sources map is built alongside the candidate config — no post-hoc
-  // reconstruction.
+  // reconstruction. Each resolver checks env → repo → global → default.
   const resolved = {
-    defaultEligible: readBool(env, "MINESWEEPER_DEFAULT_ELIGIBLE", file.defaultEligible, false),
-    alwaysFixLabel: readString(env, "MINESWEEPER_ALWAYS_FIX_LABEL", file.alwaysFixLabel, "autofix"),
-    tryFixLabel: readString(env, "MINESWEEPER_TRY_FIX_LABEL", file.tryFixLabel, "tryFix"),
-    neverFixLabel: readString(env, "MINESWEEPER_NEVER_FIX_LABEL", file.neverFixLabel, "manual"),
+    defaultEligible: readBool(
+      env,
+      "MINESWEEPER_DEFAULT_ELIGIBLE",
+      repoFile.defaultEligible,
+      file.defaultEligible,
+      false,
+    ),
+    alwaysFixLabel: readString(
+      env,
+      "MINESWEEPER_ALWAYS_FIX_LABEL",
+      repoFile.alwaysFixLabel,
+      file.alwaysFixLabel,
+      "autofix",
+    ),
+    tryFixLabel: readString(env, "MINESWEEPER_TRY_FIX_LABEL", repoFile.tryFixLabel, file.tryFixLabel, "tryFix"),
+    neverFixLabel: readString(env, "MINESWEEPER_NEVER_FIX_LABEL", repoFile.neverFixLabel, file.neverFixLabel, "manual"),
     possiblyDangerousLabel: readString(
       env,
       "MINESWEEPER_POSSIBLY_DANGEROUS_LABEL",
+      repoFile.possiblyDangerousLabel,
       file.possiblyDangerousLabel,
       "possiblyDangerous",
     ),
     manuallyApprovedLabel: readString(
       env,
       "MINESWEEPER_MANUALLY_APPROVED_LABEL",
+      repoFile.manuallyApprovedLabel,
       file.manuallyApprovedLabel,
       "manuallyReviewed",
     ),
-    failedLabel: readString(env, "MINESWEEPER_FAILED_LABEL", file.failedLabel, "minesweeperFailed"),
-    subtaskLabel: readString(env, "MINESWEEPER_SUBTASK_LABEL", file.subtaskLabel, "subtask"),
-    maxPlanningIterations: readInt(env, "MINESWEEPER_MAX_PLANNING_ITERATIONS", 1, file.maxPlanningIterations, 5),
-    maxReviewRounds: readInt(env, "MINESWEEPER_MAX_REVIEW_ROUNDS", 1, file.maxReviewRounds, 3),
+    failedLabel: readString(
+      env,
+      "MINESWEEPER_FAILED_LABEL",
+      repoFile.failedLabel,
+      file.failedLabel,
+      "minesweeperFailed",
+    ),
+    subtaskLabel: readString(env, "MINESWEEPER_SUBTASK_LABEL", repoFile.subtaskLabel, file.subtaskLabel, "subtask"),
+    maxPlanningIterations: readInt(
+      env,
+      "MINESWEEPER_MAX_PLANNING_ITERATIONS",
+      1,
+      repoFile.maxPlanningIterations,
+      file.maxPlanningIterations,
+      5,
+    ),
+    maxReviewRounds: readInt(
+      env,
+      "MINESWEEPER_MAX_REVIEW_ROUNDS",
+      1,
+      repoFile.maxReviewRounds,
+      file.maxReviewRounds,
+      3,
+    ),
     eligibilityAgent: readString(
       env,
       "MINESWEEPER_ELIGIBILITY_AGENT",
+      repoFile.eligibilityAgent,
       file.eligibilityAgent,
       "claude-haiku-4-5-20251001",
     ),
-    planningAgent: readString(env, "MINESWEEPER_PLANNING_AGENT", file.planningAgent, "claude-opus-4-7"),
-    reviewAgent: readString(env, "MINESWEEPER_REVIEW_AGENT", file.reviewAgent, "claude-sonnet-4-6"),
-    executionAgent: readString(env, "MINESWEEPER_EXECUTION_AGENT", file.executionAgent, "claude-opus-4-7"),
-    issueWriterAgent: readString(env, "MINESWEEPER_ISSUE_WRITER_AGENT", file.issueWriterAgent, "claude-sonnet-4-6"),
-    worktreePath: readString(env, "MINESWEEPER_WORKTREE_PATH", file.worktreePath, "/tmp/minesweeper"),
-    prBaseBranch: readString(env, "MINESWEEPER_PR_BASE_BRANCH", file.prBaseBranch, "main"),
-    pollIntervalSeconds: readInt(env, "MINESWEEPER_POLL_INTERVAL_SECONDS", 30, file.pollIntervalSeconds, 300),
-    schedule: readSchedule(file.schedule),
-    pollCooldownSeconds: readInt(env, "MINESWEEPER_POLL_COOLDOWN", 0, file.pollCooldownSeconds, 120),
-    maxConcurrency: readInt(env, "MINESWEEPER_MAX_CONCURRENCY", 1, file.maxConcurrency, 1),
+    planningAgent: readString(
+      env,
+      "MINESWEEPER_PLANNING_AGENT",
+      repoFile.planningAgent,
+      file.planningAgent,
+      "claude-opus-4-7",
+    ),
+    reviewAgent: readString(
+      env,
+      "MINESWEEPER_REVIEW_AGENT",
+      repoFile.reviewAgent,
+      file.reviewAgent,
+      "claude-sonnet-4-6",
+    ),
+    executionAgent: readString(
+      env,
+      "MINESWEEPER_EXECUTION_AGENT",
+      repoFile.executionAgent,
+      file.executionAgent,
+      "claude-opus-4-7",
+    ),
+    issueWriterAgent: readString(
+      env,
+      "MINESWEEPER_ISSUE_WRITER_AGENT",
+      repoFile.issueWriterAgent,
+      file.issueWriterAgent,
+      "claude-sonnet-4-6",
+    ),
+    worktreePath: readString(
+      env,
+      "MINESWEEPER_WORKTREE_PATH",
+      repoFile.worktreePath,
+      file.worktreePath,
+      "/tmp/minesweeper",
+    ),
+    prBaseBranch: readString(env, "MINESWEEPER_PR_BASE_BRANCH", repoFile.prBaseBranch, file.prBaseBranch, "main"),
+    pollIntervalSeconds: readInt(
+      env,
+      "MINESWEEPER_POLL_INTERVAL_SECONDS",
+      30,
+      repoFile.pollIntervalSeconds,
+      file.pollIntervalSeconds,
+      300,
+    ),
+    schedule: readSchedule(repoFile.schedule, file.schedule),
+    pollCooldownSeconds: readInt(
+      env,
+      "MINESWEEPER_POLL_COOLDOWN",
+      0,
+      repoFile.pollCooldownSeconds,
+      file.pollCooldownSeconds,
+      120,
+    ),
+    maxConcurrency: readInt(env, "MINESWEEPER_MAX_CONCURRENCY", 1, repoFile.maxConcurrency, file.maxConcurrency, 1),
   };
 
   const entries = Object.entries(resolved);
