@@ -1,8 +1,10 @@
 {
   "name": "@cjs77/minesweeper",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "An agentic bughunter that drives Claude Code to triage and fix GitHub issues.",
   "type": "module",
+  "private": false,
+  "license": "MIT",
   "bin": {
     "minesweeper": "dist/cli.js"
   },
