@@ -15,6 +15,7 @@ import { runIssueListCommand, runIssueNewCommand } from "./commands/issues.js";
 import { runLabelsCommand } from "./commands/labels.js";
 import { runLogViewCommand } from "./commands/log.js";
 import { runModelsCommand } from "./commands/models.js";
+import { PACKAGE_VERSION } from "./version.js";
 import { listOrphans } from "./worktree.js";
 
 const program = new Command();
@@ -22,7 +23,7 @@ const program = new Command();
 program
   .name("minesweeper")
   .description("An agentic bughunter that drives Claude Code to triage and fix GitHub issues.")
-  .version("0.0.0")
+  .version(PACKAGE_VERSION)
   .option("-q, --quiet", "suppress INFO output on stdout (file logs are unaffected)")
   .hook("preAction", (thisCommand, actionCommand) => {
     // Read-only utilities write their own output; spinning up pino's file
