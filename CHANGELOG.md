@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-05-12
+
+### Added
+- `config init` and `config show` commands. `config init` writes a per-repo `<cwd>/.minesweeper/config.json` populated
+  with every user-settable key at its loader default; defaults are derived by calling `loadConfig` with empty env and
+  the file-skip sentinels so the command tracks any future default change in `src/config.ts` without a parallel list.
+  Refuses to overwrite an existing file without `-f/--force`. `config show` reads and prints the same per-repo file
+  as-is. Ships `config-sample.json5` at the repo root as a documented sample with comments for every key.
+- `config prompts` command. Copies the bundled prompts into `.minesweeper/prompts/` and writes the absolute path as a
+  new `customPromptsPath` config field for per-repo prompt customisation. `runSubagent` honours that path when set; the
+  absolute path survives the daemon → child (worktree cwd) transition.
+
+### Changed
+- The CI workflow's `GITHUB_TOKEN` is now restricted to `contents: read` via an explicit workflow-level `permissions:`
+  block, removing the implicit fallback to the repo's default (often broad read/write) token scope.
+
+### Fixed
+- `minesweeper --version` now reports the real package version instead of the hardcoded `0.0.0` string. A new
+  `src/version.ts` reads `package.json#version` at runtime via `createRequire(import.meta.url)`, and `src/cli.ts` passes
+  it to `commander`'s `.version()`. A new test asserts the exported `PACKAGE_VERSION` matches `package.json` so future
+  drift breaks CI. Fixes #44.
+- Daemon child processes running in foreign repos no longer crash with `ENOENT: prompts/planner.md`. Role prompts now
+  default to the `prompts/` directory bundled inside the npm package (resolved via `import.meta.url` from
+  `src/claude/roles.ts`) instead of the worktree cwd. `role.systemPromptPath` is simplified to the bare filename since
+  the prompt root is the prompts dir itself for both bundled and custom variants.
+- `MINESWEEPER_REPO_CONFIG_FILE` is now forwarded to child processes on spawn (an explicit parent env value still wins),
+  so per-repo config fields — not just prompts — are visible to children.
+- Six pre-existing test-isolation leaks in `config.test.ts` that silently picked up the developer's real
+  `.minesweeper/config.json` by not pinning `repoConfigFile: null`.
+
+### Dependency updates
+- @types/node: 25.6.2 => 25.7.0
+- eslint-config-prettier: 9.1.2 => 10.1.8
+
 ## [0.5.0] — 2026-05-11
 
 ### Added
@@ -153,7 +187,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/CjS77/minesweeper/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CjS77/minesweeper/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/CjS77/minesweeper/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/CjS77/minesweeper/compare/v0.2.0...v0.3.0
