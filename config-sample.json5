@@ -1,0 +1,146 @@
+// Minesweeper configuration sample (JSON5 with comments).
+//
+// This file documents every key accepted by Minesweeper's JSON config loader,
+// with each value set to its built-in default. Copy it to one of the two
+// supported locations and **strip the comments** — the loader uses
+// `JSON.parse`, not JSON5, so comments and trailing commas will be rejected.
+//
+//   Global  : ~/.minesweeper/config.json     (override path: MINESWEEPER_CONFIG_FILE)
+//   Per-repo: <cwd>/.minesweeper/config.json (override path: MINESWEEPER_REPO_CONFIG_FILE)
+//
+// Resolution precedence (highest wins):
+//   1. MINESWEEPER_* environment variables
+//   2. Per-repo JSON file
+//   3. Global JSON file
+//   4. Hard-coded defaults baked into `src/config.ts`
+//
+// Every key is optional; omit any you don't want to override. The schema
+// rejects unknown keys (`.strict()`), so typos surface at startup.
+//
+// The canonical schema lives in `src/config.ts`. If anything here drifts
+// from that file, treat `src/config.ts` as the source of truth.
+
+{
+  // ─────────────────────────────────────────────────────────────────────────
+  // Eligibility / labels
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // When true, every issue is eligible unless explicitly excluded by label.
+  // When false, only issues with `alwaysFixLabel` are eligible.
+  defaultEligible: false,
+
+  // Whether code-scanning and secret-scanning alerts are auto-eligible.
+  // Alerts cannot carry GitHub labels, so this is the only opt-in/out for
+  // them. When false, the daemon also stops calling the alert APIs (handy
+  // for repos without GitHub Advanced Security so you don't see 403s every
+  // poll).
+  alertsEligible: true,
+
+  // Label that opts an issue *into* Minesweeper's queue.
+  alwaysFixLabel: "autofix",
+
+  // Label that opts an issue into Minesweeper's queue *and* sends it
+  // through the prompt-injection screener first. Use this for issues
+  // filed by users you trust less than yourself. `dangerous` / `uncertain`
+  // verdicts get tagged with `possiblyDangerousLabel` and skipped; `safe`
+  // proceeds to the planner.
+  tryFixLabel: "tryFix",
+
+  // Label that opts an issue *out of* Minesweeper's queue.
+  neverFixLabel: "manual",
+
+  // Label applied when the eligibility screen flags possible prompt
+  // injection or other malicious content. Skipped until a human reviews.
+  possiblyDangerousLabel: "possiblyDangerous",
+
+  // Label a human applies after reviewing to indicate the issue is safe.
+  manuallyApprovedLabel: "manuallyReviewed",
+
+  // Label applied when Minesweeper gives up after exhausting retries.
+  // Useful for filtering out repeat-failure issues.
+  failedLabel: "minesweeperFailed",
+
+  // Label applied to sub-issues that Minesweeper itself opens during
+  // assess/refine. Inherits the parent's always-fix label when the
+  // parent carries one.
+  subtaskLabel: "subtask",
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Agent / model selection
+  //
+  // Each value is a model identifier passed through to the Claude Agent
+  // SDK. Pick faster/cheaper models for the eligibility screen and review
+  // pass; pick stronger models for planning and execution.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Model used to screen incoming issues for eligibility + prompt injection.
+  eligibilityAgent: "claude-haiku-4-5-20251001",
+
+  // Model used by the planner ↔ critic loop.
+  planningAgent: "claude-opus-4-7",
+
+  // Model used by the reviewer during execution.
+  reviewAgent: "claude-sonnet-4-6",
+
+  // Model used by the executor (writes code, runs tests, opens the PR).
+  executionAgent: "claude-opus-4-7",
+
+  // Model used by `minesweeper issue new` to shape free-text input into a
+  // well-formed autofix issue body. Sonnet is the right default — the job
+  // is structured rewriting, not deep reasoning.
+  issueWriterAgent: "claude-sonnet-4-6",
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Execution loops
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Hard cap on planner ↔ critic round-trips before Minesweeper bails out
+  // of planning mode. Must be >= 1.
+  maxPlanningIterations: 5,
+
+  // Hard cap on executor ↔ reviewer round-trips before Minesweeper either
+  // ships what it has or gives up. Must be >= 1.
+  maxReviewRounds: 3,
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Worktree + git
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Directory under which Minesweeper materialises per-issue git worktrees.
+  // Absolute, or relative to the main repo. Each issue gets its own
+  // subdirectory; on success the parent removes it after archiving
+  // `.minesweeper/`.
+  worktreePath: "/tmp/minesweeper",
+
+  // Branch used as the base for new pull requests opened by Minesweeper.
+  prBaseBranch: "main",
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Daemon
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // How often the parent daemon polls GitHub for new eligible issues, in
+  // seconds. Minimum 30 (GitHub rate limits / API courtesy). Ignored when
+  // one or more cron `schedule` entries are set below.
+  pollIntervalSeconds: 300,
+
+  // Cron-style polling schedule. **File-only** — there is no equivalent
+  // env var, since cron lists contain commas that don't round-trip
+  // through env. When non-empty, replaces the fixed `pollIntervalSeconds`
+  // tick with one or more cron triggers (any expression `cron-parser`
+  // accepts). Examples below are commented; uncomment to enable.
+  schedule: [
+    // "*/15 * * * *",         // every 15 minutes
+    // "0 9-17 * * 1-5",       // hourly, 9–17h, Mon–Fri
+  ],
+
+  // Minimum number of seconds between successive poll ticks. Overlapping
+  // schedules cannot trigger a tick inside this window — the second is
+  // logged as "skipped poll: within cooldown" and dropped. Set to 0 to
+  // disable the gate. Minimum 0.
+  pollCooldownSeconds: 120,
+
+  // Maximum number of issue children the daemon will run in parallel.
+  // v0 is single-threaded; concurrency lands in M3.
+  maxConcurrency: 1,
+}
