@@ -33,12 +33,18 @@ import { join } from "node:path";
 
 import type { Config } from "../../config.js";
 import * as defaultGithub from "../../github/index.js";
-import type { Issue } from "../../github/index.js";
 import { event as defaultEvent, type Logger } from "../../logging.js";
 import { runSubagent as defaultRunSubagent } from "../../claude/index.js";
 import type { RunSubagentOptions, SubagentResult } from "../../claude/index.js";
 import * as defaultState from "../state.js";
 import type { Assessment, State } from "../state.js";
+import {
+  asCodeScanningWorkItem,
+  asIssueWorkItem,
+  asSecretScanningWorkItem,
+  formatWorkItem,
+  type WorkItem,
+} from "../../workitem.js";
 
 /** Path (worktree-relative) the planning mode wrote the approved plan to. */
 export const FINAL_PLAN_FILE = join(".minesweeper", "final_plan.md");
@@ -77,7 +83,7 @@ export interface AssessDeps {
   /** State as just read from disk by the handler. */
   state: State;
   /** Override the GitHub wrapper (tests). */
-  github?: Pick<typeof defaultGithub, "getIssue">;
+  github?: Pick<typeof defaultGithub, "getIssue" | "getCodeScanningAlert" | "getSecretScanningAlert">;
   /** Override the subagent runner (tests). */
   runSubagent?: RunSubagentFn;
   /** Override the state writer (tests can wrap to assert call sequence). */
@@ -108,12 +114,12 @@ export async function runAssess(deps: AssessDeps): Promise<State> {
   emit("assessor", "WORK", issueNumber, "assessing approved plan");
 
   const finalPlan = await readFinalPlan(join(cwd, FINAL_PLAN_FILE));
-  const issue = await gh.getIssue(issueNumber, { cwd });
+  const item = await fetchWorkItem(gh, state, cwd);
 
   const result = await runSubagent({
     role: "assessor",
     config,
-    userPrompt: assessorPromptFor(issue, finalPlan),
+    userPrompt: assessorPromptFor(item, finalPlan),
     issueNumber,
     iteration: 1,
     cwd,
@@ -164,9 +170,9 @@ async function readFinalPlan(path: string): Promise<string> {
   }
 }
 
-function assessorPromptFor(issue: Issue, plan: string): string {
+function assessorPromptFor(item: WorkItem, plan: string): string {
   return [
-    formatIssue(issue),
+    formatWorkItem(item),
     "",
     "# Approved plan",
     "",
@@ -176,24 +182,24 @@ function assessorPromptFor(issue: Issue, plan: string): string {
   ].join("\n");
 }
 
-function formatIssue(issue: Issue): string {
-  const labels = issue.labels.map((l) => l.name).join(", ") || "(none)";
-  const lines = [
-    `# GitHub issue #${issue.number}`,
-    `Title: ${issue.title}`,
-    `Author: ${issue.author.login}`,
-    `Labels: ${labels}`,
-    `URL: ${issue.url}`,
-    "",
-    "## Body",
-    "",
-    issue.body.length > 0 ? issue.body : "(empty body)",
-  ];
-  if (issue.comments && issue.comments.length > 0) {
-    lines.push("", "## Comments");
-    for (const c of issue.comments) {
-      lines.push("", `### ${c.author.login} — ${c.createdAt}`, "", c.body);
+/**
+ * Resolve the on-disk `state.kind` to a fresh GitHub fetch of the
+ * underlying work item. Mirrors the helper in `planning.ts` so the
+ * assessor sees the same canonical block as the planner.
+ */
+async function fetchWorkItem(gh: NonNullable<AssessDeps["github"]>, state: State, cwd: string): Promise<WorkItem> {
+  switch (state.kind) {
+    case "issue": {
+      const issue = await gh.getIssue(state.issueNumber, { cwd });
+      return asIssueWorkItem(issue);
+    }
+    case "codeScanningAlert": {
+      const alert = await gh.getCodeScanningAlert(state.issueNumber, { cwd });
+      return asCodeScanningWorkItem(alert);
+    }
+    case "secretScanningAlert": {
+      const alert = await gh.getSecretScanningAlert(state.issueNumber, { cwd });
+      return asSecretScanningWorkItem(alert);
     }
   }
-  return lines.join("\n");
 }

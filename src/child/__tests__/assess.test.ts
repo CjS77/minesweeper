@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Config } from "../../config.js";
-import type { Issue } from "../../github/index.js";
+import type { CodeScanningAlert, Issue, SecretScanningAlert } from "../../github/index.js";
 import type { SubagentResult } from "../../claude/index.js";
 import { initState, readState } from "../state.js";
 import { FINAL_PLAN_FILE, parseAssessVerdict, runAssess, type RunSubagentFn } from "../modes/assess.js";
@@ -214,5 +214,80 @@ describe("runAssess", () => {
       }),
     ).rejects.toThrow(/final_plan\.md not found/);
     expect(runSubagent).not.toHaveBeenCalled();
+  });
+
+  it("fetches a code-scanning alert when state.kind === 'codeScanningAlert'", async () => {
+    await initState(tmp, "Assess", {
+      kind: "codeScanningAlert",
+      issueNumber: 7,
+      branchName: "minesweeper-codeScanningAlert0007",
+      maxIterations: 1,
+    });
+    const state = await readState(tmp);
+    const alert: CodeScanningAlert = {
+      number: 7,
+      state: "open",
+      html_url: "https://github.com/example/repo/security/code-scanning/7",
+      created_at: "2026-05-01T00:00:00Z",
+      rule: { id: "js/zipslip", severity: "error", name: "js/zipslip" },
+    };
+    const getIssue = vi.fn();
+    const getCodeScanningAlert = vi.fn(async () => alert);
+    const getSecretScanningAlert = vi.fn();
+    const runSubagent = vi.fn<RunSubagentFn>(async () => fakeResult("Verdict: Execute"));
+
+    await runAssess({
+      config: FAKE_CONFIG,
+      cwd: tmp,
+      state,
+      github: { getIssue, getCodeScanningAlert, getSecretScanningAlert },
+      runSubagent,
+      emit: vi.fn(),
+    });
+
+    expect(getCodeScanningAlert).toHaveBeenCalledTimes(1);
+    expect(getCodeScanningAlert).toHaveBeenCalledWith(7, { cwd: tmp });
+    expect(getIssue).not.toHaveBeenCalled();
+    expect(getSecretScanningAlert).not.toHaveBeenCalled();
+    const prompt = runSubagent.mock.calls[0]?.[0].userPrompt ?? "";
+    expect(prompt).toContain("# Code-scanning alert #7");
+  });
+
+  it("fetches a secret-scanning alert when state.kind === 'secretScanningAlert'", async () => {
+    await initState(tmp, "Assess", {
+      kind: "secretScanningAlert",
+      issueNumber: 3,
+      branchName: "minesweeper-secretScanningAlert0003",
+      maxIterations: 1,
+    });
+    const state = await readState(tmp);
+    const alert: SecretScanningAlert = {
+      number: 3,
+      state: "open",
+      html_url: "https://github.com/example/repo/security/secret-scanning/3",
+      created_at: "2026-05-01T00:00:00Z",
+      secret_type: "aws_access_key_id",
+      secret_type_display_name: "AWS access key ID",
+    };
+    const getIssue = vi.fn();
+    const getCodeScanningAlert = vi.fn();
+    const getSecretScanningAlert = vi.fn(async () => alert);
+    const runSubagent = vi.fn<RunSubagentFn>(async () => fakeResult("Verdict: Execute"));
+
+    await runAssess({
+      config: FAKE_CONFIG,
+      cwd: tmp,
+      state,
+      github: { getIssue, getCodeScanningAlert, getSecretScanningAlert },
+      runSubagent,
+      emit: vi.fn(),
+    });
+
+    expect(getSecretScanningAlert).toHaveBeenCalledTimes(1);
+    expect(getSecretScanningAlert).toHaveBeenCalledWith(3, { cwd: tmp });
+    expect(getIssue).not.toHaveBeenCalled();
+    expect(getCodeScanningAlert).not.toHaveBeenCalled();
+    const prompt = runSubagent.mock.calls[0]?.[0].userPrompt ?? "";
+    expect(prompt).toContain("# Secret-scanning alert #3");
   });
 });
