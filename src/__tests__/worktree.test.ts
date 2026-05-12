@@ -120,6 +120,31 @@ describe("addWorktree", () => {
     const head = await execa("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: result.path });
     expect(head.stdout.trim()).toBe("add-weird-chars");
   });
+
+  it("recovers when a stale branch from a previous run is still around", async () => {
+    // Simulate a previous failed teardown that left the branch behind without the worktree dir.
+    await execa("git", ["branch", "stale-branch"], { cwd: repoRoot });
+    const branches = await execa("git", ["branch", "--list", "stale-branch"], { cwd: repoRoot });
+    expect(branches.stdout).toContain("stale-branch");
+
+    const result = await addWorktree({ repoRoot, worktreesRoot, branchName: "stale-branch" });
+
+    expect(result.branch).toBe("stale-branch");
+    const head = await execa("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: result.path });
+    expect(head.stdout.trim()).toBe("stale-branch");
+  });
+
+  it("propagates the original error if the branch is checked out elsewhere", async () => {
+    const existing = await addWorktree({ repoRoot, worktreesRoot, branchName: "in-use" });
+    // Wipe the dir we wanted to land in (we just want git's branch-in-use guard to trigger).
+    await rm(existing.path, { recursive: true, force: true });
+    await execa("git", ["worktree", "prune"], { cwd: repoRoot });
+    // Re-register the worktree at a sibling path so the branch stays live.
+    const sibling = join(worktreesRoot, "in-use-elsewhere");
+    await execa("git", ["worktree", "add", sibling, "in-use"], { cwd: repoRoot });
+
+    await expect(addWorktree({ repoRoot, worktreesRoot, branchName: "in-use" })).rejects.toThrow(/already exists/i);
+  });
 });
 
 describe("archiveWorktreeState", () => {
