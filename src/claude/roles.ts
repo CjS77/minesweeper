@@ -1,4 +1,19 @@
+import { fileURLToPath } from "node:url";
+
 import type { Config } from "../config.js";
+
+/**
+ * Absolute path of the `prompts/` directory shipped inside the npm package.
+ *
+ * Resolved from this module's own URL so it works from both source
+ * (`src/claude/roles.ts` → `<repo>/prompts/`) and compiled output
+ * (`dist/claude/roles.js` → `<package-root>/prompts/`). The `prompts/`
+ * directory is listed in `package.json#files`, so it ships alongside `dist/`
+ * on `npm publish`. Use this when a caller has no meaningful `cwd` to anchor
+ * prompt lookup against — e.g. when the child runs in a foreign repo's
+ * worktree.
+ */
+export const BUNDLED_PROMPTS_ROOT = fileURLToPath(new URL("../../prompts/", import.meta.url));
 
 export const ROLE_NAMES = [
   "planner",
@@ -30,6 +45,12 @@ export type ModelEnvVar = "planningAgent" | "reviewAgent" | "executionAgent" | "
 export interface Role {
   readonly name: RoleName;
   readonly modelEnvVar: ModelEnvVar;
+  /**
+   * Filename of the role's system prompt, relative to the prompts root
+   * (either {@link BUNDLED_PROMPTS_ROOT} or `config.customPromptsPath`).
+   * No directory component — both roots point at the prompts directory
+   * itself.
+   */
   readonly systemPromptPath: string;
   readonly allowedTools: readonly string[];
   readonly permissionMode: RolePermissionMode;
@@ -39,63 +60,63 @@ export const ROLES: Record<RoleName, Role> = {
   planner: {
     name: "planner",
     modelEnvVar: "planningAgent",
-    systemPromptPath: "prompts/planner.md",
+    systemPromptPath: "planner.md",
     allowedTools: ["Read", "Grep", "Glob", "Bash", "WebFetch"],
     permissionMode: "plan",
   },
   critic: {
     name: "critic",
     modelEnvVar: "reviewAgent",
-    systemPromptPath: "prompts/critic.md",
+    systemPromptPath: "critic.md",
     allowedTools: ["Read", "Grep", "Glob"],
     permissionMode: "plan",
   },
   assessor: {
     name: "assessor",
     modelEnvVar: "planningAgent",
-    systemPromptPath: "prompts/assessor.md",
+    systemPromptPath: "assessor.md",
     allowedTools: ["Read", "Grep"],
     permissionMode: "plan",
   },
   refiner: {
     name: "refiner",
     modelEnvVar: "planningAgent",
-    systemPromptPath: "prompts/refiner.md",
+    systemPromptPath: "refiner.md",
     allowedTools: ["Read", "Grep"],
     permissionMode: "plan",
   },
   executor: {
     name: "executor",
     modelEnvVar: "executionAgent",
-    systemPromptPath: "prompts/executor.md",
+    systemPromptPath: "executor.md",
     allowedTools: ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
     permissionMode: "acceptEdits",
   },
   reviewer: {
     name: "reviewer",
     modelEnvVar: "reviewAgent",
-    systemPromptPath: "prompts/reviewer.md",
+    systemPromptPath: "reviewer.md",
     allowedTools: ["Read", "Grep", "Glob", "Bash"],
     permissionMode: "plan",
   },
   prwriter: {
     name: "prwriter",
     modelEnvVar: "reviewAgent",
-    systemPromptPath: "prompts/prwriter.md",
+    systemPromptPath: "prwriter.md",
     allowedTools: ["Read", "Grep", "Glob", "Bash"],
     permissionMode: "plan",
   },
   screener: {
     name: "screener",
     modelEnvVar: "eligibilityAgent",
-    systemPromptPath: "prompts/screener.md",
+    systemPromptPath: "screener.md",
     allowedTools: ["Read", "Grep"],
     permissionMode: "plan",
   },
   issuewriter: {
     name: "issuewriter",
     modelEnvVar: "issueWriterAgent",
-    systemPromptPath: "prompts/issuewriter.md",
+    systemPromptPath: "issuewriter.md",
     allowedTools: ["Read", "Grep", "Glob"],
     permissionMode: "plan",
   },

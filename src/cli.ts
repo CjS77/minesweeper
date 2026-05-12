@@ -10,7 +10,7 @@ import { createLogger, event, getActiveLogger } from "./logging.js";
 import { createSupervisor, defaultSpawnChild, runPollLoop, type Schedule, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
 import { parseHandleArg, parseIssueArg } from "./handleArg.js";
-import { runConfigInitCommand, runConfigShowCommand } from "./commands/config.js";
+import { runConfigInitCommand, runConfigPromptsCommand, runConfigShowCommand } from "./commands/config.js";
 import { runIssueListCommand, runIssueNewCommand } from "./commands/issues.js";
 import { runLabelsCommand } from "./commands/labels.js";
 import { runLogViewCommand } from "./commands/log.js";
@@ -34,7 +34,14 @@ program
     createLogger({ quiet: Boolean(opts.quiet) });
   });
 
-const LOGGER_FREE_COMMANDS = new Set(["models", "log view", "issue list", "config init", "config show"]);
+const LOGGER_FREE_COMMANDS = new Set([
+  "models",
+  "log view",
+  "issue list",
+  "config init",
+  "config show",
+  "config prompts",
+]);
 
 // Emits a single "config loaded" line for each command that runs with an
 // active logger. The `preAction` hook above guarantees the logger is up
@@ -180,6 +187,14 @@ config
     runConfigShowCommand({ cwd: process.cwd() });
   });
 
+config
+  .command("prompts")
+  .description("Copy bundled role prompts to .minesweeper/prompts/ and point the config at them.")
+  .option("-f, --force", "overwrite the prompts directory if it already contains files")
+  .action((opts: { force?: boolean }) => {
+    runConfigPromptsCommand({ cwd: process.cwd(), force: Boolean(opts.force) });
+  });
+
 program.parseAsync(process.argv).catch(handleFatal);
 
 async function handleFatal(err: unknown): Promise<never> {
@@ -212,7 +227,7 @@ async function runDaemon(): Promise<void> {
     repoRoot,
     worktreesRoot,
     archiveRoot,
-    spawnChild: defaultSpawnChild({ childScript }),
+    spawnChild: defaultSpawnChild({ childScript, repoRoot }),
   });
 
   await recoverOrphans(supervisor, worktreesRoot);

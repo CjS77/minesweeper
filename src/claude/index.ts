@@ -5,10 +5,19 @@ import { query as defaultQuery, type Options as SdkOptions, type SDKMessage } fr
 
 import type { Config } from "../config.js";
 import { event as defaultEvent, type Logger } from "../logging.js";
-import { getRole, modelFor, type Role, type RoleName } from "./roles.js";
+import { BUNDLED_PROMPTS_ROOT, getRole, modelFor, type Role, type RoleName } from "./roles.js";
 import { openTranscript } from "./transcript.js";
 
-export { ROLES, ROLE_NAMES, getRole, modelFor, type Role, type RoleName, type RolePermissionMode } from "./roles.js";
+export {
+  BUNDLED_PROMPTS_ROOT,
+  ROLES,
+  ROLE_NAMES,
+  getRole,
+  modelFor,
+  type Role,
+  type RoleName,
+  type RolePermissionMode,
+} from "./roles.js";
 export {
   openTranscript,
   transcriptPathFor,
@@ -40,9 +49,10 @@ export interface RunSubagentOptions {
   /** Working directory for the SDK and transcript. Defaults to process.cwd(). */
   cwd?: string;
   /**
-   * Where to look up role prompts. Defaults to `cwd`. In production both
-   * point at the worktree (which contains the `prompts/` directory committed
-   * to the repo); tests override `promptRoot` to point at a fixture dir.
+   * Where to look up role prompts. When omitted, falls back to
+   * `config.customPromptsPath` if set, otherwise to {@link BUNDLED_PROMPTS_ROOT}
+   * (the `prompts/` dir shipped inside the npm package). Tests pass an
+   * explicit fixture dir.
    */
   promptRoot?: string;
   /** Override the SDK `query` (tests). */
@@ -72,7 +82,7 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
   const role = getRole(opts.role);
   const iteration = opts.iteration ?? 1;
   const cwd = opts.cwd ?? process.cwd();
-  const promptRoot = opts.promptRoot ?? cwd;
+  const promptRoot = opts.promptRoot ?? opts.config.customPromptsPath ?? BUNDLED_PROMPTS_ROOT;
   const emit = opts.emit ?? defaultEvent;
   const queryFn = opts.queryFn ?? defaultQuery;
 

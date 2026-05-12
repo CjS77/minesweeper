@@ -82,6 +82,16 @@ export const ConfigSchema = z.object({
   pollCooldownSeconds: z.number().int().min(0),
   pollCooldownMs: z.number().int().min(0),
   maxConcurrency: z.number().int().min(1),
+  /**
+   * Absolute path to a directory of override role prompts. When unset the
+   * SDK wrapper falls back to the bundled prompts shipped inside the npm
+   * package (see `BUNDLED_PROMPTS_ROOT` in `src/claude/roles.ts`). Populated
+   * by `minesweeper config prompts`, which copies the bundled prompts into
+   * `<cwd>/.minesweeper/prompts/` and writes the resulting absolute path
+   * here. Stored as an absolute path so it survives the daemon → child
+   * (worktree cwd) transition.
+   */
+  customPromptsPath: z.string().min(1).optional(),
   sources: z.record(z.string(), ConfigFieldSourceSchema).default({}),
 });
 
@@ -195,6 +205,28 @@ function readString(
   if (repoVal !== undefined) return { value: repoVal, source: "repo-config" };
   if (fileVal !== undefined) return { value: fileVal, source: "config-file" };
   return { value: defaultVal, source: "default" };
+}
+
+/**
+ * Resolver for an optional string with no built-in default. Returns
+ * `undefined` (sourced as `"default"`) when no layer supplies a value, so the
+ * field stays absent on the resulting `Config` rather than being coerced to
+ * an empty string.
+ */
+function readOptionalString(
+  env: Env,
+  name: string,
+  repoVal: string | undefined,
+  fileVal: string | undefined,
+): Resolved<string | undefined> {
+  const raw = env[name];
+  if (raw !== undefined) {
+    if (raw.length === 0) throw new ConfigError(name, "expected a non-empty string");
+    return { value: raw, source: "envar" };
+  }
+  if (repoVal !== undefined) return { value: repoVal, source: "repo-config" };
+  if (fileVal !== undefined) return { value: fileVal, source: "config-file" };
+  return { value: undefined, source: "default" };
 }
 
 /**
@@ -433,6 +465,12 @@ export function loadConfig(
       120,
     ),
     maxConcurrency: readInt(env, "MINESWEEPER_MAX_CONCURRENCY", 1, repoFile.maxConcurrency, file.maxConcurrency, 1),
+    customPromptsPath: readOptionalString(
+      env,
+      "MINESWEEPER_CUSTOM_PROMPTS_PATH",
+      repoFile.customPromptsPath,
+      file.customPromptsPath,
+    ),
   };
 
   const entries = Object.entries(resolved);

@@ -5,8 +5,14 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { BUNDLED_PROMPTS_ROOT, ROLES } from "../../claude/roles.js";
 import { ConfigFileSchema } from "../../config.js";
-import { buildDefaultConfigFile, runConfigInitCommand, runConfigShowCommand } from "../config.js";
+import {
+  buildDefaultConfigFile,
+  runConfigInitCommand,
+  runConfigPromptsCommand,
+  runConfigShowCommand,
+} from "../config.js";
 
 const ESC = String.fromCharCode(0x1b);
 const ANSI = new RegExp(`${ESC}\\[[0-9;]*m`, "g");
@@ -106,6 +112,65 @@ describe("runConfigInitCommand", () => {
     runConfigInitCommand({ cwd: tmp, force: true, stdout: stream });
     const written = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     expect(written.alwaysFixLabel).toBe("autofix");
+  });
+});
+
+describe("runConfigPromptsCommand", () => {
+  it("copies every bundled role prompt into <cwd>/.minesweeper/prompts/", () => {
+    const { stream } = makeStdout();
+    const result = runConfigPromptsCommand({ cwd: tmp, stdout: stream });
+    expect(result.skipped).toBeUndefined();
+    expect(result.promptsDir).toBe(join(tmp, ".minesweeper", "prompts"));
+
+    for (const role of Object.values(ROLES)) {
+      const copied = readFileSync(join(result.promptsDir, role.systemPromptPath), "utf8");
+      const bundled = readFileSync(join(BUNDLED_PROMPTS_ROOT, role.systemPromptPath), "utf8");
+      expect(copied).toBe(bundled);
+    }
+  });
+
+  it("writes customPromptsPath into the per-repo config (creating the file if missing)", () => {
+    const { stream } = makeStdout();
+    const result = runConfigPromptsCommand({ cwd: tmp, stdout: stream });
+    const written = JSON.parse(readFileSync(result.configPath, "utf8")) as Record<string, unknown>;
+    expect(written.customPromptsPath).toBe(result.promptsDir);
+  });
+
+  it("preserves other keys in an existing config file", () => {
+    mkdirSync(join(tmp, ".minesweeper"), { recursive: true });
+    const configPath = join(tmp, ".minesweeper", "config.json");
+    writeFileSync(configPath, '{"alwaysFixLabel":"keepme","maxConcurrency":4}\n');
+
+    const { stream } = makeStdout();
+    runConfigPromptsCommand({ cwd: tmp, stdout: stream });
+    const merged = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    expect(merged.alwaysFixLabel).toBe("keepme");
+    expect(merged.maxConcurrency).toBe(4);
+    expect(merged.customPromptsPath).toBe(join(tmp, ".minesweeper", "prompts"));
+  });
+
+  it("refuses to overwrite a populated prompts dir without --force", () => {
+    const promptsDir = join(tmp, ".minesweeper", "prompts");
+    mkdirSync(promptsDir, { recursive: true });
+    writeFileSync(join(promptsDir, "planner.md"), "# my custom prompt\n");
+
+    const { stream, text } = makeStdout();
+    const result = runConfigPromptsCommand({ cwd: tmp, stdout: stream });
+    expect(result.skipped).toBe(true);
+    expect(readFileSync(join(promptsDir, "planner.md"), "utf8")).toBe("# my custom prompt\n");
+    expect(strip(text())).toMatch(/already contains files/);
+  });
+
+  it("overwrites with --force", () => {
+    const promptsDir = join(tmp, ".minesweeper", "prompts");
+    mkdirSync(promptsDir, { recursive: true });
+    writeFileSync(join(promptsDir, "planner.md"), "# stale\n");
+
+    const { stream } = makeStdout();
+    runConfigPromptsCommand({ cwd: tmp, force: true, stdout: stream });
+    expect(readFileSync(join(promptsDir, "planner.md"), "utf8")).toBe(
+      readFileSync(join(BUNDLED_PROMPTS_ROOT, "planner.md"), "utf8"),
+    );
   });
 });
 
