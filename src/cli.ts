@@ -10,6 +10,7 @@ import { createLogger, event, getActiveLogger } from "./logging.js";
 import { createSupervisor, defaultSpawnChild, runPollLoop, type Schedule, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
 import { parseHandleArg, parseIssueArg } from "./handleArg.js";
+import { runConfigInitCommand, runConfigShowCommand } from "./commands/config.js";
 import { runIssueListCommand, runIssueNewCommand } from "./commands/issues.js";
 import { runLabelsCommand } from "./commands/labels.js";
 import { runLogViewCommand } from "./commands/log.js";
@@ -32,7 +33,7 @@ program
     createLogger({ quiet: Boolean(opts.quiet) });
   });
 
-const LOGGER_FREE_COMMANDS = new Set(["models", "log view", "issue list"]);
+const LOGGER_FREE_COMMANDS = new Set(["models", "log view", "issue list", "config init", "config show"]);
 
 // Emits a single "config loaded" line for each command that runs with an
 // active logger. The `preAction` hook above guarantees the logger is up
@@ -159,6 +160,23 @@ issue
       autoConfirm: Boolean(opts.yes),
       addAutoFixLabel: opts.autofix !== false,
     });
+  });
+
+const config = program.command("config").description("Manage Minesweeper's per-repo configuration file.");
+
+config
+  .command("init")
+  .description("Write a default config file at <cwd>/.minesweeper/config.json.")
+  .option("-f, --force", "overwrite the file if it already exists")
+  .action((opts: { force?: boolean }) => {
+    runConfigInitCommand({ cwd: process.cwd(), force: Boolean(opts.force) });
+  });
+
+config
+  .command("show")
+  .description("Print the current per-repo config file at <cwd>/.minesweeper/config.json.")
+  .action(() => {
+    runConfigShowCommand({ cwd: process.cwd() });
   });
 
 program.parseAsync(process.argv).catch(handleFatal);
