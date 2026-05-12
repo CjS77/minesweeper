@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Config } from "../../config.js";
-import type { Issue } from "../../github/index.js";
+import type { CodeScanningAlert, Issue } from "../../github/index.js";
 import type { SubagentResult } from "../../claude/index.js";
 import { initState, readState } from "../state.js";
 import { FINAL_PLAN_FILE, parseSubTasks, runRefine, type RunSubagentFn } from "../modes/refine.js";
@@ -311,5 +311,55 @@ describe("runRefine", () => {
       }),
     ).rejects.toThrow(/final_plan\.md not found/);
     expect(runSubagent).not.toHaveBeenCalled();
+  });
+
+  it("dispatches on state.kind to gh.getCodeScanningAlert and skips the parent-checklist comment", async () => {
+    await initState(tmp, "Refine", {
+      kind: "codeScanningAlert",
+      issueNumber: 7,
+      branchName: "minesweeper-codeScanningAlert0007",
+      maxIterations: 1,
+    });
+    const state = await readState(tmp);
+    const alert: CodeScanningAlert = {
+      number: 7,
+      state: "open",
+      html_url: "https://github.com/example/repo/security/code-scanning/7",
+      created_at: "2026-05-01T00:00:00Z",
+      rule: { id: "js/zipslip", severity: "error", name: "js/zipslip" },
+    };
+    const getIssue = vi.fn();
+    const getCodeScanningAlert = vi.fn(async () => alert);
+    const getSecretScanningAlert = vi.fn();
+    const queued = [
+      { number: 100, url: "https://github.com/example/repo/issues/100" },
+      { number: 101, url: "https://github.com/example/repo/issues/101" },
+    ];
+    const createIssue = vi.fn(async () => queued.shift()!);
+    const comment = vi.fn();
+    const runSubagent = vi.fn<RunSubagentFn>(async () => fakeResult(REFINER_OUTPUT));
+
+    await runRefine({
+      config: FAKE_CONFIG,
+      cwd: tmp,
+      state,
+      github: { getIssue, getCodeScanningAlert, getSecretScanningAlert, createIssue, comment },
+      runSubagent,
+      emit: vi.fn(),
+    });
+
+    expect(getCodeScanningAlert).toHaveBeenCalledTimes(1);
+    expect(getCodeScanningAlert).toHaveBeenCalledWith(7, { cwd: tmp });
+    expect(getIssue).not.toHaveBeenCalled();
+    expect(getSecretScanningAlert).not.toHaveBeenCalled();
+
+    expect(createIssue).toHaveBeenCalledTimes(2);
+    const firstArgs = createIssue.mock.calls[0]?.[0] as { body: string; labels?: readonly string[] };
+    expect(firstArgs.body).toContain("Refined from parent code-scanning alert #7");
+    // Alerts carry no labels, so only the base subtaskLabel is inherited.
+    expect(firstArgs.labels).toEqual(["subtask"]);
+
+    // The parent is an alert — `gh issue comment` would 404 on it, so the comment is skipped.
+    expect(comment).not.toHaveBeenCalled();
   });
 });

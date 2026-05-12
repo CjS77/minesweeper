@@ -39,12 +39,19 @@ import { join } from "node:path";
 
 import type { Config } from "../../config.js";
 import * as defaultGithub from "../../github/index.js";
-import type { Issue } from "../../github/index.js";
 import { event as defaultEvent, type Logger } from "../../logging.js";
 import { runSubagent as defaultRunSubagent } from "../../claude/index.js";
 import type { RunSubagentOptions, SubagentResult } from "../../claude/index.js";
 import * as defaultState from "../state.js";
 import type { State } from "../state.js";
+import {
+  asCodeScanningWorkItem,
+  asIssueWorkItem,
+  asSecretScanningWorkItem,
+  formatWorkItem,
+  workItemNumber,
+  type WorkItem,
+} from "../../workitem.js";
 
 /** Path (worktree-relative) the planning mode wrote the approved plan to. */
 export const FINAL_PLAN_FILE = join(".minesweeper", "final_plan.md");
@@ -76,7 +83,10 @@ export interface RefineDeps {
   /** State as just read from disk by the handler. */
   state: State;
   /** Override the GitHub wrapper (tests). */
-  github?: Pick<typeof defaultGithub, "getIssue" | "createIssue" | "comment">;
+  github?: Pick<
+    typeof defaultGithub,
+    "getIssue" | "getCodeScanningAlert" | "getSecretScanningAlert" | "createIssue" | "comment"
+  >;
   /** Override the subagent runner (tests). */
   runSubagent?: RunSubagentFn;
   /** Override the state writer (tests can wrap to assert call sequence). */
@@ -106,12 +116,12 @@ export async function runRefine(deps: RefineDeps): Promise<State> {
   emit("refiner", "WORK", issueNumber, "refining plan into sub-issues");
 
   const finalPlan = await readFinalPlan(join(cwd, FINAL_PLAN_FILE));
-  const issue = await gh.getIssue(issueNumber, { cwd });
+  const item = await fetchWorkItem(gh, state, cwd);
 
   const result = await runSubagent({
     role: "refiner",
     config,
-    userPrompt: refinerPromptFor(issue, finalPlan),
+    userPrompt: refinerPromptFor(item, finalPlan),
     issueNumber,
     iteration: 1,
     cwd,
@@ -126,10 +136,10 @@ export async function runRefine(deps: RefineDeps): Promise<State> {
 
   emit("refiner", "INFO", issueNumber, `parsed ${subTasks.length} sub-task(s) from refiner output`);
 
-  const inheritedLabels = inheritedLabelsFor(issue, config);
+  const inheritedLabels = inheritedLabelsFor(item, config);
   const created: CreatedSubIssue[] = [];
   for (const task of subTasks) {
-    const body = subIssueBody(issueNumber, task);
+    const body = subIssueBody(item, task);
     const subIssue = await gh.createIssue({
       title: task.title,
       body,
@@ -140,8 +150,19 @@ export async function runRefine(deps: RefineDeps): Promise<State> {
     created.push({ ...subIssue, title: task.title });
   }
 
-  await gh.comment(issueNumber, parentChecklistComment(created), { cwd });
-  emit("refiner", "OK", issueNumber, `commented parent issue with ${created.length}-item checklist`);
+  // `gh issue comment` only works on issues. Alert parents are linked back via each
+  // sub-issue body line instead, so skip the parent-checklist comment for them.
+  if (item.kind === "issue") {
+    await gh.comment(issueNumber, parentChecklistComment(created), { cwd });
+    emit("refiner", "OK", issueNumber, `commented parent issue with ${created.length}-item checklist`);
+  } else {
+    emit(
+      "refiner",
+      "INFO",
+      issueNumber,
+      `parent is a ${parentKindLabel(item)}; skipped parent-checklist comment (sub-issues link back via body)`,
+    );
+  }
 
   return writeState(cwd, {
     ...state,
@@ -162,9 +183,13 @@ async function readFinalPlan(path: string): Promise<string> {
 }
 
 /** Labels to apply to each new sub-issue. */
-function inheritedLabelsFor(parent: Issue, config: Config): string[] {
+function inheritedLabelsFor(parent: WorkItem, config: Config): string[] {
   const labels = new Set<string>();
   labels.add(config.subtaskLabel);
+  if (parent.kind !== "issue") {
+    // Alerts carry no GitHub-issue labels, so there is nothing extra to inherit.
+    return [...labels];
+  }
   const parentLabelNames = new Set(parent.labels.map((l) => l.name));
   if (parentLabelNames.has(config.alwaysFixLabel)) {
     labels.add(config.alwaysFixLabel);
@@ -175,9 +200,9 @@ function inheritedLabelsFor(parent: Issue, config: Config): string[] {
   return [...labels];
 }
 
-function subIssueBody(parentNumber: number, task: SubTask): string {
+function subIssueBody(parent: WorkItem, task: SubTask): string {
   return [
-    `Refined from parent issue #${parentNumber}.`,
+    `Refined from parent ${parentKindLabel(parent)} #${workItemNumber(parent)}.`,
     "",
     "## Description",
     "",
@@ -188,6 +213,17 @@ function subIssueBody(parentNumber: number, task: SubTask): string {
     task.recommendedPlan.length > 0 ? task.recommendedPlan : "(no recommended plan provided)",
     "",
   ].join("\n");
+}
+
+function parentKindLabel(item: WorkItem): string {
+  switch (item.kind) {
+    case "issue":
+      return "issue";
+    case "codeScanningAlert":
+      return "code-scanning alert";
+    case "secretScanningAlert":
+      return "secret-scanning alert";
+  }
 }
 
 function parentChecklistComment(created: readonly CreatedSubIssue[]): string {
@@ -242,9 +278,9 @@ function extractSubsection(body: string, name: string): string {
   return section.trim();
 }
 
-function refinerPromptFor(issue: Issue, plan: string): string {
+function refinerPromptFor(item: WorkItem, plan: string): string {
   return [
-    formatIssue(issue),
+    formatWorkItem(item),
     "",
     "# Approved plan",
     "",
@@ -254,24 +290,24 @@ function refinerPromptFor(issue: Issue, plan: string): string {
   ].join("\n");
 }
 
-function formatIssue(issue: Issue): string {
-  const labels = issue.labels.map((l) => l.name).join(", ") || "(none)";
-  const lines = [
-    `# GitHub issue #${issue.number}`,
-    `Title: ${issue.title}`,
-    `Author: ${issue.author.login}`,
-    `Labels: ${labels}`,
-    `URL: ${issue.url}`,
-    "",
-    "## Body",
-    "",
-    issue.body.length > 0 ? issue.body : "(empty body)",
-  ];
-  if (issue.comments && issue.comments.length > 0) {
-    lines.push("", "## Comments");
-    for (const c of issue.comments) {
-      lines.push("", `### ${c.author.login} — ${c.createdAt}`, "", c.body);
+/**
+ * Resolve the on-disk `state.kind` to a fresh GitHub fetch of the
+ * underlying work item. Mirrors the helper in `planning.ts` and
+ * `assess.ts` so refine sees the same canonical block as the planner.
+ */
+async function fetchWorkItem(gh: NonNullable<RefineDeps["github"]>, state: State, cwd: string): Promise<WorkItem> {
+  switch (state.kind) {
+    case "issue": {
+      const issue = await gh.getIssue(state.issueNumber, { cwd });
+      return asIssueWorkItem(issue);
+    }
+    case "codeScanningAlert": {
+      const alert = await gh.getCodeScanningAlert(state.issueNumber, { cwd });
+      return asCodeScanningWorkItem(alert);
+    }
+    case "secretScanningAlert": {
+      const alert = await gh.getSecretScanningAlert(state.issueNumber, { cwd });
+      return asSecretScanningWorkItem(alert);
     }
   }
-  return lines.join("\n");
 }
