@@ -107,7 +107,7 @@ describe("loadConfig", () => {
   });
 
   it("alertsEligible defaults to true when no env or file overrides it", () => {
-    const cfg = loadConfig({}, { configFile: null });
+    const cfg = loadConfig({}, { configFile: null, repoConfigFile: null });
     expect(cfg.alertsEligible).toBe(true);
     expect(cfg.sources["alertsEligible"]?.source).toBe("default");
   });
@@ -122,6 +122,31 @@ describe("loadConfig", () => {
     const withEnv = loadConfig({ MINESWEEPER_ALERTS_ELIGIBLE: "true" }, { configFile: globalPath, cwd: tmp });
     expect(withEnv.alertsEligible).toBe(true);
     expect(withEnv.sources["alertsEligible"]?.source).toBe("envar");
+  });
+
+  it("customPromptsPath is undefined when nothing sets it", () => {
+    const cfg = loadConfig({}, { configFile: null, repoConfigFile: null });
+    expect(cfg.customPromptsPath).toBeUndefined();
+    expect(cfg.sources["customPromptsPath"]?.source).toBe("default");
+  });
+
+  it("customPromptsPath honours MINESWEEPER_CUSTOM_PROMPTS_PATH", () => {
+    const cfg = loadConfig({ MINESWEEPER_CUSTOM_PROMPTS_PATH: "/abs/prompts" }, { configFile: null });
+    expect(cfg.customPromptsPath).toBe("/abs/prompts");
+    expect(cfg.sources["customPromptsPath"]?.source).toBe("envar");
+  });
+
+  it("customPromptsPath can be set via the per-repo config", () => {
+    writeRepoConfigFile(tmp, { customPromptsPath: "/from/repo" });
+    const cfg = loadConfig({}, { configFile: null, cwd: tmp });
+    expect(cfg.customPromptsPath).toBe("/from/repo");
+    expect(cfg.sources["customPromptsPath"]?.source).toBe("repo-config");
+  });
+
+  it("rejects empty MINESWEEPER_CUSTOM_PROMPTS_PATH", () => {
+    const err = captureError(() => loadConfig({ MINESWEEPER_CUSTOM_PROMPTS_PATH: "" }, { configFile: null }));
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).envVar).toBe("MINESWEEPER_CUSTOM_PROMPTS_PATH");
   });
 
   it("parses integer env vars", () => {
@@ -206,7 +231,7 @@ describe("loadConfig", () => {
       pollCooldownSeconds: 30,
       schedule: ["*/15 * * * *"],
     });
-    const cfg = loadConfig({}, { configFile: path });
+    const cfg = loadConfig({}, { configFile: path, repoConfigFile: null });
     expect(cfg.alwaysFixLabel).toBe("auto");
     expect(cfg.pollCooldownSeconds).toBe(30);
     expect(cfg.pollCooldownMs).toBe(30_000);
@@ -270,7 +295,7 @@ describe("loadConfig", () => {
     writeFileSync(fileA, JSON.stringify({ alwaysFixLabel: "from-A" }));
     const fileB = join(tmp, "b.json");
     writeFileSync(fileB, JSON.stringify({ alwaysFixLabel: "from-B" }));
-    const cfg = loadConfig({ MINESWEEPER_CONFIG_FILE: fileA }, { configFile: fileB });
+    const cfg = loadConfig({ MINESWEEPER_CONFIG_FILE: fileA }, { configFile: fileB, repoConfigFile: null });
     expect(cfg.alwaysFixLabel).toBe("from-A");
   });
 
@@ -401,11 +426,12 @@ const EXPECTED_SUMMARY_KEYS = [
   "schedule",
   "pollCooldownSeconds",
   "maxConcurrency",
+  "customPromptsPath",
 ] as const;
 
 describe("config.sources (provenance embedded in the resolved Config)", () => {
-  it("has all 22 non-derived keys with source 'default' when nothing is set", () => {
-    const cfg = loadConfig({}, { configFile: null });
+  it("has all 23 non-derived keys with source 'default' when nothing is set", () => {
+    const cfg = loadConfig({}, { configFile: null, repoConfigFile: null });
 
     expect(Object.keys(cfg.sources).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());
     for (const key of EXPECTED_SUMMARY_KEYS) {
@@ -417,7 +443,7 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
   });
 
   it("tags env-var-supplied fields as 'envar' and leaves the value at the top level", () => {
-    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null });
+    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, repoConfigFile: null });
     expect(cfg.alwaysFixLabel).toBe("from-env");
     expect(cfg.sources["alwaysFixLabel"]).toEqual<ConfigFieldSource>({ source: "envar", secret: false });
     expect(cfg.sources["tryFixLabel"]?.source).toBe("default");
@@ -425,7 +451,7 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
 
   it("tags config-file-supplied fields as 'config-file'", () => {
     const path = writeConfigFile({ tryFixLabel: "from-file", maxPlanningIterations: 9 });
-    const cfg = loadConfig({}, { configFile: path });
+    const cfg = loadConfig({}, { configFile: path, repoConfigFile: null });
     expect(cfg.tryFixLabel).toBe("from-file");
     expect(cfg.maxPlanningIterations).toBe(9);
     expect(cfg.sources["tryFixLabel"]).toEqual<ConfigFieldSource>({ source: "config-file", secret: false });
@@ -440,12 +466,12 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
   });
 
   it("resolves the schedule source correctly (no env-var counterpart)", () => {
-    const defaulted = loadConfig({}, { configFile: null });
+    const defaulted = loadConfig({}, { configFile: null, repoConfigFile: null });
     expect(defaulted.schedule).toEqual([]);
     expect(defaulted.sources["schedule"]?.source).toBe("default");
 
     const path = writeConfigFile({ schedule: ["*/15 * * * *"] });
-    const fromFile = loadConfig({}, { configFile: path });
+    const fromFile = loadConfig({}, { configFile: path, repoConfigFile: null });
     expect(fromFile.schedule).toEqual(["*/15 * * * *"]);
     expect(fromFile.sources["schedule"]?.source).toBe("config-file");
   });
@@ -515,7 +541,7 @@ describe("loadConfig + redactSecrets integration with the real logger", () => {
     const filePath = join(logTmp, "logs", "daemon.log");
     createLogger({ filePath, stdout, sync: true });
 
-    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null });
+    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, repoConfigFile: null });
     event("daemon", "INFO", null, "config loaded", { config: redactSecrets(cfg) });
 
     const records = readFileSync(filePath, "utf8")

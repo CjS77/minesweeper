@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { Config } from "../../config.js";
-import { ROLE_NAMES, ROLES, getRole, modelFor } from "../roles.js";
+import { BUNDLED_PROMPTS_ROOT, ROLE_NAMES, ROLES, getRole, modelFor } from "../roles.js";
 
 const FAKE_CONFIG: Config = {
   defaultEligible: false,
@@ -38,7 +38,7 @@ describe("ROLES registry", () => {
     for (const name of ROLE_NAMES) {
       const role = ROLES[name];
       expect(role.name).toBe(name);
-      expect(role.systemPromptPath).toBe(`prompts/${name}.md`);
+      expect(role.systemPromptPath).toBe(`${name}.md`);
       expect(role.allowedTools.length).toBeGreaterThan(0);
     }
   });
@@ -62,7 +62,7 @@ describe("ROLES registry", () => {
   });
 
   it("executor prompt names every CI gate so the prompt-content contract holds", () => {
-    const promptPath = resolve(process.cwd(), getRole("executor").systemPromptPath);
+    const promptPath = resolve(BUNDLED_PROMPTS_ROOT, getRole("executor").systemPromptPath);
     const content = readFileSync(promptPath, "utf-8");
     for (const needle of [
       "npm run typecheck",

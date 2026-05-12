@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
@@ -87,9 +87,7 @@ beforeEach(() => {
   tempCwd = mkdtempSync(join(tmpdir(), "minesweeper-runsub-"));
   promptRoot = mkdtempSync(join(tmpdir(), "minesweeper-prompts-"));
   for (const role of Object.values(ROLES)) {
-    const promptPath = join(promptRoot, role.systemPromptPath);
-    mkdirSync(dirname(promptPath), { recursive: true });
-    writeFileSync(promptPath, `# ${role.name} test prompt\n`, "utf8");
+    writeFileSync(join(promptRoot, role.systemPromptPath), `# ${role.name} test prompt\n`, "utf8");
   }
   mockedQuery.mockReset();
 });
@@ -253,5 +251,43 @@ describe("runSubagent", () => {
       .split("\n")
       .filter((l) => l.length > 0);
     expect(lines).toHaveLength(1);
+  });
+
+  it("falls back to the bundled prompts directory when promptRoot is not provided", async () => {
+    mockedQuery.mockReturnValue(makeStream([resultMessage("done")]) as never);
+
+    await runSubagent({
+      role: "planner",
+      config: FAKE_CONFIG,
+      userPrompt: "go",
+      issueNumber: 1,
+      cwd: tempCwd,
+      // intentionally no promptRoot and no customPromptsPath
+      emit: vi.fn(),
+    });
+
+    const [params] = mockedQuery.mock.calls[0]!;
+    const appended = (params.options?.systemPrompt as { append: string }).append;
+    // The bundled planner.md is a real, non-empty role prompt — assert it
+    // looks like one rather than the "# planner test prompt\n" sentinel the
+    // temp-dir fixture would have produced.
+    expect(appended.length).toBeGreaterThan(50);
+    expect(appended).not.toBe("# planner test prompt\n");
+  });
+
+  it("honours config.customPromptsPath when promptRoot is not provided", async () => {
+    mockedQuery.mockReturnValue(makeStream([resultMessage("done")]) as never);
+
+    await runSubagent({
+      role: "planner",
+      config: { ...FAKE_CONFIG, customPromptsPath: promptRoot },
+      userPrompt: "go",
+      issueNumber: 1,
+      cwd: tempCwd,
+      emit: vi.fn(),
+    });
+
+    const [params] = mockedQuery.mock.calls[0]!;
+    expect((params.options?.systemPrompt as { append: string }).append).toBe("# planner test prompt\n");
   });
 });

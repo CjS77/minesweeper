@@ -157,6 +157,15 @@ export interface Supervisor {
 export interface DefaultSpawnChildOptions {
   /** Absolute path to the compiled CLI script the child runs. */
   childScript: string;
+  /**
+   * Absolute path of the daemon's repo root. Used to point the child at the
+   * same per-repo config file the daemon resolved — without this, the child
+   * (whose cwd is a worktree under `MINESWEEPER_WORKTREE_PATH`) would look
+   * for `.minesweeper/config.json` in the worktree and miss every per-repo
+   * override the operator set. Forwarded as `MINESWEEPER_REPO_CONFIG_FILE`,
+   * but only as a default — an explicit env var on the parent wins.
+   */
+  repoRoot: string;
 }
 
 /**
@@ -172,6 +181,13 @@ export interface DefaultSpawnChildOptions {
  * between the success and failure paths.
  */
 export function defaultSpawnChild(opts: DefaultSpawnChildOptions): SpawnChild {
+  // Default repo-config pointer: spread `process.env` *after* it so a value
+  // already set on the parent (e.g. operator `MINESWEEPER_REPO_CONFIG_FILE=…`)
+  // wins; the daemon-derived path is only the fallback.
+  const childEnv: NodeJS.ProcessEnv = {
+    MINESWEEPER_REPO_CONFIG_FILE: join(opts.repoRoot, ".minesweeper", "config.json"),
+    ...process.env,
+  };
   return ({ issueNumber, worktreePath, kind = "issue" }: SpawnChildOptions): ChildHandle => {
     const arg = kind === "issue" ? String(issueNumber) : `${kind}/${issueNumber}`;
     const sub = execaNode(opts.childScript, ["handle", arg], {
@@ -179,6 +195,7 @@ export function defaultSpawnChild(opts: DefaultSpawnChildOptions): SpawnChild {
       stdio: "inherit",
       detached: false,
       reject: false,
+      env: childEnv,
     });
     const exit = sub.then(
       (r) => r.exitCode ?? FAILED_EXIT_CODE,
@@ -245,7 +262,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const loadCodeownerLogins = deps.loadCodeownerLogins ?? defaultLoadCodeownerLogins;
   const pollPrFeedbackFn = deps.pollPrFeedback ?? defaultPollPrFeedback;
   const exists = deps.pathExists ?? pathExistsImpl;
-  const spawn = deps.spawnChild ?? defaultSpawnChild({ childScript: requiredChildScript() });
+  const spawn = deps.spawnChild ?? defaultSpawnChild({ childScript: requiredChildScript(), repoRoot: deps.repoRoot });
 
   const queue: QueueEntry[] = [];
   const inflight = new Map<string, InFlight>();

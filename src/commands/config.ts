@@ -10,13 +10,19 @@
  *   `src/config.ts` without a parallel list. Refuses to overwrite an
  *   existing file unless `force: true` is set.
  * - `show` reads and prints that same file as-is. Read-only.
+ * - `prompts` copies the bundled role prompts into
+ *   `<cwd>/.minesweeper/prompts/` so the operator can edit them, then
+ *   merges `customPromptsPath: <absolute dir>` into the per-repo config
+ *   file. Refuses to overwrite an already-populated prompts dir unless
+ *   `force: true`.
  */
 
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 import chalk from "chalk";
 
+import { BUNDLED_PROMPTS_ROOT, ROLES } from "../claude/roles.js";
 import { loadConfig } from "../config.js";
 
 /** Fields populated by the loader; not valid keys in the on-disk file. */
@@ -46,6 +52,22 @@ export interface RunConfigShowResult {
   path: string;
   /** True when the file does not exist. */
   missing?: boolean;
+}
+
+export interface RunConfigPromptsOptions {
+  cwd?: string;
+  /** Overwrite the prompts directory if it already contains files. */
+  force?: boolean;
+  stdout?: NodeJS.WritableStream;
+}
+
+export interface RunConfigPromptsResult {
+  /** Absolute path of the prompts directory that was (or would be) populated. */
+  promptsDir: string;
+  /** Absolute path of the per-repo config file that was updated. */
+  configPath: string;
+  /** True when the prompts dir already had files and `force` was not set. */
+  skipped?: boolean;
 }
 
 function repoConfigPath(cwd: string): string {
@@ -103,6 +125,67 @@ export function runConfigShowCommand(opts: RunConfigShowOptions = {}): RunConfig
   stdout.write(`${chalk.dim(`# ${path}`)}\n`);
   stdout.write(raw.endsWith("\n") ? raw : `${raw}\n`);
   return { path };
+}
+
+/**
+ * Copy the bundled role prompts into `<cwd>/.minesweeper/prompts/` and record
+ * the absolute path as `customPromptsPath` in the per-repo config. Idempotent
+ * with `force: true`; refuses to clobber an already-populated prompts dir
+ * otherwise.
+ */
+export function runConfigPromptsCommand(opts: RunConfigPromptsOptions = {}): RunConfigPromptsResult {
+  const cwd = opts.cwd ?? process.cwd();
+  const stdout = opts.stdout ?? process.stdout;
+  const promptsDir = resolve(cwd, ".minesweeper", "prompts");
+  const configPath = repoConfigPath(cwd);
+
+  if (!opts.force && dirHasFiles(promptsDir)) {
+    stdout.write(
+      `${chalk.yellow("config prompts:")} ${promptsDir} already contains files — pass --force to overwrite\n`,
+    );
+    return { promptsDir, configPath, skipped: true };
+  }
+
+  mkdirSync(promptsDir, { recursive: true });
+  const copied = copyBundledPrompts(promptsDir);
+  const updated = mergeCustomPromptsPath(configPath, promptsDir);
+
+  stdout.write(
+    `${chalk.green("config prompts:")} copied ${copied} prompt${copied === 1 ? "" : "s"} to ${promptsDir}\n`,
+  );
+  stdout.write(`${chalk.green("config prompts:")} ${updated ? "updated" : "wrote"} ${configPath}\n`);
+  return { promptsDir, configPath };
+}
+
+/** Copy each role's bundled prompt file into `targetDir`. Returns the count copied. */
+function copyBundledPrompts(targetDir: string): number {
+  return Object.values(ROLES).reduce((count, role) => {
+    copyFileSync(join(BUNDLED_PROMPTS_ROOT, role.systemPromptPath), join(targetDir, role.systemPromptPath));
+    return count + 1;
+  }, 0);
+}
+
+/**
+ * Merge `customPromptsPath` into the existing per-repo config file (or create
+ * it). Returns `true` if the file already existed. The merge preserves any
+ * other keys the user has set rather than overwriting the file wholesale.
+ */
+function mergeCustomPromptsPath(configPath: string, promptsDir: string): boolean {
+  const existed = pathExists(configPath);
+  const current = existed ? (JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>) : {};
+  const merged = { ...current, customPromptsPath: promptsDir };
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  return existed;
+}
+
+function dirHasFiles(path: string): boolean {
+  try {
+    return readdirSync(path).length > 0;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
+  }
 }
 
 function pathExists(path: string): boolean {
