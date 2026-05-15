@@ -87,15 +87,55 @@ export function sanitiseBranchName(input: string): string {
 
 /**
  * Create a new worktree at `worktreesRoot/<sanitised-branch>` with a freshly created
- * branch checked out (`git worktree add -b`). Fails if the branch already exists — picking a
- * non-colliding name is the caller's responsibility (plan 07 uses `{repo-slug}-issue{N}`).
+ * branch checked out (`git worktree add -b`).
+ *
+ * Self-heals from a stale branch left behind by a previous run whose worktree directory
+ * was removed but whose `git branch -D` step never ran (e.g. the daemon was killed during
+ * teardown, or `removeWorktree` failed after deleting the dir). If the per-issue branch
+ * already exists *and* no live worktree is using it, the branch is force-deleted and the
+ * worktree creation is retried — otherwise the original git error is propagated so two
+ * concurrent dispatches cannot fight over a checked-out branch.
  */
 export async function addWorktree(opts: AddWorktreeOptions): Promise<AddedWorktree> {
   const branch = sanitiseBranchName(opts.branchName);
   const path = join(opts.worktreesRoot, branch);
   await fs.mkdir(opts.worktreesRoot, { recursive: true });
-  await execa("git", ["worktree", "add", "-b", branch, path], { cwd: opts.repoRoot });
-  return { path, branch };
+
+  const first = await execa("git", ["worktree", "add", "-b", branch, path], {
+    cwd: opts.repoRoot,
+    reject: false,
+  });
+  if (first.exitCode === 0) return { path, branch };
+
+  if (isBranchAlreadyExistsError(first.stderr, branch) && !(await isBranchCheckedOut(opts.repoRoot, branch))) {
+    await execa("git", ["branch", "-D", branch], { cwd: opts.repoRoot });
+    await execa("git", ["worktree", "add", "-b", branch, path], { cwd: opts.repoRoot });
+    return { path, branch };
+  }
+
+  throw new Error(
+    `git worktree add -b ${branch} ${path} failed (exit ${first.exitCode ?? "?"}): ${first.stderr.trim()}`,
+  );
+}
+
+function isBranchAlreadyExistsError(stderr: string, branch: string): boolean {
+  // git: "fatal: a branch named 'foo' already exists"
+  return new RegExp(`a branch named '${escapeRegExp(branch)}' already exists`, "i").test(stderr);
+}
+
+/**
+ * True iff the branch is currently checked out in any worktree of `repoRoot`. Uses
+ * `git worktree list --porcelain`, whose per-worktree blocks include a line
+ * `branch refs/heads/<name>` for non-detached worktrees.
+ */
+async function isBranchCheckedOut(repoRoot: string, branch: string): Promise<boolean> {
+  const { stdout } = await execa("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
+  const needle = `branch refs/heads/${branch}`;
+  return stdout.split(/\r?\n/).some((line) => line.trim() === needle);
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
