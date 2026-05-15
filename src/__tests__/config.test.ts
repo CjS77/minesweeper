@@ -12,6 +12,7 @@ import {
   SECRET_NAME_RE,
   type Config,
   type ConfigFieldSource,
+  type Env,
 } from "../config.js";
 import { createLogger, event, resetLoggerForTest } from "../logging.js";
 
@@ -44,9 +45,30 @@ function writeRepoConfigFile(repoDir: string, contents: unknown): string {
   return path;
 }
 
+/**
+ * `loadConfig` wrapper that prepares a pristine environment. Both on-disk
+ * layers are skipped by default via the `null` sentinel, so the suite never
+ * reads the real project's `~/.minesweeper/config.json` or
+ * `<cwd>/.minesweeper/config.json` — editing Minesweeper's own production
+ * config must not change test outcomes. A test that exercises a file layer
+ * passes an explicit `configFile` / `repoConfigFile` in `opts`, which wins
+ * over the default. Passing `cwd` opts the repo-config layer back in (the
+ * temp dir a test points at is itself pristine).
+ */
+function loadConfigIsolated(
+  env: Env = {},
+  opts: { configFile?: string | null; repoConfigFile?: string | null; cwd?: string } = {},
+): Config {
+  return loadConfig(env, {
+    configFile: null,
+    ...(opts.cwd === undefined ? { repoConfigFile: null } : {}),
+    ...opts,
+  });
+}
+
 describe("loadConfig", () => {
   it("returns the documented defaults when no env vars are set", () => {
-    const cfg = loadConfig({}, { configFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: null });
     expect(cfg).toMatchObject({
       defaultEligible: false,
       alertsEligible: true,
@@ -78,7 +100,7 @@ describe("loadConfig", () => {
   });
 
   it("ignores irrelevant env vars", () => {
-    const cfg = loadConfig({ HOME: "/root", PATH: "/usr/bin" }, { configFile: null });
+    const cfg = loadConfigIsolated({ HOME: "/root", PATH: "/usr/bin" }, { configFile: null });
     expect(cfg.defaultEligible).toBe(false);
     expect(cfg.alwaysFixLabel).toBe("autofix");
   });
@@ -94,7 +116,9 @@ describe("loadConfig", () => {
     ["No", false],
     ["off", false],
   ])("parses MINESWEEPER_DEFAULT_ELIGIBLE=%s as %s", (raw, expected) => {
-    expect(loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: raw }, { configFile: null }).defaultEligible).toBe(expected);
+    expect(loadConfigIsolated({ MINESWEEPER_DEFAULT_ELIGIBLE: raw }, { configFile: null }).defaultEligible).toBe(
+      expected,
+    );
   });
 
   it.each([
@@ -103,11 +127,13 @@ describe("loadConfig", () => {
     ["1", true],
     ["0", false],
   ])("parses MINESWEEPER_ALERTS_ELIGIBLE=%s as %s", (raw, expected) => {
-    expect(loadConfig({ MINESWEEPER_ALERTS_ELIGIBLE: raw }, { configFile: null }).alertsEligible).toBe(expected);
+    expect(loadConfigIsolated({ MINESWEEPER_ALERTS_ELIGIBLE: raw }, { configFile: null }).alertsEligible).toBe(
+      expected,
+    );
   });
 
   it("alertsEligible defaults to true when no env or file overrides it", () => {
-    const cfg = loadConfig({}, { configFile: null, repoConfigFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: null, repoConfigFile: null });
     expect(cfg.alertsEligible).toBe(true);
     expect(cfg.sources["alertsEligible"]?.source).toBe("default");
   });
@@ -115,42 +141,42 @@ describe("loadConfig", () => {
   it("alertsEligible repo-config overrides global file but loses to envar", () => {
     const globalPath = writeConfigFile({ alertsEligible: true });
     writeRepoConfigFile(tmp, { alertsEligible: false });
-    const repoOnly = loadConfig({}, { configFile: globalPath, cwd: tmp });
+    const repoOnly = loadConfigIsolated({}, { configFile: globalPath, cwd: tmp });
     expect(repoOnly.alertsEligible).toBe(false);
     expect(repoOnly.sources["alertsEligible"]?.source).toBe("repo-config");
 
-    const withEnv = loadConfig({ MINESWEEPER_ALERTS_ELIGIBLE: "true" }, { configFile: globalPath, cwd: tmp });
+    const withEnv = loadConfigIsolated({ MINESWEEPER_ALERTS_ELIGIBLE: "true" }, { configFile: globalPath, cwd: tmp });
     expect(withEnv.alertsEligible).toBe(true);
     expect(withEnv.sources["alertsEligible"]?.source).toBe("envar");
   });
 
   it("customPromptsPath is undefined when nothing sets it", () => {
-    const cfg = loadConfig({}, { configFile: null, repoConfigFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: null, repoConfigFile: null });
     expect(cfg.customPromptsPath).toBeUndefined();
     expect(cfg.sources["customPromptsPath"]?.source).toBe("default");
   });
 
   it("customPromptsPath honours MINESWEEPER_CUSTOM_PROMPTS_PATH", () => {
-    const cfg = loadConfig({ MINESWEEPER_CUSTOM_PROMPTS_PATH: "/abs/prompts" }, { configFile: null });
+    const cfg = loadConfigIsolated({ MINESWEEPER_CUSTOM_PROMPTS_PATH: "/abs/prompts" }, { configFile: null });
     expect(cfg.customPromptsPath).toBe("/abs/prompts");
     expect(cfg.sources["customPromptsPath"]?.source).toBe("envar");
   });
 
   it("customPromptsPath can be set via the per-repo config", () => {
     writeRepoConfigFile(tmp, { customPromptsPath: "/from/repo" });
-    const cfg = loadConfig({}, { configFile: null, cwd: tmp });
+    const cfg = loadConfigIsolated({}, { configFile: null, cwd: tmp });
     expect(cfg.customPromptsPath).toBe("/from/repo");
     expect(cfg.sources["customPromptsPath"]?.source).toBe("repo-config");
   });
 
   it("rejects empty MINESWEEPER_CUSTOM_PROMPTS_PATH", () => {
-    const err = captureError(() => loadConfig({ MINESWEEPER_CUSTOM_PROMPTS_PATH: "" }, { configFile: null }));
+    const err = captureError(() => loadConfigIsolated({ MINESWEEPER_CUSTOM_PROMPTS_PATH: "" }, { configFile: null }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_CUSTOM_PROMPTS_PATH");
   });
 
   it("parses integer env vars", () => {
-    const cfg = loadConfig(
+    const cfg = loadConfigIsolated(
       {
         MINESWEEPER_MAX_PLANNING_ITERATIONS: "10",
         MINESWEEPER_MAX_REVIEW_ROUNDS: "7",
@@ -167,7 +193,7 @@ describe("loadConfig", () => {
   });
 
   it("overrides string env vars", () => {
-    const cfg = loadConfig(
+    const cfg = loadConfigIsolated(
       {
         MINESWEEPER_ALWAYS_FIX_LABEL: "🔧",
         MINESWEEPER_PLANNING_AGENT: "sonnet",
@@ -183,7 +209,9 @@ describe("loadConfig", () => {
   });
 
   it("rejects non-integer values and points at the offending var", () => {
-    const err = captureError(() => loadConfig({ MINESWEEPER_MAX_PLANNING_ITERATIONS: "foo" }, { configFile: null }));
+    const err = captureError(() =>
+      loadConfigIsolated({ MINESWEEPER_MAX_PLANNING_ITERATIONS: "foo" }, { configFile: null }),
+    );
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_MAX_PLANNING_ITERATIONS");
     expect(err.message).toMatch(/MINESWEEPER_MAX_PLANNING_ITERATIONS/);
@@ -191,36 +219,38 @@ describe("loadConfig", () => {
   });
 
   it("rejects integers below the documented minimum", () => {
-    const err = captureError(() => loadConfig({ MINESWEEPER_POLL_INTERVAL_SECONDS: "10" }, { configFile: null }));
+    const err = captureError(() =>
+      loadConfigIsolated({ MINESWEEPER_POLL_INTERVAL_SECONDS: "10" }, { configFile: null }),
+    );
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_POLL_INTERVAL_SECONDS");
     expect(err.message).toMatch(/>= 30/);
   });
 
   it("rejects fractional integers", () => {
-    const err = captureError(() => loadConfig({ MINESWEEPER_MAX_REVIEW_ROUNDS: "2.5" }, { configFile: null }));
+    const err = captureError(() => loadConfigIsolated({ MINESWEEPER_MAX_REVIEW_ROUNDS: "2.5" }, { configFile: null }));
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_MAX_REVIEW_ROUNDS");
   });
 
   it("rejects unparseable booleans", () => {
-    const err = captureError(() => loadConfig({ MINESWEEPER_DEFAULT_ELIGIBLE: "maybe" }, { configFile: null }));
+    const err = captureError(() => loadConfigIsolated({ MINESWEEPER_DEFAULT_ELIGIBLE: "maybe" }, { configFile: null }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_DEFAULT_ELIGIBLE");
   });
 
   it("rejects empty string overrides for required strings", () => {
-    const err = captureError(() => loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "" }, { configFile: null }));
+    const err = captureError(() => loadConfigIsolated({ MINESWEEPER_ALWAYS_FIX_LABEL: "" }, { configFile: null }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_ALWAYS_FIX_LABEL");
   });
 
   it("overrides MINESWEEPER_TRY_FIX_LABEL from env", () => {
-    const cfg = loadConfig({ MINESWEEPER_TRY_FIX_LABEL: "screen-me" }, { configFile: null });
+    const cfg = loadConfigIsolated({ MINESWEEPER_TRY_FIX_LABEL: "screen-me" }, { configFile: null });
     expect(cfg.tryFixLabel).toBe("screen-me");
   });
 
   it("rejects empty MINESWEEPER_TRY_FIX_LABEL", () => {
-    const err = captureError(() => loadConfig({ MINESWEEPER_TRY_FIX_LABEL: "" }, { configFile: null }));
+    const err = captureError(() => loadConfigIsolated({ MINESWEEPER_TRY_FIX_LABEL: "" }, { configFile: null }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_TRY_FIX_LABEL");
   });
@@ -231,7 +261,7 @@ describe("loadConfig", () => {
       pollCooldownSeconds: 30,
       schedule: ["*/15 * * * *"],
     });
-    const cfg = loadConfig({}, { configFile: path, repoConfigFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: path, repoConfigFile: null });
     expect(cfg.alwaysFixLabel).toBe("auto");
     expect(cfg.pollCooldownSeconds).toBe(30);
     expect(cfg.pollCooldownMs).toBe(30_000);
@@ -240,52 +270,52 @@ describe("loadConfig", () => {
 
   it("env vars beat the config file", () => {
     const path = writeConfigFile({ alwaysFixLabel: "from-file" });
-    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: path });
+    const cfg = loadConfigIsolated({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: path });
     expect(cfg.alwaysFixLabel).toBe("from-env");
   });
 
   it("treats a missing config file as empty", () => {
-    const cfg = loadConfig({}, { configFile: join(tmp, "does-not-exist.json") });
+    const cfg = loadConfigIsolated({}, { configFile: join(tmp, "does-not-exist.json") });
     expect(cfg.alwaysFixLabel).toBe("autofix");
   });
 
   it("rejects malformed JSON in the config file", () => {
     const path = writeConfigFile("{ not json");
-    const err = captureError(() => loadConfig({}, { configFile: path }));
+    const err = captureError(() => loadConfigIsolated({}, { configFile: path }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_CONFIG_FILE");
   });
 
   it("rejects unknown keys in the config file", () => {
     const path = writeConfigFile({ bogus: 1 });
-    const err = captureError(() => loadConfig({}, { configFile: path }));
+    const err = captureError(() => loadConfigIsolated({}, { configFile: path }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_CONFIG_FILE");
   });
 
   it("rejects derived keys in the config file", () => {
     const path = writeConfigFile({ pollIntervalMs: 60_000 });
-    const err = captureError(() => loadConfig({}, { configFile: path }));
+    const err = captureError(() => loadConfigIsolated({}, { configFile: path }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_CONFIG_FILE");
   });
 
   it("rejects an invalid cron expression in schedule", () => {
     const path = writeConfigFile({ schedule: ["not a cron"] });
-    const err = captureError(() => loadConfig({}, { configFile: path }));
+    const err = captureError(() => loadConfigIsolated({}, { configFile: path }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("schedule");
     expect(err.message).toMatch(/not a cron/);
   });
 
   it("parses MINESWEEPER_POLL_COOLDOWN", () => {
-    const cfg = loadConfig({ MINESWEEPER_POLL_COOLDOWN: "0" }, { configFile: null });
+    const cfg = loadConfigIsolated({ MINESWEEPER_POLL_COOLDOWN: "0" }, { configFile: null });
     expect(cfg.pollCooldownSeconds).toBe(0);
     expect(cfg.pollCooldownMs).toBe(0);
   });
 
   it("rejects negative cooldown values", () => {
-    const err = captureError(() => loadConfig({ MINESWEEPER_POLL_COOLDOWN: "-1" }, { configFile: null }));
+    const err = captureError(() => loadConfigIsolated({ MINESWEEPER_POLL_COOLDOWN: "-1" }, { configFile: null }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_POLL_COOLDOWN");
   });
@@ -295,13 +325,13 @@ describe("loadConfig", () => {
     writeFileSync(fileA, JSON.stringify({ alwaysFixLabel: "from-A" }));
     const fileB = join(tmp, "b.json");
     writeFileSync(fileB, JSON.stringify({ alwaysFixLabel: "from-B" }));
-    const cfg = loadConfig({ MINESWEEPER_CONFIG_FILE: fileA }, { configFile: fileB, repoConfigFile: null });
+    const cfg = loadConfigIsolated({ MINESWEEPER_CONFIG_FILE: fileA }, { configFile: fileB, repoConfigFile: null });
     expect(cfg.alwaysFixLabel).toBe("from-A");
   });
 
   it("opts.configFile=null skips file loading even when one exists at the path", () => {
     writeConfigFile({ alwaysFixLabel: "should-not-be-read" });
-    const cfg = loadConfig({}, { configFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: null });
     expect(cfg.alwaysFixLabel).toBe("autofix");
   });
 });
@@ -312,7 +342,7 @@ describe("loadConfig", () => {
 describe("repo config file layer", () => {
   it("loads values from <cwd>/.minesweeper/config.json when present", () => {
     writeRepoConfigFile(tmp, { alwaysFixLabel: "from-repo", maxPlanningIterations: 7 });
-    const cfg = loadConfig({}, { configFile: null, cwd: tmp });
+    const cfg = loadConfigIsolated({}, { configFile: null, cwd: tmp });
     expect(cfg.alwaysFixLabel).toBe("from-repo");
     expect(cfg.maxPlanningIterations).toBe(7);
     expect(cfg.sources["alwaysFixLabel"]).toEqual<ConfigFieldSource>({ source: "repo-config", secret: false });
@@ -322,7 +352,7 @@ describe("repo config file layer", () => {
   it("repo config overrides the global config on a per-key basis", () => {
     const globalPath = writeConfigFile({ alwaysFixLabel: "from-global", tryFixLabel: "from-global-try" });
     writeRepoConfigFile(tmp, { alwaysFixLabel: "from-repo" });
-    const cfg = loadConfig({}, { configFile: globalPath, cwd: tmp });
+    const cfg = loadConfigIsolated({}, { configFile: globalPath, cwd: tmp });
     // repo wins for the overlapping key, global still supplies the rest
     expect(cfg.alwaysFixLabel).toBe("from-repo");
     expect(cfg.tryFixLabel).toBe("from-global-try");
@@ -332,28 +362,28 @@ describe("repo config file layer", () => {
 
   it("env vars beat the repo config", () => {
     writeRepoConfigFile(tmp, { alwaysFixLabel: "from-repo" });
-    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, cwd: tmp });
+    const cfg = loadConfigIsolated({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, cwd: tmp });
     expect(cfg.alwaysFixLabel).toBe("from-env");
     expect(cfg.sources["alwaysFixLabel"]?.source).toBe("envar");
   });
 
   it("treats a missing repo config file as empty (falls through to global → default)", () => {
     // No file written; tmp/.minesweeper/config.json does not exist.
-    const cfg = loadConfig({}, { configFile: null, cwd: tmp });
+    const cfg = loadConfigIsolated({}, { configFile: null, cwd: tmp });
     expect(cfg.alwaysFixLabel).toBe("autofix");
     expect(cfg.sources["alwaysFixLabel"]?.source).toBe("default");
   });
 
   it("rejects malformed JSON in the repo config file", () => {
     writeRepoConfigFile(tmp, "{ not json");
-    const err = captureError(() => loadConfig({}, { configFile: null, cwd: tmp }));
+    const err = captureError(() => loadConfigIsolated({}, { configFile: null, cwd: tmp }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_REPO_CONFIG_FILE");
   });
 
   it("rejects unknown keys in the repo config file", () => {
     writeRepoConfigFile(tmp, { bogus: 1 });
-    const err = captureError(() => loadConfig({}, { configFile: null, cwd: tmp }));
+    const err = captureError(() => loadConfigIsolated({}, { configFile: null, cwd: tmp }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_REPO_CONFIG_FILE");
   });
@@ -363,7 +393,7 @@ describe("repo config file layer", () => {
     writeFileSync(fileA, JSON.stringify({ alwaysFixLabel: "from-A" }));
     const fileB = join(tmp, "b.json");
     writeFileSync(fileB, JSON.stringify({ alwaysFixLabel: "from-B" }));
-    const cfg = loadConfig(
+    const cfg = loadConfigIsolated(
       { MINESWEEPER_REPO_CONFIG_FILE: fileA },
       { configFile: null, repoConfigFile: fileB, cwd: tmp },
     );
@@ -373,7 +403,7 @@ describe("repo config file layer", () => {
 
   it("opts.repoConfigFile=null skips repo file loading even when one exists at <cwd>/.minesweeper/config.json", () => {
     writeRepoConfigFile(tmp, { alwaysFixLabel: "should-not-be-read" });
-    const cfg = loadConfig({}, { configFile: null, repoConfigFile: null, cwd: tmp });
+    const cfg = loadConfigIsolated({}, { configFile: null, repoConfigFile: null, cwd: tmp });
     expect(cfg.alwaysFixLabel).toBe("autofix");
     expect(cfg.sources["alwaysFixLabel"]?.source).toBe("default");
   });
@@ -381,14 +411,14 @@ describe("repo config file layer", () => {
   it("schedule from repo config replaces schedule from global config", () => {
     const globalPath = writeConfigFile({ schedule: ["*/15 * * * *"] });
     writeRepoConfigFile(tmp, { schedule: ["0 9 * * *", "0 17 * * *"] });
-    const cfg = loadConfig({}, { configFile: globalPath, cwd: tmp });
+    const cfg = loadConfigIsolated({}, { configFile: globalPath, cwd: tmp });
     expect(cfg.schedule).toEqual(["0 9 * * *", "0 17 * * *"]);
     expect(cfg.sources["schedule"]?.source).toBe("repo-config");
   });
 
   it("rejects invalid cron in the repo config schedule", () => {
     writeRepoConfigFile(tmp, { schedule: ["definitely not cron"] });
-    const err = captureError(() => loadConfig({}, { configFile: null, cwd: tmp }));
+    const err = captureError(() => loadConfigIsolated({}, { configFile: null, cwd: tmp }));
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("schedule");
   });
@@ -431,7 +461,7 @@ const EXPECTED_SUMMARY_KEYS = [
 
 describe("config.sources (provenance embedded in the resolved Config)", () => {
   it("has all 23 non-derived keys with source 'default' when nothing is set", () => {
-    const cfg = loadConfig({}, { configFile: null, repoConfigFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: null, repoConfigFile: null });
 
     expect(Object.keys(cfg.sources).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());
     for (const key of EXPECTED_SUMMARY_KEYS) {
@@ -443,7 +473,10 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
   });
 
   it("tags env-var-supplied fields as 'envar' and leaves the value at the top level", () => {
-    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, repoConfigFile: null });
+    const cfg = loadConfigIsolated(
+      { MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" },
+      { configFile: null, repoConfigFile: null },
+    );
     expect(cfg.alwaysFixLabel).toBe("from-env");
     expect(cfg.sources["alwaysFixLabel"]).toEqual<ConfigFieldSource>({ source: "envar", secret: false });
     expect(cfg.sources["tryFixLabel"]?.source).toBe("default");
@@ -451,7 +484,7 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
 
   it("tags config-file-supplied fields as 'config-file'", () => {
     const path = writeConfigFile({ tryFixLabel: "from-file", maxPlanningIterations: 9 });
-    const cfg = loadConfig({}, { configFile: path, repoConfigFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: path, repoConfigFile: null });
     expect(cfg.tryFixLabel).toBe("from-file");
     expect(cfg.maxPlanningIterations).toBe(9);
     expect(cfg.sources["tryFixLabel"]).toEqual<ConfigFieldSource>({ source: "config-file", secret: false });
@@ -460,18 +493,18 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
 
   it("env beats file in the source tag when both are set", () => {
     const path = writeConfigFile({ alwaysFixLabel: "from-file" });
-    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: path });
+    const cfg = loadConfigIsolated({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: path });
     expect(cfg.alwaysFixLabel).toBe("from-env");
     expect(cfg.sources["alwaysFixLabel"]?.source).toBe("envar");
   });
 
   it("resolves the schedule source correctly (no env-var counterpart)", () => {
-    const defaulted = loadConfig({}, { configFile: null, repoConfigFile: null });
+    const defaulted = loadConfigIsolated({}, { configFile: null, repoConfigFile: null });
     expect(defaulted.schedule).toEqual([]);
     expect(defaulted.sources["schedule"]?.source).toBe("default");
 
     const path = writeConfigFile({ schedule: ["*/15 * * * *"] });
-    const fromFile = loadConfig({}, { configFile: path, repoConfigFile: null });
+    const fromFile = loadConfigIsolated({}, { configFile: path, repoConfigFile: null });
     expect(fromFile.schedule).toEqual(["*/15 * * * *"]);
     expect(fromFile.sources["schedule"]?.source).toBe("config-file");
   });
@@ -487,7 +520,7 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
   });
 
   it("flags no field as secret today — every entry has `secret: false`", () => {
-    const cfg = loadConfig({}, { configFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: null });
     for (const key of EXPECTED_SUMMARY_KEYS) {
       expect(cfg.sources[key]?.secret).toBe(false);
     }
@@ -496,12 +529,12 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
 
 describe("redactSecrets", () => {
   it("is a no-op when no field is flagged secret", () => {
-    const cfg = loadConfig({}, { configFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: null });
     expect(redactSecrets(cfg)).toEqual(cfg);
   });
 
   it("replaces the top-level value of any field flagged secret and keeps the sources map intact", () => {
-    const cfg = loadConfig({}, { configFile: null });
+    const cfg = loadConfigIsolated({}, { configFile: null });
     // Synthesise a Config whose `sources` claims one field is secret. We do not
     // mutate `cfg` — `redactSecrets` is pure, so we can hand it any Config.
     const withSecret: Config = {
@@ -541,7 +574,10 @@ describe("loadConfig + redactSecrets integration with the real logger", () => {
     const filePath = join(logTmp, "logs", "daemon.log");
     createLogger({ filePath, stdout, sync: true });
 
-    const cfg = loadConfig({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, repoConfigFile: null });
+    const cfg = loadConfigIsolated(
+      { MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" },
+      { configFile: null, repoConfigFile: null },
+    );
     event("daemon", "INFO", null, "config loaded", { config: redactSecrets(cfg) });
 
     const records = readFileSync(filePath, "utf8")
