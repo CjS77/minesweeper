@@ -25,6 +25,7 @@ export {
   type Transcript,
   type OpenTranscriptOptions,
 } from "./transcript.js";
+export { isApiLimitError, resumeTimeFromError } from "./errors.js";
 
 /** The bits of `query()` we depend on. Kept narrow so tests can mock it. */
 export type QueryFn = typeof defaultQuery;

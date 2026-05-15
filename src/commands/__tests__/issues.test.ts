@@ -274,11 +274,12 @@ function fakeClaude(finalText: string): {
 function fakeGithubCreate(
   number: number,
   url: string,
+  failedLabels?: { label: string; reason: string }[],
 ): {
   createIssue: ReturnType<typeof vi.fn>;
 } {
   return {
-    createIssue: vi.fn().mockResolvedValue({ number, url }),
+    createIssue: vi.fn().mockResolvedValue(failedLabels ? { number, url, failedLabels } : { number, url }),
   };
 }
 
@@ -302,6 +303,35 @@ describe("parseIssueDraft", () => {
     const out = parseIssueDraft("   \n  \n");
     expect(out).toEqual({ title: "", body: "" });
   });
+
+  it("tolerates a preamble before the TITLE: line", () => {
+    const out = parseIssueDraft("Here is the issue you asked for.\n\nTITLE: feat: x\n---\n## Problem\n\nbody\n");
+    expect(out.title).toBe("feat: x");
+    expect(out.body).toBe("## Problem\n\nbody");
+  });
+
+  it("parses YAML front-matter with a title key", () => {
+    const out = parseIssueDraft("---\ntitle: feat: x\n---\n## Problem\n\ny\n");
+    expect(out.title).toBe("feat: x");
+    expect(out.body).toBe("## Problem\n\ny");
+  });
+
+  it("strips surrounding quotes from a front-matter title", () => {
+    const out = parseIssueDraft('---\ntitle: "feat: x"\n---\n## Problem\n\ny\n');
+    expect(out.title).toBe("feat: x");
+  });
+
+  it("never yields a '---' title when front-matter has no closing fence", () => {
+    const out = parseIssueDraft("---\nbug: the daemon crashes on startup\n\nIt dies immediately.\n");
+    expect(out.title).toBe("bug: the daemon crashes on startup");
+    expect(out.body).toBe("It dies immediately.");
+  });
+
+  it("unwraps a whole reply wrapped in a fenced code block", () => {
+    const out = parseIssueDraft("```\nTITLE: feat: x\n---\n## Problem\n\nbody\n```");
+    expect(out.title).toBe("feat: x");
+    expect(out.body).toBe("## Problem\n\nbody");
+  });
 });
 
 describe("runIssueNewCommand", () => {
@@ -309,6 +339,7 @@ describe("runIssueNewCommand", () => {
     const out = makeStdout();
     const claude = fakeClaude(strictDraft("feat: hello", "## Problem\n\nworld."));
     const github = fakeGithubCreate(42, "https://github.com/example/repo/issues/42");
+    const labelsCommand = { runLabelsCommand: vi.fn().mockResolvedValue({ upserted: [] }) };
 
     const result = await runIssueNewCommand({
       config: loadConfig({}, { configFile: null }),
@@ -318,11 +349,19 @@ describe("runIssueNewCommand", () => {
       stdout: out.stream,
       claude,
       github,
+      labelsCommand,
       readStdin: EMPTY_STDIN,
       editDraft: NOOP_EDIT,
     });
 
-    expect(result).toEqual({ issueNumber: 42, url: "https://github.com/example/repo/issues/42" });
+    expect(result).toEqual({
+      issueNumber: 42,
+      url: "https://github.com/example/repo/issues/42",
+      failedLabels: [],
+    });
+    // No label failure → the labels command stays untouched and no warning prints.
+    expect(labelsCommand.runLabelsCommand).not.toHaveBeenCalled();
+    expect(strip(out.text())).not.toContain("⚠");
     expect(claude.runSubagent).toHaveBeenCalledTimes(1);
     const claudeArgs = claude.runSubagent.mock.calls[0]?.[0] as { role: string; userPrompt: string };
     expect(claudeArgs.role).toBe("issuewriter");
@@ -537,5 +576,64 @@ describe("runIssueNewCommand", () => {
     const written = readFileSync(observedPath, "utf-8");
     expect(written).toContain("TITLE: draft-title");
     expect(written).toContain("draft body");
+  });
+
+  it("prints a warning and runs the labels command when a label could not be applied", async () => {
+    const out = makeStdout();
+    const claude = fakeClaude(strictDraft("t", "b"));
+    const github = fakeGithubCreate(7, "https://github.com/example/repo/issues/7", [
+      { label: "autofix", reason: "could not add label: 'autofix' not found" },
+    ]);
+    const labelsCommand = { runLabelsCommand: vi.fn().mockResolvedValue({ upserted: [] }) };
+
+    const result = await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "x",
+      autoConfirm: false,
+      stdout: out.stream,
+      claude,
+      github,
+      labelsCommand,
+      readStdin: EMPTY_STDIN,
+      editDraft: NOOP_EDIT,
+    });
+
+    // The issue was still filed — exit-0 path, no throw.
+    expect(result.issueNumber).toBe(7);
+    expect(result.url).toBe("https://github.com/example/repo/issues/7");
+    expect(result.failedLabels).toEqual([{ label: "autofix", reason: "could not add label: 'autofix' not found" }]);
+
+    const text = strip(out.text());
+    expect(text).toContain('⚠ could not apply label "autofix"');
+    expect(text).toContain("not found");
+    expect(labelsCommand.runLabelsCommand).toHaveBeenCalledTimes(1);
+    expect(labelsCommand.runLabelsCommand.mock.calls[0]?.[0]).toMatchObject({ cwd: tmp });
+  });
+
+  it("with -y prints the fallback hint instead of prompting", async () => {
+    const out = makeStdout();
+    const claude = fakeClaude(strictDraft("t", "b"));
+    const github = fakeGithubCreate(8, "https://github.com/example/repo/issues/8", [
+      { label: "autofix", reason: "not found" },
+    ]);
+    const labelsCommand = { runLabelsCommand: vi.fn().mockResolvedValue({ upserted: [] }) };
+
+    await runIssueNewCommand({
+      config: loadConfig({}, { configFile: null }),
+      cwd: tmp,
+      message: "x",
+      autoConfirm: true,
+      stdout: out.stream,
+      claude,
+      github,
+      labelsCommand,
+      readStdin: EMPTY_STDIN,
+      editDraft: NOOP_EDIT,
+    });
+
+    const text = strip(out.text());
+    expect(text).toContain("Run `minesweeper labels` to create the missing labels.");
+    expect(labelsCommand.runLabelsCommand).not.toHaveBeenCalled();
   });
 });

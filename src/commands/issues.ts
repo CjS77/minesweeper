@@ -34,7 +34,8 @@ import { execa } from "execa";
 import type { Config } from "../config.js";
 import * as defaultClaude from "../claude/index.js";
 import * as defaultGithub from "../github/index.js";
-import type { Issue } from "../github/index.js";
+import type { Issue, LabelApplicationFailure } from "../github/index.js";
+import * as defaultLabelsCommand from "./labels.js";
 import { isEligible } from "../daemon/eligibility.js";
 import { event } from "../logging.js";
 import * as defaultWorktree from "../worktree.js";
@@ -171,6 +172,8 @@ export interface RunIssueNewCommandOptions {
   stdout?: NodeJS.WritableStream;
   /** Override the GitHub wrapper (tests). */
   github?: Pick<typeof defaultGithub, "createIssue">;
+  /** Override the labels command (tests). */
+  labelsCommand?: Pick<typeof defaultLabelsCommand, "runLabelsCommand">;
   /** Override the Claude wrapper (tests). */
   claude?: Pick<typeof defaultClaude, "runSubagent">;
   /** Read a file from disk (tests). Default: `readFileSync(path, "utf-8")`. */
@@ -190,6 +193,8 @@ export interface RunIssueNewCommandOptions {
 export interface RunIssueNewCommandResult {
   issueNumber: number;
   url: string;
+  /** Labels that could not be applied to the created issue. Empty on success. */
+  failedLabels: LabelApplicationFailure[];
 }
 
 /**
@@ -222,7 +227,7 @@ export async function runIssueNewCommand(opts: RunIssueNewCommandOptions): Promi
   const draft = opts.autoConfirm ? initial : await confirmInEditor(initial, stdout, editDraft);
 
   const labels = addAutoFixLabel ? [opts.config.alwaysFixLabel] : [];
-  const { number, url } = await gh.createIssue({
+  const created = await gh.createIssue({
     title: draft.title,
     body: draft.body,
     labels,
@@ -230,9 +235,39 @@ export async function runIssueNewCommand(opts: RunIssueNewCommandOptions): Promi
     bin: opts.bin,
   });
 
-  event("daemon", "OK", number, `created issue #${number} at ${url}`);
-  stdout.write(`${chalk.green("✔")} created issue #${number}: ${url}\n`);
-  return { issueNumber: number, url };
+  event("daemon", "OK", created.number, `created issue #${created.number} at ${created.url}`);
+  stdout.write(`${chalk.green("✔")} created issue #${created.number}: ${created.url}\n`);
+
+  if (created.failedLabels?.length) {
+    await handleLabelFailures(created.failedLabels, opts, stdout);
+  }
+  return { issueNumber: created.number, url: created.url, failedLabels: created.failedLabels ?? [] };
+}
+
+/**
+ * A label failure is never fatal — the issue is already filed. Warn per
+ * label, then (interactively) hand off to `minesweeper labels`, whose own
+ * A/O/Y prompt asks the operator whether to create the missing labels. Under
+ * `-y` we only print a hint, since starting an interactive prompt in a
+ * non-interactive run would hang.
+ */
+async function handleLabelFailures(
+  failures: LabelApplicationFailure[],
+  opts: RunIssueNewCommandOptions,
+  stdout: NodeJS.WritableStream,
+): Promise<void> {
+  for (const failure of failures) {
+    stdout.write(`${chalk.yellow("⚠")} could not apply label "${failure.label}": ${failure.reason}\n`);
+    event("daemon", "WARN", null, `could not apply label "${failure.label}": ${failure.reason}`);
+  }
+
+  if (opts.autoConfirm) {
+    stdout.write(`${chalk.dim("Run `minesweeper labels` to create the missing labels.")}\n`);
+    return;
+  }
+
+  const labels = opts.labelsCommand ?? defaultLabelsCommand;
+  await labels.runLabelsCommand({ config: opts.config, cwd: opts.cwd, bin: opts.bin, stdout });
 }
 
 /**
@@ -274,36 +309,98 @@ function buildIssueWriterPrompt(input: string): string {
 }
 
 /**
- * Split the issuewriter's output into `{title, body}`. Strict form:
- *
- *   TITLE: <title>
- *   ---
- *   <body…>
- *
- * Fallback (logged as WARN): first non-empty line is the title; everything
- * after it is the body. We never throw — even a sloppy draft is better than
- * forcing the operator to re-run the command.
+ * Strip a fenced code block that wraps the *entire* text. LLMs sometimes wrap
+ * the whole reply in ``` despite the prompt forbidding it. Returns the inner
+ * content when the (already trimmed) text opens with a ``` fence — optional
+ * language tag — and closes with a ``` fence; otherwise returns it unchanged.
  */
-export function parseIssueDraft(text: string): IssueDraft {
-  const stripped = text.trim();
-  const strictMatch = stripped.match(/^TITLE:\s*(.+?)\s*\n+---\s*\n([\s\S]*)$/);
-  if (strictMatch) {
-    return { title: strictMatch[1]!.trim(), body: strictMatch[2]!.trim() };
-  }
-  event("daemon", "WARN", null, "issuewriter output did not match TITLE:/--- format; falling back to first-line split");
-  const lines = stripped.split("\n");
-  const firstIdx = lines.findIndex((l) => l.trim().length > 0);
-  if (firstIdx === -1) {
-    return { title: "", body: "" };
-  }
-  const title = lines[firstIdx]!.replace(/^#+\s*/, "")
-    .replace(/^TITLE:\s*/i, "")
+function stripCodeFence(text: string): string {
+  const match = text.match(/^```[^\n]*\n([\s\S]*?)\n```$/);
+  return match ? match[1]! : text;
+}
+
+/**
+ * Form A — a `TITLE:` line followed by a standalone `---` separator. Tolerates
+ * preamble before `TITLE:` so a stray sentence cannot become the title.
+ * Returns `null` unless both markers are present and the title is non-empty.
+ */
+function parseTitleForm(lines: string[]): IssueDraft | null {
+  const titleIdx = lines.findIndex((l) => l.trim().startsWith("TITLE:"));
+  if (titleIdx === -1) return null;
+  const sepIdx = lines.findIndex((l, i) => i > titleIdx && l.trim() === "---");
+  if (sepIdx === -1) return null;
+  const title = lines[titleIdx]!.trim()
+    .replace(/^TITLE:\s*/, "")
     .trim();
+  if (title.length === 0) return null;
   const body = lines
-    .slice(firstIdx + 1)
+    .slice(sepIdx + 1)
     .join("\n")
     .trim();
   return { title, body };
+}
+
+/**
+ * Form B — YAML front-matter: a `---`-delimited block whose first non-empty
+ * line is `---`, containing a `title:` key. Surrounding quotes on the value
+ * are stripped. Returns `null` unless the block and key are both present.
+ */
+function parseFrontMatter(lines: string[]): IssueDraft | null {
+  const openIdx = lines.findIndex((l) => l.trim().length > 0);
+  if (openIdx === -1 || lines[openIdx]!.trim() !== "---") return null;
+  const closeIdx = lines.findIndex((l, i) => i > openIdx && l.trim() === "---");
+  if (closeIdx === -1) return null;
+  const titleMatch = lines
+    .slice(openIdx + 1, closeIdx)
+    .map((l) => l.trim().match(/^title\s*:\s*(.+)$/i))
+    .find((m): m is RegExpMatchArray => m !== null);
+  if (!titleMatch) return null;
+  const title = titleMatch[1]!
+    .trim()
+    .replace(/^["']|["']$/g, "")
+    .trim();
+  const body = lines
+    .slice(closeIdx + 1)
+    .join("\n")
+    .trim();
+  return { title, body };
+}
+
+/**
+ * Fallback — the first usable line is the title, the rest is the body. The
+ * title line is never a standalone `---`, so a stray front-matter opener
+ * cannot become the title. A leading `#…` or `TITLE:` prefix is stripped.
+ */
+function parseFallback(lines: string[]): IssueDraft {
+  event(
+    "daemon",
+    "WARN",
+    null,
+    "issuewriter output did not match TITLE:/--- or front-matter format; falling back to first-line split",
+  );
+  const titleIdx = lines.findIndex((l) => l.trim().length > 0 && l.trim() !== "---");
+  if (titleIdx === -1) return { title: "", body: "" };
+  const title = lines[titleIdx]!.replace(/^#+\s*/, "")
+    .replace(/^TITLE:\s*/i, "")
+    .trim();
+  const rest = lines.slice(titleIdx + 1);
+  const bodyStart = rest.findIndex((l) => l.trim().length > 0);
+  if (bodyStart !== -1 && rest[bodyStart]!.trim() === "---") rest.splice(bodyStart, 1);
+  return { title, body: rest.join("\n").trim() };
+}
+
+/**
+ * Split the issuewriter's output into `{title, body}`, trying three forms in
+ * order: the canonical `TITLE:`/`---` shape ({@link parseTitleForm}), YAML
+ * front-matter ({@link parseFrontMatter}), and a logged first-line fallback
+ * ({@link parseFallback}). The whole reply is first unwrapped if it is fenced.
+ * We never throw — even a sloppy draft is better than forcing the operator to
+ * re-run the command.
+ */
+export function parseIssueDraft(text: string): IssueDraft {
+  const stripped = stripCodeFence(text.trim()).trim();
+  const lines = stripped.split("\n");
+  return parseTitleForm(lines) ?? parseFrontMatter(lines) ?? parseFallback(lines);
 }
 
 /**

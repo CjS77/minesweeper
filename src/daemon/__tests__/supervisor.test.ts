@@ -73,10 +73,11 @@ function makeOrphanState(
   issueNumber: number,
   status: State["status"] = "InProgress",
   kind: WorkItemKind = "issue",
+  canResumeAt: string | null = null,
 ): State {
   const branchPrefix = kind === "issue" ? "minesweeper-issue" : `minesweeper-${kind}`;
   return {
-    version: 4,
+    version: 5,
     kind,
     issueNumber,
     branchName: `${branchPrefix}${String(issueNumber).padStart(4, "0")}`,
@@ -88,6 +89,8 @@ function makeOrphanState(
     assessmentReason: null,
     prNumber: null,
     prFeedbackProcessedAt: null,
+    canResumeAt,
+    pausedFromStatus: status === "Paused" ? "InProgress" : null,
     startedAt: "2026-01-01T00:00:00Z",
     updatedAt: "2026-01-01T00:00:00Z",
   };
@@ -621,6 +624,100 @@ describe("createSupervisor.pollPrFeedback", () => {
     const args = pollPrFeedbackMock.mock.calls[0]?.[0] as { isInFlight: (n: number) => boolean };
     expect(args.isInFlight(7)).toBe(true);
     expect(args.isInFlight(99)).toBe(false);
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+  });
+});
+
+describe("createSupervisor.resumePausedWorktrees", () => {
+  it("re-queues a Paused orphan with canResumeAt: null immediately", async () => {
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValue([
+      { path: "/tmp/wt/minesweeper-issue0042", state: makeOrphanState(42, "Paused") },
+    ]);
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.resumePausedWorktrees();
+    await flush();
+
+    expect(ctx.spawnChildMock).toHaveBeenCalledTimes(1);
+    expect(ctx.spawnChildMock).toHaveBeenCalledWith({
+      kind: "issue",
+      issueNumber: 42,
+      worktreePath: "/tmp/wt/minesweeper-issue0042",
+    });
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+  });
+
+  it("re-queues a Paused orphan whose canResumeAt is in the past", async () => {
+    const pastTime = new Date(Date.now() - 60_000).toISOString();
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValue([
+      { path: "/tmp/wt/minesweeper-issue0007", state: makeOrphanState(7, "Paused", "issue", pastTime) },
+    ]);
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.resumePausedWorktrees();
+    await flush();
+
+    expect(ctx.spawnChildMock).toHaveBeenCalledTimes(1);
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+  });
+
+  it("skips a Paused orphan whose canResumeAt is in the future", async () => {
+    const futureTime = new Date(Date.now() + 3_600_000).toISOString();
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValue([
+      { path: "/tmp/wt/minesweeper-issue0011", state: makeOrphanState(11, "Paused", "issue", futureTime) },
+    ]);
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.resumePausedWorktrees();
+    await flush();
+
+    expect(ctx.spawnChildMock).not.toHaveBeenCalled();
+    expect(
+      ctx.emitMock.mock.calls.some((c) => c[1] === "INFO" && c[2] === 11 && String(c[3]).includes("not yet resumable")),
+    ).toBe(true);
+  });
+
+  it("ignores non-Paused orphans", async () => {
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValue([
+      { path: "/tmp/wt/minesweeper-issue0001", state: makeOrphanState(1, "InProgress") },
+      { path: "/tmp/wt/minesweeper-issue0002", state: makeOrphanState(2, "Complete") },
+      { path: "/tmp/wt/minesweeper-issue0003", state: makeOrphanState(3, "Failed") },
+    ]);
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.resumePausedWorktrees();
+    await flush();
+
+    expect(ctx.spawnChildMock).not.toHaveBeenCalled();
+  });
+
+  it("skips a Paused orphan that is already in-flight", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+
+    // Dispatch issue 42 so it is in-flight
+    await sup.dispatch(makeIssueWorkItem(42));
+    await flush();
+
+    ctx.listOrphansMock.mockResolvedValue([
+      { path: "/tmp/wt/minesweeper-issue0042", state: makeOrphanState(42, "Paused") },
+    ]);
+
+    await sup.resumePausedWorktrees();
+    await flush();
+
+    // Only 1 spawn from the original dispatch, not a second for the paused orphan
+    expect(ctx.spawnChildMock).toHaveBeenCalledTimes(1);
 
     ctx.childrenSpawned[0]!.resolve(0);
     await sup.drain();

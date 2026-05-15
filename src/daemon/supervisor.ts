@@ -144,6 +144,13 @@ export interface Supervisor {
    */
   pollPrFeedback(): Promise<void>;
   /**
+   * Per-poll-cycle sweep — re-queues `Paused` orphans whose `canResumeAt`
+   * has elapsed (or is `null`, meaning retry next cycle). Skips orphans
+   * already in-flight. Runs after `sweepClosedIssues` so a paused worktree
+   * whose issue was closed gets reaped rather than resumed.
+   */
+  resumePausedWorktrees(): Promise<void>;
+  /**
    * Identifiers of currently in-flight children. Strings of the form
    * `${kind}:${number}` so issue #N and alert #N are distinguishable.
    */
@@ -358,6 +365,29 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     }
   };
 
+  const resumePausedWorktrees = async (): Promise<void> => {
+    const orphans = await wt.listOrphans(deps.worktreesRoot);
+    const now = Date.now();
+    for (const orphan of orphans) {
+      const st = orphan.state;
+      if (!st || st.status !== "Paused") continue;
+      if (inflight.has(workItemKey(st.kind, st.issueNumber))) continue;
+      if (st.canResumeAt && Date.parse(st.canResumeAt) > now) {
+        emit(
+          "daemon",
+          "INFO",
+          st.issueNumber,
+          `paused worktree not yet resumable (canResumeAt=${st.canResumeAt}); skipping`,
+          {
+            kind: st.kind,
+          },
+        );
+        continue;
+      }
+      await resume({ path: orphan.path, state: st });
+    }
+  };
+
   const pollPrFeedback = async (): Promise<void> => {
     await pollPrFeedbackFn({
       config: deps.config,
@@ -461,6 +491,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     dispatch,
     resume,
     sweepClosedIssues,
+    resumePausedWorktrees,
     pollPrFeedback,
     inFlight: () => [...inflight.keys()],
     queueLength: () => queue.length,

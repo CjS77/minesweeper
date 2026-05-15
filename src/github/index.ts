@@ -122,14 +122,60 @@ export interface CreateIssueOptions extends GhOverridable {
   labels?: readonly string[];
 }
 
-export async function createIssue(opts: CreateIssueOptions): Promise<{ number: number; url: string }> {
+/** A label requested via `createIssue` that could not be applied. */
+export interface LabelApplicationFailure {
+  label: string;
+  /** Human-readable reason taken from the failing `gh` call. */
+  reason: string;
+}
+
+export interface CreateIssueResult {
+  number: number;
+  url: string;
+  /**
+   * Labels from `opts.labels` that could not be applied after the issue
+   * was created (e.g. the label does not exist on the repo). Omitted when
+   * every requested label applied cleanly or none were requested.
+   */
+  failedLabels?: LabelApplicationFailure[];
+}
+
+/**
+ * Create an issue, then apply any requested labels one at a time. Labels are
+ * applied *after* creation (not via `--label` on `gh issue create`) so an
+ * unknown label — which makes `gh` exit non-zero — cannot block the issue
+ * from being filed. Labels that fail are returned in `failedLabels` for the
+ * caller to surface non-fatally.
+ */
+export async function createIssue(opts: CreateIssueOptions): Promise<CreateIssueResult> {
   const args = ["issue", "create", "--title", opts.title, "--body", opts.body];
-  if (opts.labels && opts.labels.length > 0) {
-    args.push("--label", opts.labels.join(","));
-  }
   const stdout = await runGh<string>(args, ghOpts(opts));
   const url = lastUrl(stdout);
-  return { number: parseIssueNumber(url), url };
+  const number = parseIssueNumber(url);
+
+  const failedLabels = await applyLabels(number, opts.labels ?? [], opts);
+  return failedLabels.length > 0 ? { number, url, failedLabels } : { number, url };
+}
+
+/**
+ * Apply each label to a freshly-created issue one at a time, so a single
+ * unknown label (which makes `gh` exit non-zero) cannot block the rest.
+ * Returns the labels that failed, paired with the `gh` error text.
+ */
+async function applyLabels(
+  number: number,
+  labels: readonly string[],
+  opts: GhOverridable,
+): Promise<LabelApplicationFailure[]> {
+  const failures: LabelApplicationFailure[] = [];
+  for (const label of labels) {
+    try {
+      await addLabel(number, label, opts);
+    } catch (err) {
+      failures.push({ label, reason: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return failures;
 }
 
 export async function comment(number: number, body: string, opts: GhOverridable = {}): Promise<void> {

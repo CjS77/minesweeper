@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Config } from "../../config.js";
 import { handleChild } from "../handler.js";
-import { initState, readState, writeState, type State } from "../state.js";
+import { initState, readState, writeState, type State, type Status } from "../state.js";
 
 const FAKE_CONFIG: Config = {
   defaultEligible: false,
@@ -311,6 +311,117 @@ describe("handleChild", () => {
     expect(runExecution).not.toHaveBeenCalled();
     expect(result.mode).toBe("AddressingPRFeedback");
     expect(result.status).toBe("Complete");
+  });
+
+  it("pauses the child on an API rate-limit error during a mode run", async () => {
+    await initState(tmp, "Planning", {
+      issueNumber: 42,
+      branchName: "minesweeper-issue0042",
+      maxIterations: 5,
+    });
+
+    const apiLimitErr = Object.assign(new Error("overloaded"), { status: 529 });
+    const runPlanning = vi.fn(async (): Promise<State> => {
+      throw apiLimitErr;
+    });
+
+    const result = await handleChild({
+      issueNumber: 42,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      runPlanning,
+      emit: vi.fn(),
+    });
+
+    expect(result.status).toBe("Paused");
+    expect(result.pausedFromStatus).toBe("InProgress");
+    const persisted = await readState(tmp);
+    expect(persisted.status).toBe("Paused");
+    expect(persisted.pausedFromStatus).toBe("InProgress");
+  });
+
+  it("re-throws non-API errors unchanged", async () => {
+    await initState(tmp, "Planning", {
+      issueNumber: 42,
+      branchName: "minesweeper-issue0042",
+      maxIterations: 5,
+    });
+
+    const compileErr = new Error("tsc failed: cannot find module");
+    const runPlanning = vi.fn(async (): Promise<State> => {
+      throw compileErr;
+    });
+
+    await expect(
+      handleChild({
+        issueNumber: 42,
+        cwd: tmp,
+        loadConfig: () => FAKE_CONFIG,
+        runPlanning,
+        emit: vi.fn(),
+      }),
+    ).rejects.toThrow("tsc failed: cannot find module");
+  });
+
+  it("un-pauses a Paused worktree on resume and runs the mode with the captured sub-step", async () => {
+    await initState(tmp, "Execution", {
+      issueNumber: 7,
+      branchName: "minesweeper-issue0007",
+      maxIterations: 3,
+    });
+
+    // Simulate a paused state mid-execution at "Reviewing"
+    const initial = await readState(tmp);
+    await writeState(tmp, {
+      ...initial,
+      status: "Paused",
+      pausedFromStatus: "Reviewing" as Status,
+      canResumeAt: null,
+    });
+
+    let receivedStatus: string | undefined;
+    const runExecution = vi.fn(async (deps: { state: State; cwd: string }): Promise<State> => {
+      receivedStatus = deps.state.status;
+      return writeState(deps.cwd, { ...deps.state, status: "Complete" });
+    });
+
+    const result = await handleChild({
+      issueNumber: 7,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      runPlanning: vi.fn(),
+      runExecution,
+      emit: vi.fn(),
+    });
+
+    expect(runExecution).toHaveBeenCalledTimes(1);
+    expect(receivedStatus).toBe("Reviewing");
+    expect(result.status).toBe("Complete");
+  });
+
+  it("records canResumeAt from an error that carries a reset timestamp", async () => {
+    await initState(tmp, "Planning", {
+      issueNumber: 42,
+      branchName: "minesweeper-issue0042",
+      maxIterations: 5,
+    });
+
+    const resetAt = "2026-06-01T12:00:00.000Z";
+    const apiLimitErr = Object.assign(new Error(`rate limit hit; retry after ${resetAt}`), { status: 429 });
+    const runPlanning = vi.fn(async (): Promise<State> => {
+      throw apiLimitErr;
+    });
+
+    const result = await handleChild({
+      issueNumber: 42,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      runPlanning,
+      emit: vi.fn(),
+    });
+
+    expect(result.status).toBe("Paused");
+    expect(result.canResumeAt).toBe(resetAt);
   });
 
   it("returns immediately when state is already terminal (Delegated/Complete)", async () => {
