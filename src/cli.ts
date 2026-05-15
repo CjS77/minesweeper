@@ -243,8 +243,9 @@ async function runDaemon(): Promise<void> {
     },
     onTickEnd: async () => {
       // Sweep first so closed-issue worktrees disappear before
-      // pr_feedback scans the remaining ones.
+      // paused ones are re-queued or pr_feedback runs.
       await supervisor.sweepClosedIssues();
+      await supervisor.resumePausedWorktrees();
       await supervisor.pollPrFeedback();
     },
   });

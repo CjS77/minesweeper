@@ -31,13 +31,14 @@
 
 import { loadConfig as defaultLoadConfig, type Config } from "../config.js";
 import { event as defaultEvent, type Logger } from "../logging.js";
-import { readState as defaultReadState } from "./state.js";
+import { readState as defaultReadState, writeState, INITIAL_STATUS } from "./state.js";
 import type { Mode, State, WorkItemKind } from "./state.js";
 import { runPlanning as defaultRunPlanning, type PlanningDeps } from "./modes/planning.js";
 import { runExecution as defaultRunExecution, type ExecutionDeps } from "./modes/execution.js";
 import { runAssess as defaultRunAssess, type AssessDeps } from "./modes/assess.js";
 import { runRefine as defaultRunRefine, type RefineDeps } from "./modes/refine.js";
 import { runAddressingPrFeedback as defaultRunAddressingPrFeedback, type FeedbackDeps } from "./modes/feedback.js";
+import { isApiLimitError, resumeTimeFromError } from "../claude/index.js";
 
 /** Test seam: the planning mode runner. Default delegates to `runPlanning`. */
 export type RunPlanningFn = (deps: PlanningDeps) => Promise<State>;
@@ -111,6 +112,16 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
     );
   }
 
+  if (state.status === "Paused") {
+    state = await writeState(cwd, {
+      ...state,
+      status: state.pausedFromStatus ?? INITIAL_STATUS[state.mode],
+      pausedFromStatus: null,
+      canResumeAt: null,
+    });
+    emit("daemon", "INFO", state.issueNumber, `resuming paused worktree (mode=${state.mode}, status=${state.status})`);
+  }
+
   const config = loadConfig();
 
   while (!isTerminal(state)) {
@@ -121,16 +132,38 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
       `child handle: mode=${state.mode} status=${state.status} iterations=${state.iterations}/${state.maxIterations}`,
     );
     const before = progressKey(state);
-    state = await dispatch(state.mode, {
-      config,
-      cwd,
-      state,
-      runPlanning,
-      runExecution,
-      runAssess,
-      runRefine,
-      runAddressingPrFeedback,
-    });
+    let next: State;
+    try {
+      next = await dispatch(state.mode, {
+        config,
+        cwd,
+        state,
+        runPlanning,
+        runExecution,
+        runAssess,
+        runRefine,
+        runAddressingPrFeedback,
+      });
+    } catch (err) {
+      if (!isApiLimitError(err)) throw err;
+      // Re-read disk to capture any sub-step the mode persisted before throwing.
+      const latest = await readState(cwd).catch(() => state);
+      const canResumeAt = resumeTimeFromError(err);
+      const paused = await writeState(cwd, {
+        ...latest,
+        pausedFromStatus: latest.status === "Paused" ? latest.pausedFromStatus : latest.status,
+        status: "Paused",
+        canResumeAt,
+      });
+      emit(
+        "daemon",
+        "WARN",
+        state.issueNumber,
+        `API limit hit during mode=${state.mode}; pausing worktree` + (canResumeAt ? ` until ${canResumeAt}` : ""),
+      );
+      return paused;
+    }
+    state = next;
     if (!isTerminal(state) && progressKey(state) === before) {
       throw new Error(
         `child handler: mode=${state.mode} returned without advancing state (status=${state.status}, iterations=${state.iterations}); refusing to loop`,
@@ -142,7 +175,7 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
 }
 
 function isTerminal(state: State): boolean {
-  return state.status === "Complete" || state.status === "Failed";
+  return state.status === "Complete" || state.status === "Failed" || state.status === "Paused";
 }
 
 function progressKey(state: State): string {
