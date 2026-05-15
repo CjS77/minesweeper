@@ -34,7 +34,8 @@ import { execa } from "execa";
 import type { Config } from "../config.js";
 import * as defaultClaude from "../claude/index.js";
 import * as defaultGithub from "../github/index.js";
-import type { Issue } from "../github/index.js";
+import type { Issue, LabelApplicationFailure } from "../github/index.js";
+import * as defaultLabelsCommand from "./labels.js";
 import { isEligible } from "../daemon/eligibility.js";
 import { event } from "../logging.js";
 import * as defaultWorktree from "../worktree.js";
@@ -171,6 +172,8 @@ export interface RunIssueNewCommandOptions {
   stdout?: NodeJS.WritableStream;
   /** Override the GitHub wrapper (tests). */
   github?: Pick<typeof defaultGithub, "createIssue">;
+  /** Override the labels command (tests). */
+  labelsCommand?: Pick<typeof defaultLabelsCommand, "runLabelsCommand">;
   /** Override the Claude wrapper (tests). */
   claude?: Pick<typeof defaultClaude, "runSubagent">;
   /** Read a file from disk (tests). Default: `readFileSync(path, "utf-8")`. */
@@ -190,6 +193,8 @@ export interface RunIssueNewCommandOptions {
 export interface RunIssueNewCommandResult {
   issueNumber: number;
   url: string;
+  /** Labels that could not be applied to the created issue. Empty on success. */
+  failedLabels: LabelApplicationFailure[];
 }
 
 /**
@@ -222,7 +227,7 @@ export async function runIssueNewCommand(opts: RunIssueNewCommandOptions): Promi
   const draft = opts.autoConfirm ? initial : await confirmInEditor(initial, stdout, editDraft);
 
   const labels = addAutoFixLabel ? [opts.config.alwaysFixLabel] : [];
-  const { number, url } = await gh.createIssue({
+  const created = await gh.createIssue({
     title: draft.title,
     body: draft.body,
     labels,
@@ -230,9 +235,39 @@ export async function runIssueNewCommand(opts: RunIssueNewCommandOptions): Promi
     bin: opts.bin,
   });
 
-  event("daemon", "OK", number, `created issue #${number} at ${url}`);
-  stdout.write(`${chalk.green("✔")} created issue #${number}: ${url}\n`);
-  return { issueNumber: number, url };
+  event("daemon", "OK", created.number, `created issue #${created.number} at ${created.url}`);
+  stdout.write(`${chalk.green("✔")} created issue #${created.number}: ${created.url}\n`);
+
+  if (created.failedLabels?.length) {
+    await handleLabelFailures(created.failedLabels, opts, stdout);
+  }
+  return { issueNumber: created.number, url: created.url, failedLabels: created.failedLabels ?? [] };
+}
+
+/**
+ * A label failure is never fatal — the issue is already filed. Warn per
+ * label, then (interactively) hand off to `minesweeper labels`, whose own
+ * A/O/Y prompt asks the operator whether to create the missing labels. Under
+ * `-y` we only print a hint, since starting an interactive prompt in a
+ * non-interactive run would hang.
+ */
+async function handleLabelFailures(
+  failures: LabelApplicationFailure[],
+  opts: RunIssueNewCommandOptions,
+  stdout: NodeJS.WritableStream,
+): Promise<void> {
+  for (const failure of failures) {
+    stdout.write(`${chalk.yellow("⚠")} could not apply label "${failure.label}": ${failure.reason}\n`);
+    event("daemon", "WARN", null, `could not apply label "${failure.label}": ${failure.reason}`);
+  }
+
+  if (opts.autoConfirm) {
+    stdout.write(`${chalk.dim("Run `minesweeper labels` to create the missing labels.")}\n`);
+    return;
+  }
+
+  const labels = opts.labelsCommand ?? defaultLabelsCommand;
+  await labels.runLabelsCommand({ config: opts.config, cwd: opts.cwd, bin: opts.bin, stdout });
 }
 
 /**

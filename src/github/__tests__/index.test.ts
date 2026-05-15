@@ -181,8 +181,11 @@ describe("upsertLabel", () => {
 });
 
 describe("createIssue", () => {
-  it("includes labels when provided", async () => {
-    mockExeca.mockResolvedValueOnce(ok("https://github.com/example/repo/issues/123\n") as never);
+  it("applies labels one at a time after creating the issue", async () => {
+    mockExeca
+      .mockResolvedValueOnce(ok("https://github.com/example/repo/issues/123\n") as never)
+      .mockResolvedValueOnce(ok("") as never)
+      .mockResolvedValueOnce(ok("") as never);
     const result = await createIssue({
       title: "Track me",
       body: "Body",
@@ -192,15 +195,37 @@ describe("createIssue", () => {
       number: 123,
       url: "https://github.com/example/repo/issues/123",
     });
-    const { args } = lastCall();
-    expect(args).toContain("--label");
-    expect(args[args.indexOf("--label") + 1]).toBe("subtask,autofix");
+    expect(mockExeca).toHaveBeenCalledTimes(3);
+
+    // `gh issue create` must not carry --label — an unknown label there is fatal.
+    const createArgs = mockExeca.mock.calls[0]?.[1] as readonly string[];
+    expect(createArgs.slice(0, 2)).toEqual(["issue", "create"]);
+    expect(createArgs).not.toContain("--label");
+
+    // One `issue edit --add-label` per requested label.
+    expect(mockExeca.mock.calls[1]?.[1]).toEqual(["issue", "edit", "123", "--add-label", "subtask"]);
+    expect(mockExeca.mock.calls[2]?.[1]).toEqual(["issue", "edit", "123", "--add-label", "autofix"]);
   });
 
-  it("omits --label when no labels are passed", async () => {
+  it("omits label edits when no labels are passed", async () => {
     mockExeca.mockResolvedValueOnce(ok("https://github.com/example/repo/issues/9\n") as never);
     await createIssue({ title: "x", body: "y" });
-    expect(lastCall().args).not.toContain("--label");
+    expect(mockExeca).toHaveBeenCalledTimes(1);
+    expect(lastCall().args).not.toContain("--add-label");
+  });
+
+  it("creates the issue and reports failedLabels when a label does not exist", async () => {
+    mockExeca
+      .mockResolvedValueOnce(ok("https://github.com/example/repo/issues/55\n") as never)
+      .mockResolvedValueOnce(ok("") as never)
+      .mockResolvedValueOnce(fail("could not add label: 'autofix' not found", 1) as never);
+    const result = await createIssue({
+      title: "x",
+      body: "y",
+      labels: ["subtask", "autofix"],
+    });
+    expect(result.number).toBe(55);
+    expect(result.failedLabels).toEqual([{ label: "autofix", reason: expect.stringMatching(/autofix/) }]);
   });
 
   it("throws when stdout has no URL", async () => {
