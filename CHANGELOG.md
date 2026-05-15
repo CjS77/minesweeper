@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-05-15
+
+### Fixed
+- Creating a worktree now recovers from a stale per-issue branch left behind by a previous run instead of failing the
+  `git worktree add`. Fixes #50.
+- The assessor and refiner are dispatched on `state.kind` so alerts continue to receive alerts past the Planning stage.
+  Fixes #48.
+
 ## [0.6.0] — 2026-05-12
 
 ### Added
@@ -187,7 +195,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/CjS77/minesweeper/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/CjS77/minesweeper/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CjS77/minesweeper/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/CjS77/minesweeper/compare/v0.3.0...v0.4.0
