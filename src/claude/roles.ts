@@ -118,7 +118,11 @@ export const ROLES: Record<RoleName, Role> = {
     modelEnvVar: "issueWriterAgent",
     systemPromptPath: "issuewriter.md",
     allowedTools: ["Read", "Grep", "Glob"],
-    permissionMode: "plan",
+    // `default`, not `plan`: plan mode injects a plan-workflow system reminder,
+    // but this role has no plan file and no `Write`/`ExitPlanMode` tools, so it
+    // narrates that confusion instead of emitting the issue document. Its tools
+    // are all read-only, so `default` cannot cause mutations. See issue #52.
+    permissionMode: "default",
   },
 };
 

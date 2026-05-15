@@ -52,6 +52,12 @@ describe("ROLES registry", () => {
     expect(ROLES.executor.permissionMode).toBe("acceptEdits");
   });
 
+  it("uses 'default' permissionMode for the issuewriter so it emits a document, not a plan", () => {
+    // Plan mode injects a plan-workflow reminder the issuewriter has no tools
+    // to satisfy, so it narrates instead of producing the issue. See issue #52.
+    expect(ROLES.issuewriter.permissionMode).toBe("default");
+  });
+
   it("only the executor is allowed Edit/Write/Bash for mutations", () => {
     expect(ROLES.executor.allowedTools).toContain("Edit");
     expect(ROLES.executor.allowedTools).toContain("Write");

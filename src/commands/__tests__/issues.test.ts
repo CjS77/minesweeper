@@ -302,6 +302,35 @@ describe("parseIssueDraft", () => {
     const out = parseIssueDraft("   \n  \n");
     expect(out).toEqual({ title: "", body: "" });
   });
+
+  it("tolerates a preamble before the TITLE: line", () => {
+    const out = parseIssueDraft("Here is the issue you asked for.\n\nTITLE: feat: x\n---\n## Problem\n\nbody\n");
+    expect(out.title).toBe("feat: x");
+    expect(out.body).toBe("## Problem\n\nbody");
+  });
+
+  it("parses YAML front-matter with a title key", () => {
+    const out = parseIssueDraft("---\ntitle: feat: x\n---\n## Problem\n\ny\n");
+    expect(out.title).toBe("feat: x");
+    expect(out.body).toBe("## Problem\n\ny");
+  });
+
+  it("strips surrounding quotes from a front-matter title", () => {
+    const out = parseIssueDraft('---\ntitle: "feat: x"\n---\n## Problem\n\ny\n');
+    expect(out.title).toBe("feat: x");
+  });
+
+  it("never yields a '---' title when front-matter has no closing fence", () => {
+    const out = parseIssueDraft("---\nbug: the daemon crashes on startup\n\nIt dies immediately.\n");
+    expect(out.title).toBe("bug: the daemon crashes on startup");
+    expect(out.body).toBe("It dies immediately.");
+  });
+
+  it("unwraps a whole reply wrapped in a fenced code block", () => {
+    const out = parseIssueDraft("```\nTITLE: feat: x\n---\n## Problem\n\nbody\n```");
+    expect(out.title).toBe("feat: x");
+    expect(out.body).toBe("## Problem\n\nbody");
+  });
 });
 
 describe("runIssueNewCommand", () => {
