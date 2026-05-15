@@ -36,6 +36,9 @@ The user message contains:
 
 ## Output format — strict
 
+You are not in plan mode: do not narrate a plan, do not call
+`ExitPlanMode`, and make the very first line of your reply `TITLE:`.
+
 Emit a single document in **exactly** this shape. The orchestrator
 splits the title from the body on the first standalone `---` line, so
 do not use `---` anywhere else in your output.
