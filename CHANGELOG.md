@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-05-15
+
+### Added
+- Multiple log files passed to `log view` are now sorted into chronological order before rendering.
+
+### Changed
+- A child process now pauses and retries when it hits an Anthropic API rate limit instead of crashing the run.
+
+### Fixed
+- `issue new` no longer fails entirely when a requested label does not exist on the repo. Fixes #53.
+- `issue new` no longer mangles the GitHub issues it files.
+- Corrected a failing config test.
+
 ## [0.7.0] — 2026-05-15
 
 ### Fixed
@@ -195,7 +208,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/CjS77/minesweeper/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/CjS77/minesweeper/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/CjS77/minesweeper/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/CjS77/minesweeper/compare/v0.4.0...v0.5.0
