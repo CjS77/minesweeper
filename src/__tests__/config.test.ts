@@ -116,7 +116,9 @@ describe("loadConfig", () => {
     ["No", false],
     ["off", false],
   ])("parses MINESWEEPER_DEFAULT_ELIGIBLE=%s as %s", (raw, expected) => {
-    expect(loadConfigIsolated({ MINESWEEPER_DEFAULT_ELIGIBLE: raw }, { configFile: null }).defaultEligible).toBe(expected);
+    expect(loadConfigIsolated({ MINESWEEPER_DEFAULT_ELIGIBLE: raw }, { configFile: null }).defaultEligible).toBe(
+      expected,
+    );
   });
 
   it.each([
@@ -125,7 +127,9 @@ describe("loadConfig", () => {
     ["1", true],
     ["0", false],
   ])("parses MINESWEEPER_ALERTS_ELIGIBLE=%s as %s", (raw, expected) => {
-    expect(loadConfigIsolated({ MINESWEEPER_ALERTS_ELIGIBLE: raw }, { configFile: null }).alertsEligible).toBe(expected);
+    expect(loadConfigIsolated({ MINESWEEPER_ALERTS_ELIGIBLE: raw }, { configFile: null }).alertsEligible).toBe(
+      expected,
+    );
   });
 
   it("alertsEligible defaults to true when no env or file overrides it", () => {
@@ -205,7 +209,9 @@ describe("loadConfig", () => {
   });
 
   it("rejects non-integer values and points at the offending var", () => {
-    const err = captureError(() => loadConfigIsolated({ MINESWEEPER_MAX_PLANNING_ITERATIONS: "foo" }, { configFile: null }));
+    const err = captureError(() =>
+      loadConfigIsolated({ MINESWEEPER_MAX_PLANNING_ITERATIONS: "foo" }, { configFile: null }),
+    );
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_MAX_PLANNING_ITERATIONS");
     expect(err.message).toMatch(/MINESWEEPER_MAX_PLANNING_ITERATIONS/);
@@ -213,7 +219,9 @@ describe("loadConfig", () => {
   });
 
   it("rejects integers below the documented minimum", () => {
-    const err = captureError(() => loadConfigIsolated({ MINESWEEPER_POLL_INTERVAL_SECONDS: "10" }, { configFile: null }));
+    const err = captureError(() =>
+      loadConfigIsolated({ MINESWEEPER_POLL_INTERVAL_SECONDS: "10" }, { configFile: null }),
+    );
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as ConfigError).envVar).toBe("MINESWEEPER_POLL_INTERVAL_SECONDS");
     expect(err.message).toMatch(/>= 30/);
@@ -465,7 +473,10 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
   });
 
   it("tags env-var-supplied fields as 'envar' and leaves the value at the top level", () => {
-    const cfg = loadConfigIsolated({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, repoConfigFile: null });
+    const cfg = loadConfigIsolated(
+      { MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" },
+      { configFile: null, repoConfigFile: null },
+    );
     expect(cfg.alwaysFixLabel).toBe("from-env");
     expect(cfg.sources["alwaysFixLabel"]).toEqual<ConfigFieldSource>({ source: "envar", secret: false });
     expect(cfg.sources["tryFixLabel"]?.source).toBe("default");
@@ -563,7 +574,10 @@ describe("loadConfig + redactSecrets integration with the real logger", () => {
     const filePath = join(logTmp, "logs", "daemon.log");
     createLogger({ filePath, stdout, sync: true });
 
-    const cfg = loadConfigIsolated({ MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" }, { configFile: null, repoConfigFile: null });
+    const cfg = loadConfigIsolated(
+      { MINESWEEPER_ALWAYS_FIX_LABEL: "from-env" },
+      { configFile: null, repoConfigFile: null },
+    );
     event("daemon", "INFO", null, "config loaded", { config: redactSecrets(cfg) });
 
     const records = readFileSync(filePath, "utf8")
