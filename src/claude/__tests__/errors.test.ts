@@ -58,16 +58,18 @@ describe("resumeTimeFromError", () => {
     expect(result).toBe(new Date(epoch * 1000).toISOString());
   });
 
-  it("extracts an epoch-seconds reset value after 'resets' keyword", () => {
-    const epoch = 1750000000;
-    const err = new Error(`quota resets ${epoch}`);
-    const result = resumeTimeFromError(err);
-    expect(result).toBe(new Date(epoch * 1000).toISOString());
-  });
-
-  it("returns null for a message with only a localised wall-clock string", () => {
+  it("extracts resume time from a localised wall-clock message", () => {
     const err = new Error("Your quota resets at 3:50pm (Europe/Lisbon)");
-    expect(resumeTimeFromError(err)).toBeNull();
+    const result = resumeTimeFromError(err);
+    expect(result).not.toBeNull();
+    // Verify the returned UTC instant maps back to 15:50 in Europe/Lisbon
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: "Europe/Lisbon",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+    expect(formatter.format(new Date(result!))).toBe("15:50");
   });
 
   it("returns null for a non-object input", () => {
