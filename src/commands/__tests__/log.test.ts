@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -240,6 +240,11 @@ describe("runLogViewCommand", () => {
     seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl"]);
     seedArchive(tmp, "5-2026-05-08T12:14:58.270Z", ["planner-01.jsonl"]);
 
+    // The archived run happened before the active worktree's run; mtimes reflect that.
+    setMtime(join(tmp, "archive/5-2026-05-08T12:14:58.270Z/planning_history/planner-01.jsonl"), "2026-05-08T10:00:00Z");
+    setMtime(join(tmp, "worktrees/issue-5-foo/.minesweeper/planning_history/planner-01.jsonl"), "2026-05-08T12:00:00Z");
+    setMtime(join(tmp, "worktrees/issue-5-foo/.minesweeper/planning_history/critic-01.jsonl"), "2026-05-08T12:01:00Z");
+
     const { stream, text } = makeStdout();
     runLogViewCommand({ issueNumber: 5, worktreePath: tmp, stdout: stream });
     const out = strip(text());
@@ -247,7 +252,7 @@ describe("runLogViewCommand", () => {
     // Three banners (basenames may collide; just count banner lines).
     const banners = out.split("\n").filter((l) => /═{6} .+\.jsonl {2}\(/.test(l));
     expect(banners).toHaveLength(3);
-    // Ordered lexically by absolute path: archive/5-… comes before worktrees/…
+    // Ordered chronologically by mtime: the older archive run comes before the worktree run.
     expect(banners[0]).toContain("/archive/5-");
     expect(banners[1]).toContain("/worktrees/issue-5-foo");
     expect(banners[2]).toContain("/worktrees/issue-5-foo");
@@ -319,9 +324,36 @@ describe("findTranscriptsForIssue", () => {
     seedArchive(tmp, "5-2026-05-08T12:14:58.270Z", ["planner-01.jsonl"]);
     seedArchive(tmp, "8-2026-05-08T01:00:00.000Z", ["planner-01.jsonl"]);
 
+    // The archived run is older than the active worktree's run.
+    setMtime(join(tmp, "archive/5-2026-05-08T12:14:58.270Z/planning_history/planner-01.jsonl"), "2026-05-08T10:00:00Z");
+    setMtime(join(tmp, "worktrees/issue-5-foo/.minesweeper/planning_history/planner-01.jsonl"), "2026-05-08T12:00:00Z");
+    setMtime(join(tmp, "worktrees/issue-5-foo/.minesweeper/planning_history/critic-01.jsonl"), "2026-05-08T12:01:00Z");
+
     const paths = findTranscriptsForIssue(5, tmp);
     expect(paths).toHaveLength(3);
     expect(paths.every((p) => !p.includes("8-2026-05-08T01:00:00.000Z"))).toBe(true);
+    expect(paths[0]).toContain("/archive/5-");
+  });
+
+  it("orders transcripts chronologically by mtime, not lexically", () => {
+    // Lexical order would put critic-01 first; pipeline order is planner-01, critic-01, planner-02.
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl", "planner-02.jsonl"]);
+    const dir = join(tmp, "worktrees/issue-5-foo/.minesweeper/planning_history");
+    setMtime(join(dir, "planner-01.jsonl"), "2026-05-08T12:00:00Z");
+    setMtime(join(dir, "critic-01.jsonl"), "2026-05-08T12:01:00Z");
+    setMtime(join(dir, "planner-02.jsonl"), "2026-05-08T12:02:00Z");
+
+    const paths = findTranscriptsForIssue(5, tmp);
+    expect(paths.map((p) => basename(p))).toEqual(["planner-01.jsonl", "critic-01.jsonl", "planner-02.jsonl"]);
+  });
+
+  it("falls back to a stable lexical tiebreak when mtimes are equal", () => {
+    seedActiveWorktree(tmp, "issue-5-foo", 5, ["planner-01.jsonl", "critic-01.jsonl"]);
+    const dir = join(tmp, "worktrees/issue-5-foo/.minesweeper/planning_history");
+    setMtime(join(dir, "planner-01.jsonl"), "2026-05-08T12:00:00Z");
+    setMtime(join(dir, "critic-01.jsonl"), "2026-05-08T12:00:00Z");
+
+    const paths = findTranscriptsForIssue(5, tmp);
     expect(paths).toEqual([...paths].sort());
   });
 
@@ -366,4 +398,9 @@ function seedArchive(root: string, dirName: string, files: string[]): void {
   const planningDir = join(root, "archive", dirName, "planning_history");
   mkdirSync(planningDir, { recursive: true });
   for (const f of files) writeFileSync(join(planningDir, f), FIXTURE_TEXT);
+}
+
+function setMtime(path: string, iso: string): void {
+  const t = new Date(iso);
+  utimesSync(path, t, t);
 }

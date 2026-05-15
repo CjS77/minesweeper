@@ -24,7 +24,7 @@
  * are exported for tests.
  */
 
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, isAbsolute, dirname } from "node:path";
 
 import chalk from "chalk";
@@ -459,14 +459,14 @@ function resolveTranscriptPath(name: string, cwd: string): string {
  * Searches both active worktrees (matched by `state.json.issueNumber`) and
  * archives (matched by the `${issueNumber}-…` directory prefix written by
  * `archiveWorktreeState`). Optionally filters by a case-sensitive basename
- * substring. Returns absolute paths in lexical order; throws `LogViewError`
- * on no match.
+ * substring. Returns absolute paths ordered chronologically (oldest first by
+ * file mtime); throws `LogViewError` on no match.
  */
 export function findTranscriptsForIssue(issueNumber: number, worktreePath: string, filter?: string): string[] {
-  const matches = [
+  const matches = sortChronologically([
     ...listFromActiveWorktrees(issueNumber, worktreePath),
     ...listFromArchive(issueNumber, worktreePath),
-  ].sort();
+  ]);
 
   if (matches.length === 0) {
     throw new LogViewError(`no transcripts found for issue ${issueNumber} under ${worktreePath}`);
@@ -522,6 +522,29 @@ function listJsonlFiles(dir: string): string[] {
   return readdirOrEmpty(dir)
     .filter((n) => n.endsWith(".jsonl"))
     .map((n) => join(dir, n));
+}
+
+/**
+ * Sort transcript paths oldest-first by file mtime. Each transcript is fully
+ * written and closed before the next pipeline step opens its own, so mtime
+ * order equals chronological pipeline order. Lexical path is the tiebreaker
+ * so the result is stable and total when mtimes collide.
+ */
+function sortChronologically(paths: string[]): string[] {
+  return [...paths].sort((a, b) => {
+    const ta = mtimeOrZero(a);
+    const tb = mtimeOrZero(b);
+    if (ta !== tb) return ta - tb;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+}
+
+function mtimeOrZero(path: string): number {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
 }
 
 function readTranscript(path: string, cwd: string): string {
