@@ -32,6 +32,7 @@ import {
   asCodeScanningWorkItem,
   asIssueWorkItem,
   asSecretScanningWorkItem,
+  workItemKey,
   workItemNumber,
   type WorkItem,
 } from "../workitem.js";
@@ -81,9 +82,26 @@ export interface PollerDeps {
 }
 
 /**
+ * Result of one {@link pollOnce}.
+ *
+ * `eligible` is the dispatch candidate list (post eligibility filter).
+ * `openKeys` is the {@link workItemKey} of *every* open work item seen this
+ * tick, **before** the eligibility filter — the supervisor diffs it against
+ * its in-flight set to detect work items that were closed externally while a
+ * child was running. It is built from lists `pollOnce` already fetched, so
+ * exposing it costs no extra `gh` calls.
+ */
+export interface PollResult {
+  /** Work items that passed the eligibility filter — dispatch candidates. */
+  eligible: WorkItem[];
+  /** `${kind}:${number}` for every open work item this tick, pre-eligibility. */
+  openKeys: ReadonlySet<string>;
+}
+
+/**
  * Run a single poll: list open issues + (optionally) open code-scanning
- * and secret-scanning alerts, then return the eligible ones as a
- * {@link WorkItem} list.
+ * and secret-scanning alerts, then return the eligible ones plus the key
+ * set of every open work item as a {@link PollResult}.
  *
  * The default predicate is {@link defaultDecideEligibility}, which may
  * apply the `possiblyDangerous` label or post a comment when the
@@ -95,7 +113,7 @@ export interface PollerDeps {
  * does not drop work items from the others — the offending source
  * yields `[]` and emits a `WARN` log instead.
  */
-export async function pollOnce(deps: PollerDeps): Promise<WorkItem[]> {
+export async function pollOnce(deps: PollerDeps): Promise<PollResult> {
   const gh = deps.github ?? defaultGithub;
   const emit = deps.emit ?? defaultEvent;
   const filter: EligibilityFn =
@@ -132,8 +150,9 @@ export async function pollOnce(deps: PollerDeps): Promise<WorkItem[]> {
     ...csa.map(asCodeScanningWorkItem),
     ...ssa.map(asSecretScanningWorkItem),
   ];
+  const openKeys = new Set(items.map((item) => workItemKey(item.kind, workItemNumber(item))));
   const verdicts = await Promise.all(items.map((item) => Promise.resolve(filter(item, deps.config))));
-  return items.filter((_, i) => verdicts[i]);
+  return { eligible: items.filter((_, i) => verdicts[i]), openKeys };
 }
 
 /**
@@ -158,10 +177,12 @@ export interface PollLoopOptions {
   onWorkItem: (item: WorkItem) => void | Promise<void>;
   /**
    * Called once at the end of every tick, after all `onWorkItem`
-   * callbacks have settled. The supervisor's sweep is the canonical
-   * implementation: it reaps worktrees whose work item has closed.
+   * callbacks have settled. Receives the {@link workItemKey} of every
+   * open work item seen this tick — the supervisor diffs it against its
+   * in-flight set to terminate children whose work item closed
+   * externally, then sweeps closed-issue worktrees.
    */
-  onTickEnd?: () => void | Promise<void>;
+  onTickEnd?: (openKeys: ReadonlySet<string>) => void | Promise<void>;
 }
 
 export interface PollLoopHandle {
@@ -184,13 +205,13 @@ export function runPollLoop(deps: PollerDeps, schedules: readonly Schedule[], op
 
   const tick = async (): Promise<void> => {
     try {
-      const eligible = await pollOnce(deps);
+      const { eligible, openKeys } = await pollOnce(deps);
       emit("daemon", "INFO", null, `polled (${eligible.length} eligible)`);
       for (const item of eligible) {
         await opts.onWorkItem(item);
       }
       if (opts.onTickEnd) {
-        await opts.onTickEnd();
+        await opts.onTickEnd(openKeys);
       }
     } catch (err) {
       emit("daemon", "ERROR", null, `poll failed: ${(err as Error).message}`);

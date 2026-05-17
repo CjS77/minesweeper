@@ -241,9 +241,11 @@ async function runDaemon(): Promise<void> {
     onWorkItem: async (item) => {
       await supervisor.dispatch(item);
     },
-    onTickEnd: async () => {
-      // Sweep first so closed-issue worktrees disappear before
-      // paused ones are re-queued or pr_feedback runs.
+    onTickEnd: async (openKeys) => {
+      // Terminate children whose work item was closed externally mid-flight,
+      // then sweep closed-issue worktrees before paused ones are re-queued
+      // or pr_feedback runs.
+      await supervisor.reapClosedInFlight(openKeys);
       await supervisor.sweepClosedIssues();
       await supervisor.resumePausedWorktrees();
       await supervisor.pollPrFeedback();

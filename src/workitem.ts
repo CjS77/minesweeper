@@ -65,6 +65,17 @@ export function workItemNumber(item: WorkItem): number {
   }
 }
 
+/**
+ * Composite identity key for a work item, of the form `${kind}:${number}`.
+ * Issue #N and alert #N occupy distinct per-source keyspaces, so the numeric
+ * part alone is not unique — every map keyed by work item (the supervisor's
+ * in-flight map, the poller's open set) shares this spelling so the keys are
+ * directly comparable.
+ */
+export function workItemKey(kind: WorkItemKind, number: number): string {
+  return `${kind}:${number}`;
+}
+
 /** Per-kind URL pointing at the work item on github.com. */
 export function workItemUrl(item: WorkItem): string {
   switch (item.kind) {

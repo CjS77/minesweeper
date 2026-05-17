@@ -21,6 +21,14 @@
  * and failed (operator triaged + closed) lifecycles. The sweep is wired to
  * fire once per poll tick from `cli.ts`.
  *
+ * In-flight reaper: the sweep deliberately skips in-flight worktrees, so a
+ * work item closed *while its child is running* would otherwise keep burning
+ * tokens through review/refine. `reapClosedInFlight` covers that gap — given
+ * the set of open work-item keys the poll tick already fetched, it `SIGTERM`s
+ * any in-flight child whose key is absent (closed externally). The killed
+ * child exits non-zero but is flagged so `handleChildExit` reaps its worktree
+ * instead of mislabelling it as a failure.
+ *
  * Concurrency is bounded by `config.maxConcurrency` (v0 default 1, i.e.
  * strictly serial). Extra work goes onto an in-memory queue and starts as
  * slots free up. Re-entrancy is prevented two ways:
@@ -48,7 +56,7 @@ import * as defaultState from "../child/state.js";
 import type { State, WorkItemKind } from "../child/state.js";
 import { loadCodeownerLogins as defaultLoadCodeownerLogins } from "../codeowners.js";
 import { pollPrFeedback as defaultPollPrFeedback } from "./pr_feedback.js";
-import { branchSegmentForKind, workItemNumber, type WorkItem } from "../workitem.js";
+import { branchSegmentForKind, workItemKey, workItemNumber, type WorkItem } from "../workitem.js";
 
 const ISSUE_NUMBER_PAD = 4;
 const FAILED_EXIT_CODE = -1;
@@ -136,6 +144,15 @@ export interface Supervisor {
    * a transient GitHub failure does not take down the daemon.
    */
   sweepClosedIssues(): Promise<void>;
+  /**
+   * Terminate in-flight children whose work item was closed externally.
+   * `openKeys` is the {@link workItemKey} set the poll tick already
+   * fetched; any in-flight key absent from it has been closed on GitHub.
+   * The child is `SIGTERM`'d and flagged so its non-zero exit reaps the
+   * worktree rather than applying `failedLabel`. Idempotent across ticks —
+   * a child already being reaped is not signalled again.
+   */
+  reapClosedInFlight(openKeys: ReadonlySet<string>): Promise<void>;
   /**
    * Inspect each Minesweeper-owned PR for fresh reviewer activity and,
    * if any authorised reviewer requested changes since the worktree's
@@ -234,15 +251,6 @@ export function branchNameFor(repoRoot: string, issueNumber: number, kind: WorkI
   return `${slug}-${branchSegmentForKind(kind)}${String(issueNumber).padStart(ISSUE_NUMBER_PAD, "0")}`;
 }
 
-/**
- * Composite key used to identify a work item across the inflight map and
- * the queue. The numeric `issueNumber` is not unique on its own because
- * issue #N and alert #N occupy distinct keyspaces.
- */
-function workItemKey(kind: WorkItemKind, issueNumber: number): string {
-  return `${kind}:${issueNumber}`;
-}
-
 interface QueueEntry {
   kind: WorkItemKind;
   issueNumber: number;
@@ -256,6 +264,8 @@ interface InFlight {
   kind: WorkItemKind;
   issueNumber: number;
   worktreePath: string;
+  /** Signal delivery into the running child. Used by the in-flight reaper. */
+  kill: ChildHandle["kill"];
   /** Resolves when the child has exited AND post-exit cleanup has run. */
   done: Promise<void>;
 }
@@ -273,6 +283,10 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
 
   const queue: QueueEntry[] = [];
   const inflight = new Map<string, InFlight>();
+  /** Keys of in-flight children that have been `SIGTERM`'d because their work
+   *  item closed externally. Read by `handleChildExit` to route the exit to
+   *  worktree reaping instead of the `failedLabel` path. */
+  const closedExternally = new Set<string>();
   let accepting = true;
 
   /** Already known to the supervisor (running or queued)? Keyed by `(kind, number)`. */
@@ -326,6 +340,33 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     return true;
   };
 
+  /**
+   * Archive the worktree's `.minesweeper/` directory, then remove the worktree
+   * and its branch. Shared by the closed-issue sweep and the in-flight reaper.
+   * `reason` is interpolated into the success log ("closed", "closed
+   * externally"). Failures are logged, never thrown — a transient git/fs error
+   * should not take down the daemon.
+   */
+  const reapWorktree = async (
+    kind: WorkItemKind,
+    issueNumber: number,
+    worktreePath: string,
+    reason: string,
+  ): Promise<void> => {
+    try {
+      const archiveDir = await wt.archiveWorktreeState({
+        worktreePath,
+        archiveRoot: deps.archiveRoot,
+        issueNumber,
+        kind,
+      });
+      await wt.removeWorktree(worktreePath);
+      emit("daemon", "OK", issueNumber, `${kind} ${reason}; archived to ${archiveDir} and removed worktree`, { kind });
+    } catch (err) {
+      emit("daemon", "ERROR", issueNumber, `cleanup failed for ${worktreePath}: ${(err as Error).message}`, { kind });
+    }
+  };
+
   const sweepClosedIssues = async (): Promise<void> => {
     const orphans = await wt.listOrphans(deps.worktreesRoot);
     for (const orphan of orphans) {
@@ -348,20 +389,22 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       }
       if (!isClosed) continue;
 
-      try {
-        const archiveDir = await wt.archiveWorktreeState({
-          worktreePath: orphan.path,
-          archiveRoot: deps.archiveRoot,
-          issueNumber,
-          kind,
-        });
-        await wt.removeWorktree(orphan.path);
-        emit("daemon", "OK", issueNumber, `${kind} closed; archived to ${archiveDir} and removed worktree`, { kind });
-      } catch (err) {
-        emit("daemon", "ERROR", issueNumber, `sweep: cleanup failed for ${orphan.path}: ${(err as Error).message}`, {
-          kind,
-        });
-      }
+      await reapWorktree(kind, issueNumber, orphan.path, "closed");
+    }
+  };
+
+  const reapClosedInFlight = async (openKeys: ReadonlySet<string>): Promise<void> => {
+    for (const [key, item] of inflight) {
+      if (openKeys.has(key) || closedExternally.has(key)) continue;
+      closedExternally.add(key);
+      emit(
+        "daemon",
+        "WARN",
+        item.issueNumber,
+        `${item.kind} closed externally while in-flight; terminating child to reap the worktree`,
+        { kind: item.kind },
+      );
+      item.kill("SIGTERM");
     }
   };
 
@@ -448,7 +491,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       inflight.delete(key);
       void drain();
     });
-    inflight.set(key, { kind: entry.kind, issueNumber: entry.issueNumber, worktreePath, done });
+    inflight.set(key, { kind: entry.kind, issueNumber: entry.issueNumber, worktreePath, kill: child.kill, done });
   };
 
   const handleChildExit = async (
@@ -458,6 +501,17 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     child: ChildHandle,
   ): Promise<void> => {
     const code = await child.exit;
+
+    // A child the in-flight reaper terminated exits non-zero, but its work
+    // item is closed — reap the worktree rather than treating it as a failure.
+    const key = workItemKey(kind, issueNumber);
+    if (closedExternally.has(key)) {
+      closedExternally.delete(key);
+      emit("daemon", "INFO", issueNumber, `child exited ${code} after external close; reaping worktree`, { kind });
+      await reapWorktree(kind, issueNumber, worktreePath, "closed externally");
+      return;
+    }
+
     if (code === 0) {
       emit("daemon", "OK", issueNumber, `child exited 0; worktree at ${worktreePath} kept until issue is closed`, {
         kind,
@@ -491,6 +545,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     dispatch,
     resume,
     sweepClosedIssues,
+    reapClosedInFlight,
     resumePausedWorktrees,
     pollPrFeedback,
     inFlight: () => [...inflight.keys()],
