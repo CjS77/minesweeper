@@ -22,6 +22,7 @@ export {
   type PollLoopHandle,
   type PollLoopOptions,
   type PollerDeps,
+  type PollResult,
   type Schedule,
 } from "./poller.js";
 export {

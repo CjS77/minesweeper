@@ -80,7 +80,7 @@ describe("pollOnce", () => {
       makeIssue(2, ["bug"]),
       makeIssue(3, ["autofix", "p1"]),
     ]);
-    const eligible = await pollOnce(deps);
+    const { eligible } = await pollOnce(deps);
     expect(eligible.map(workItemNumber)).toEqual([1, 3]);
     expect(eligible.every((i) => i.kind === "issue")).toBe(true);
   });
@@ -95,14 +95,14 @@ describe("pollOnce", () => {
   it("uses a custom isEligible predicate when provided", async () => {
     const deps = makeDeps({ isEligible: (item) => workItemNumber(item) % 2 === 0 });
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2), makeIssue(3), makeIssue(4)]);
-    const eligible = await pollOnce(deps);
+    const { eligible } = await pollOnce(deps);
     expect(eligible.map(workItemNumber)).toEqual([2, 4]);
   });
 
   it("supports an async custom isEligible predicate", async () => {
     const deps = makeDeps({ isEligible: async (item) => workItemNumber(item) > 1 });
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2), makeIssue(3)]);
-    const eligible = await pollOnce(deps);
+    const { eligible } = await pollOnce(deps);
     expect(eligible.map(workItemNumber)).toEqual([2, 3]);
   });
 
@@ -118,7 +118,7 @@ describe("pollOnce", () => {
       })),
     });
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1), makeIssue(2, [permissive.alwaysFixLabel])]);
-    const eligible = await pollOnce(deps);
+    const { eligible } = await pollOnce(deps);
     expect(eligible.map(workItemNumber).sort()).toEqual([1, 2]);
     // Only the unlabelled issue went through the screener; the alwaysFix one
     // short-circuited.
@@ -138,7 +138,7 @@ describe("pollOnce", () => {
       })),
     });
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(7)]);
-    const eligible = await pollOnce(deps);
+    const { eligible } = await pollOnce(deps);
     expect(eligible).toEqual([]);
     const addLabel = deps.github!.addLabel as unknown as ReturnType<typeof vi.fn>;
     const comment = deps.github!.comment as unknown as ReturnType<typeof vi.fn>;
@@ -151,7 +151,7 @@ describe("pollOnce", () => {
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"])]);
     deps.listCsaMock.mockResolvedValueOnce([makeCsa(11), makeCsa(12)]);
     deps.listSsaMock.mockResolvedValueOnce([makeSsa(21)]);
-    const eligible = await pollOnce(deps);
+    const { eligible } = await pollOnce(deps);
     expect(eligible.map((i) => `${i.kind}:${workItemNumber(i)}`).sort()).toEqual([
       "codeScanningAlert:11",
       "codeScanningAlert:12",
@@ -174,10 +174,26 @@ describe("pollOnce", () => {
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"])]);
     deps.listCsaMock.mockRejectedValueOnce(new Error("HTTP 403: Forbidden"));
     deps.listSsaMock.mockResolvedValueOnce([makeSsa(21)]);
-    const eligible = await pollOnce(deps);
+    const { eligible } = await pollOnce(deps);
     expect(eligible.map((i) => `${i.kind}:${workItemNumber(i)}`).sort()).toEqual(["issue:1", "secretScanningAlert:21"]);
     const warns = deps.emitMock.mock.calls.filter((c) => c[1] === "WARN");
     expect(warns.some((c) => String(c[3]).includes("code-scanning alerts fetch failed"))).toBe(true);
+  });
+
+  it("openKeys covers every open work item, including ones the eligibility filter drops", async () => {
+    const deps = makeDeps();
+    deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"]), makeIssue(2, ["bug"])]);
+    deps.listCsaMock.mockResolvedValueOnce([makeCsa(11)]);
+    deps.listSsaMock.mockResolvedValueOnce([makeSsa(21)]);
+    const { eligible, openKeys } = await pollOnce(deps);
+    // Issue #2 fails eligibility and is absent from `eligible`...
+    expect(eligible.map((i) => `${i.kind}:${workItemNumber(i)}`).sort()).toEqual([
+      "codeScanningAlert:11",
+      "issue:1",
+      "secretScanningAlert:21",
+    ]);
+    // ...but `openKeys` still records it — closed-detection needs the full set.
+    expect([...openKeys].sort()).toEqual(["codeScanningAlert:11", "issue:1", "issue:2", "secretScanningAlert:21"]);
   });
 });
 

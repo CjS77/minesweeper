@@ -598,6 +598,80 @@ describe("createSupervisor.sweepClosedIssues", () => {
   });
 });
 
+describe("createSupervisor.reapClosedInFlight", () => {
+  it("kills the child, skips the failed label, and reaps the worktree when the issue closed externally", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+    await sup.dispatch(makeIssueWorkItem(7));
+    await flush();
+    expect(sup.inFlight()).toEqual(["issue:7"]);
+
+    // The poll tick saw no open work items — issue #7 was closed externally.
+    await sup.reapClosedInFlight(new Set<string>());
+    expect(ctx.childrenSpawned[0]!.handle.kill).toHaveBeenCalledWith("SIGTERM");
+
+    // The terminated child exits non-zero (SIGTERM).
+    ctx.childrenSpawned[0]!.resolve(143);
+    await sup.drain();
+
+    expect(ctx.addLabelMock).not.toHaveBeenCalled();
+    expect(ctx.archiveMock).toHaveBeenCalledWith({
+      worktreePath: "/tmp/wt/minesweeper-issue0007",
+      archiveRoot: "/tmp/archive",
+      issueNumber: 7,
+      kind: "issue",
+    });
+    expect(ctx.removeMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-issue0007");
+    expect(sup.inFlight()).toEqual([]);
+  });
+
+  it("leaves in-flight children whose work item is still open untouched", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+    await sup.dispatch(makeIssueWorkItem(7));
+    await flush();
+
+    await sup.reapClosedInFlight(new Set(["issue:7"]));
+    expect(ctx.childrenSpawned[0]!.handle.kill).not.toHaveBeenCalled();
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+    expect(ctx.archiveMock).not.toHaveBeenCalled();
+    expect(ctx.removeMock).not.toHaveBeenCalled();
+  });
+
+  it("signals each closed-externally child only once across repeated ticks", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+    await sup.dispatch(makeIssueWorkItem(7));
+    await flush();
+
+    await sup.reapClosedInFlight(new Set<string>());
+    await sup.reapClosedInFlight(new Set<string>());
+    expect(ctx.childrenSpawned[0]!.handle.kill).toHaveBeenCalledTimes(1);
+
+    ctx.childrenSpawned[0]!.resolve(143);
+    await sup.drain();
+  });
+
+  it("reaps a closed-externally alert worktree (alerts carry no labels)", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+    await sup.dispatch(makeCsaWorkItem(42));
+    await flush();
+
+    await sup.reapClosedInFlight(new Set<string>());
+    expect(ctx.childrenSpawned[0]!.handle.kill).toHaveBeenCalledWith("SIGTERM");
+
+    ctx.childrenSpawned[0]!.resolve(143);
+    await sup.drain();
+
+    expect(ctx.addLabelMock).not.toHaveBeenCalled();
+    expect(ctx.archiveMock).toHaveBeenCalledWith(expect.objectContaining({ kind: "codeScanningAlert" }));
+    expect(ctx.removeMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-codeScanningAlert0042");
+  });
+});
+
 describe("createSupervisor.pollPrFeedback", () => {
   it("delegates to the injected pollPrFeedback with the supervisor's resume hook", async () => {
     const ctx = makeDeps();
