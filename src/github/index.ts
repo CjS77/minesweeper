@@ -441,10 +441,10 @@ export async function getSecretScanningAlert(number: number, opts: GhOverridable
  * the caller as "no checks" — same fail-soft pattern as the alert endpoints.
  */
 export async function getCheckRuns(ref: string, opts: GhOverridable = {}): Promise<CheckRun[]> {
-  const raw = await runGh(
-    ["api", `repos/{owner}/{repo}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`],
-    { ...ghOpts(opts), json: true },
-  );
+  const raw = await runGh(["api", `repos/{owner}/{repo}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`], {
+    ...ghOpts(opts),
+    json: true,
+  });
   return CheckRunsResponseSchema.parse(raw).check_runs;
 }
 

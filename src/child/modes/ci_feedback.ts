@@ -98,7 +98,12 @@ export async function runAddressingCIFailure(deps: CIFeedbackDeps): Promise<Stat
   });
   const headAfter = await git.headSha(cwd);
   if (headBefore === headAfter) {
-    emit("executor", "WARN", issueNumber, "executor finished without producing a new commit while addressing CI failures");
+    emit(
+      "executor",
+      "WARN",
+      issueNumber,
+      "executor finished without producing a new commit while addressing CI failures",
+    );
   } else {
     await git.pushBranch(cwd, branch);
   }

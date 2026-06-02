@@ -143,9 +143,7 @@ async function processCandidate(args: ProcessCandidateArgs): Promise<void> {
   const anyPending = runs.some((r) => r.status === "queued" || r.status === "in_progress");
   if (anyPending) return;
 
-  const failing = runs.filter(
-    (r) => r.status === "completed" && isFailing(r.conclusion ?? null),
-  );
+  const failing = runs.filter((r) => r.status === "completed" && isFailing(r.conclusion ?? null));
   if (failing.length === 0) return;
 
   // All check runs in a batch share the same head_sha; use the first.
@@ -194,12 +192,7 @@ function isFailing(conclusion: string | null): boolean {
 }
 
 function renderFailures(failing: CheckRun[], headSha: string): string {
-  const lines: string[] = [
-    "# CI check failures",
-    "",
-    `Commit: ${headSha}`,
-    "",
-  ];
+  const lines: string[] = ["# CI check failures", "", `Commit: ${headSha}`, ""];
 
   for (const run of failing) {
     const app = run.app?.name ? ` (${run.app.name})` : "";
