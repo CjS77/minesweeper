@@ -60,6 +60,12 @@ export const ConfigSchema = z.object({
    * ineligible (the daemon also stops calling the alert APIs).
    */
   alertsEligible: z.boolean(),
+  /**
+   * Whether the daemon polls GitHub check runs for open Minesweeper PRs
+   * and re-dispatches the executor when checks fail. When `false`, CI
+   * failures are ignored and the code owner decides what to do manually.
+   */
+  ciChecksEligible: z.boolean(),
   alwaysFixLabel: z.string().min(1),
   tryFixLabel: z.string().min(1),
   neverFixLabel: z.string().min(1),
@@ -357,6 +363,13 @@ export function loadConfig(
       false,
     ),
     alertsEligible: readBool(env, "MINESWEEPER_ALERTS_ELIGIBLE", repoFile.alertsEligible, file.alertsEligible, true),
+    ciChecksEligible: readBool(
+      env,
+      "MINESWEEPER_CI_CHECKS_ELIGIBLE",
+      repoFile.ciChecksEligible,
+      file.ciChecksEligible,
+      true,
+    ),
     alwaysFixLabel: readString(
       env,
       "MINESWEEPER_ALWAYS_FIX_LABEL",

@@ -1,4 +1,5 @@
 import {
+  CheckRunsResponseSchema,
   CodeScanningAlertListSchema,
   CodeScanningAlertSchema,
   IssueListSchema,
@@ -8,6 +9,7 @@ import {
   RestReviewCommentSchema,
   SecretScanningAlertListSchema,
   SecretScanningAlertSchema,
+  type CheckRun,
   type CodeScanningAlert,
   type Issue,
   type Label,
@@ -27,6 +29,8 @@ const RepoOwnerResponseSchema = z.object({ owner: z.object({ login: z.string() }
 export { GhError, GhMissingError, GhNotARepoError, runGh, type RunGhOptions } from "./process.js";
 export {
   AlertStateSchema,
+  CheckRunSchema,
+  CheckRunsResponseSchema,
   CodeScanningAlertListSchema,
   CodeScanningAlertSchema,
   CommentSchema,
@@ -45,6 +49,7 @@ export {
   SecretScanningAlertSchema,
   UserSchema,
   type AlertState,
+  type CheckRun,
   type CodeScanningAlert,
   type Comment,
   type Issue,
@@ -424,6 +429,23 @@ export async function getSecretScanningAlert(number: number, opts: GhOverridable
     json: true,
   });
   return SecretScanningAlertSchema.parse(raw);
+}
+
+/**
+ * Fetch check runs for a ref (branch name or commit SHA) via the REST API
+ * `GET /repos/{owner}/{repo}/commits/{ref}/check-runs`. Returns up to 100
+ * runs — sufficient for any real CI setup. Does not paginate: callers treat
+ * this as a best-effort snapshot, not an exhaustive list.
+ *
+ * A 403/404 (no Actions access, or repo without checks) should be treated by
+ * the caller as "no checks" — same fail-soft pattern as the alert endpoints.
+ */
+export async function getCheckRuns(ref: string, opts: GhOverridable = {}): Promise<CheckRun[]> {
+  const raw = await runGh(["api", `repos/{owner}/{repo}/commits/${encodeURIComponent(ref)}/check-runs?per_page=100`], {
+    ...ghOpts(opts),
+    json: true,
+  });
+  return CheckRunsResponseSchema.parse(raw).check_runs;
 }
 
 const URL_RE = /https?:\/\/\S+/g;

@@ -258,6 +258,44 @@ export type SecretScanningAlert = z.infer<typeof SecretScanningAlertSchema>;
 export const SecretScanningAlertListSchema = z.array(SecretScanningAlertSchema);
 
 /**
+ * A single GitHub Actions (or third-party) check run as returned by
+ * `GET /repos/{o}/{r}/commits/{ref}/check-runs`. Only the fields
+ * Minesweeper keys on are projected; everything else passes through
+ * via `.loose()`. `output.text` is intentionally omitted — it can be
+ * thousands of lines and the executor only needs the title/summary.
+ */
+export const CheckRunSchema = z
+  .object({
+    id: z.number().int(),
+    name: z.string(),
+    status: z.enum(["queued", "in_progress", "completed"]),
+    conclusion: z
+      .enum(["success", "failure", "neutral", "cancelled", "skipped", "timed_out", "action_required", "stale"])
+      .nullable()
+      .optional(),
+    started_at: z.iso.datetime().nullable().optional(),
+    completed_at: z.iso.datetime().nullable().optional(),
+    html_url: z.url(),
+    head_sha: z.string(),
+    output: z
+      .object({
+        title: z.string().nullable().optional(),
+        summary: z.string().nullable().optional(),
+      })
+      .loose()
+      .optional(),
+    app: z.object({ name: z.string().optional() }).loose().optional(),
+  })
+  .loose();
+export type CheckRun = z.infer<typeof CheckRunSchema>;
+
+/** Wrapper returned by the check-runs REST endpoint. */
+export const CheckRunsResponseSchema = z.object({
+  total_count: z.number().int(),
+  check_runs: z.array(CheckRunSchema),
+});
+
+/**
  * Locations API for a single secret-scanning alert
  * (`GET /repos/{o}/{r}/secret-scanning/alerts/{n}/locations`). Returned as a
  * flat array; we surface only the commit-path entries the planner needs.

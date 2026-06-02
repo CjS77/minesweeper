@@ -249,6 +249,7 @@ async function runDaemon(): Promise<void> {
       await supervisor.sweepClosedIssues();
       await supervisor.resumePausedWorktrees();
       await supervisor.pollPrFeedback();
+      await supervisor.pollCIFeedback();
     },
   });
 
