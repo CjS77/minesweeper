@@ -295,6 +295,18 @@ Once a Minesweeper PR is open, the daemon keeps watching it. On every poll tick,
 * The feedback loop ends naturally when the issue is closed (e.g. PR merged); the closed-issue sweep then archives and
   removes the worktree as usual.
 
+### Responding to failing CI checks
+
+Once a Minesweeper PR is open, the daemon also watches its check runs. On every poll tick, for every worktree whose state is `mode ∈ {Execution, AddressingPRFeedback, AddressingCIFailure}, status = Complete` and has a recorded `prNumber`, the daemon calls `GET /repos/{o}/{r}/commits/{branch}/check-runs`:
+
+* If any check is still `queued` or `in_progress`, the daemon skips the tick — it waits for all checks to settle so the executor receives the complete failure picture.
+* If all checks are terminal and at least one has `conclusion ∈ {failure, timed_out, action_required}`, the daemon renders the failing check names, conclusions, and output summaries to `.minesweeper/ci_check_failures.md`, flips state to `mode = AddressingCIFailure, status = InProgress`, and re-runs the executor.
+* A SHA watermark (`ciChecksProcessedAt` on `state.json`) records the HEAD commit the daemon has acted on, so the same failing commit is never processed twice.
+* A lifetime counter (`ciFixIterations`) caps total CI-fix dispatches at `MINESWEEPER_MAX_REVIEW_ROUNDS`. When the cap is reached the daemon emits a WARN and stops dispatching; the PR stays open for a human to inspect.
+* The executor pushes incremental commits (no squash, no force-push). CI re-runs on the new commit; if it passes, no further dispatch occurs.
+
+CI checks respond to the same `MINESWEEPER_CI_CHECKS_ELIGIBLE` flag (default `true`). Set it to `false` to disable CI-failure response entirely — useful on repos where CI is slow or flaky and you prefer to handle failures manually.
+
 ### Environment variables
 
 The defaults below are the canonical values; `src/config.ts` is the source of truth. See `.env.sample` for a
@@ -304,6 +316,7 @@ copy-pasteable template.
 |----------------------------------------|----------------------------------------------------------------------|-----------------------|
 | `MINESWEEPER_DEFAULT_ELIGIBLE`         | Issues are eligible by default                                       | `false`               |
 | `MINESWEEPER_ALERTS_ELIGIBLE`          | Code-scanning & secret-scanning alerts are eligible (no labels)      | `true`                |
+| `MINESWEEPER_CI_CHECKS_ELIGIBLE`       | Re-run executor when GitHub check runs fail on an open PR            | `true`                |
 | `MINESWEEPER_ALWAYS_FIX_LABEL`         | Issues labelled with this value are _always_ eligible                | `"autofix"`           |
 | `MINESWEEPER_TRY_FIX_LABEL`            | Issues labelled with this value are eligible _after_ the screener clears them | `"tryFix"`   |
 | `MINESWEEPER_NEVER_FIX_LABEL`          | Issues labelled with this value are _never_ eligible                 | `"manual"`            |

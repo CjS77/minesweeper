@@ -436,6 +436,7 @@ function captureError(fn: () => unknown): Error {
 const EXPECTED_SUMMARY_KEYS = [
   "defaultEligible",
   "alertsEligible",
+  "ciChecksEligible",
   "alwaysFixLabel",
   "tryFixLabel",
   "neverFixLabel",
@@ -460,7 +461,7 @@ const EXPECTED_SUMMARY_KEYS = [
 ] as const;
 
 describe("config.sources (provenance embedded in the resolved Config)", () => {
-  it("has all 23 non-derived keys with source 'default' when nothing is set", () => {
+  it("has all 24 non-derived keys with source 'default' when nothing is set", () => {
     const cfg = loadConfigIsolated({}, { configFile: null, repoConfigFile: null });
 
     expect(Object.keys(cfg.sources).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());

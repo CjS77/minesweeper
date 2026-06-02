@@ -279,7 +279,7 @@ describe("listOrphans", () => {
     const orphans = await listOrphans(worktreesRoot);
     expect(orphans).toHaveLength(1);
     expect(orphans[0]?.state?.issueNumber).toBe(77);
-    expect(orphans[0]?.state?.version).toBe(5);
+    expect(orphans[0]?.state?.version).toBe(6);
     expect(orphans[0]?.state?.kind).toBe("issue");
     expect(orphans[0]?.state?.prNumber).toBeNull();
     expect(orphans[0]?.state?.prFeedbackProcessedAt).toBeNull();

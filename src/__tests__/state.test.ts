@@ -44,7 +44,9 @@ describe("initState", () => {
     expect(state.kind).toBe("issue");
     expect(state.canResumeAt).toBeNull();
     expect(state.pausedFromStatus).toBeNull();
-    expect(state.version).toBe(5);
+    expect(state.ciChecksProcessedAt).toBeNull();
+    expect(state.ciFixIterations).toBeNull();
+    expect(state.version).toBe(6);
 
     const onDisk = JSON.parse(await readFile(statePath(tmp), "utf8"));
     expect(onDisk).toEqual(state);
@@ -124,7 +126,7 @@ describe("readState / writeState", () => {
     await expect(readState(tmp)).rejects.toThrow(/not valid JSON/);
   });
 
-  it("migrates v1 state on read by chaining v1 → v2 → v3 → v4 → v5 with new fields defaulted", async () => {
+  it("migrates v1 state on read by chaining v1 → v2 → v3 → v4 → v5 → v6 with new fields defaulted", async () => {
     const v1 = {
       version: 1,
       issueNumber: 5,
@@ -141,18 +143,20 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v1));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(5);
+    expect(loaded.version).toBe(6);
     expect(loaded.assessmentReason).toBeNull();
     expect(loaded.prNumber).toBeNull();
     expect(loaded.prFeedbackProcessedAt).toBeNull();
     expect(loaded.kind).toBe("issue");
     expect(loaded.canResumeAt).toBeNull();
     expect(loaded.pausedFromStatus).toBeNull();
+    expect(loaded.ciChecksProcessedAt).toBeNull();
+    expect(loaded.ciFixIterations).toBeNull();
     expect(loaded.issueNumber).toBe(5);
     expect(loaded.mode).toBe("Planning");
   });
 
-  it("migrates v2 state on read by adding prNumber, prFeedbackProcessedAt, kind, and v5 defaults", async () => {
+  it("migrates v2 state on read by adding prNumber, prFeedbackProcessedAt, kind, and v6 defaults", async () => {
     const v2 = {
       version: 2,
       issueNumber: 9,
@@ -170,12 +174,14 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v2));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(5);
+    expect(loaded.version).toBe(6);
     expect(loaded.prNumber).toBeNull();
     expect(loaded.prFeedbackProcessedAt).toBeNull();
     expect(loaded.kind).toBe("issue");
     expect(loaded.canResumeAt).toBeNull();
     expect(loaded.pausedFromStatus).toBeNull();
+    expect(loaded.ciChecksProcessedAt).toBeNull();
+    expect(loaded.ciFixIterations).toBeNull();
     expect(loaded.mode).toBe("Execution");
     expect(loaded.status).toBe("Complete");
     expect(loaded.assessment).toBe("Execute");
@@ -201,12 +207,14 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v3));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(5);
+    expect(loaded.version).toBe(6);
     expect(loaded.kind).toBe("issue");
     expect(loaded.prNumber).toBe(42);
     expect(loaded.prFeedbackProcessedAt).toBe("2026-05-02T00:00:00.000Z");
     expect(loaded.canResumeAt).toBeNull();
     expect(loaded.pausedFromStatus).toBeNull();
+    expect(loaded.ciChecksProcessedAt).toBeNull();
+    expect(loaded.ciFixIterations).toBeNull();
   });
 
   it("migrates v4 state on read by adding canResumeAt and pausedFromStatus defaulted to null", async () => {
@@ -230,9 +238,11 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v4));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(5);
+    expect(loaded.version).toBe(6);
     expect(loaded.canResumeAt).toBeNull();
     expect(loaded.pausedFromStatus).toBeNull();
+    expect(loaded.ciChecksProcessedAt).toBeNull();
+    expect(loaded.ciFixIterations).toBeNull();
     expect(loaded.kind).toBe("issue");
     expect(loaded.mode).toBe("Execution");
     expect(loaded.status).toBe("Writing");
@@ -253,21 +263,25 @@ describe("readState / writeState", () => {
       updatedAt: "2026-05-01T00:00:00.000Z",
     };
     const migrated = migrateIfNeeded(v1) as Record<string, unknown>;
-    expect(migrated["version"]).toBe(5);
+    expect(migrated["version"]).toBe(6);
     expect(migrated["assessmentReason"]).toBeNull();
     expect(migrated["prNumber"]).toBeNull();
     expect(migrated["prFeedbackProcessedAt"]).toBeNull();
+    expect(migrated["ciChecksProcessedAt"]).toBeNull();
+    expect(migrated["ciFixIterations"]).toBeNull();
     expect(migrated["kind"]).toBe("issue");
     expect(migrated["canResumeAt"]).toBeNull();
     expect(migrated["pausedFromStatus"]).toBeNull();
 
     const v2 = { ...v1, version: 2, assessmentReason: null };
     const migrated2 = migrateIfNeeded(v2) as Record<string, unknown>;
-    expect(migrated2["version"]).toBe(5);
+    expect(migrated2["version"]).toBe(6);
     expect(migrated2["prNumber"]).toBeNull();
     expect(migrated2["kind"]).toBe("issue");
     expect(migrated2["canResumeAt"]).toBeNull();
     expect(migrated2["pausedFromStatus"]).toBeNull();
+    expect(migrated2["ciChecksProcessedAt"]).toBeNull();
+    expect(migrated2["ciFixIterations"]).toBeNull();
   });
 
   it("round-trips a Paused state with canResumeAt and pausedFromStatus", async () => {
@@ -340,7 +354,7 @@ describe("atomic writes", () => {
       // Each snapshot must be parseable JSON matching the schema, with no
       // torn payload. JSON.parse would throw on a partial write.
       const parsed = JSON.parse(raw);
-      expect(parsed.version).toBe(5);
+      expect(parsed.version).toBe(6);
       expect(parsed.issueNumber).toBe(99);
       expect(typeof parsed.branchName).toBe("string");
       const branch = parsed.branchName as string;

@@ -8,8 +8,9 @@
  * to a terminal status inside this single process.
  *
  * Modes wired up (post-plan-12): `Planning`, `Assess`, `Execution`,
- * `Refine`, `AddressingPRFeedback`. `Delegated` is terminal — it is
- * the post-refine resting state (`mode=Delegated`, `status=Complete`).
+ * `Refine`, `AddressingPRFeedback`, `AddressingCIFailure`. `Delegated`
+ * is terminal — it is the post-refine resting state
+ * (`mode=Delegated`, `status=Complete`).
  *
  * Multi-mode flows run inside one child invocation: each mode handler
  * persists its outgoing state to `.minesweeper/state.json` and
@@ -21,6 +22,9 @@
  *                                                          │
  *   On reviewer feedback the daemon re-spawns the worktree ┘
  *   into AddressingPRFeedback → (Complete, branch pushed)
+ *
+ *   On failing CI the daemon re-spawns the worktree into
+ *   AddressingCIFailure → (Complete, branch pushed)
  *
  * The child only exits 0 once `status` reaches a terminal value
  * (`Complete` or `Failed`), at which point the supervisor archives
@@ -38,6 +42,7 @@ import { runExecution as defaultRunExecution, type ExecutionDeps } from "./modes
 import { runAssess as defaultRunAssess, type AssessDeps } from "./modes/assess.js";
 import { runRefine as defaultRunRefine, type RefineDeps } from "./modes/refine.js";
 import { runAddressingPrFeedback as defaultRunAddressingPrFeedback, type FeedbackDeps } from "./modes/feedback.js";
+import { runAddressingCIFailure as defaultRunAddressingCIFailure, type CIFeedbackDeps } from "./modes/ci_feedback.js";
 import { isApiLimitError, resumeTimeFromError } from "../claude/index.js";
 
 /** Test seam: the planning mode runner. Default delegates to `runPlanning`. */
@@ -54,6 +59,9 @@ export type RunRefineFn = (deps: RefineDeps) => Promise<State>;
 
 /** Test seam: the PR-feedback mode runner. Default delegates to `runAddressingPrFeedback`. */
 export type RunAddressingPrFeedbackFn = (deps: FeedbackDeps) => Promise<State>;
+
+/** Test seam: the CI-failure mode runner. Default delegates to `runAddressingCIFailure`. */
+export type RunAddressingCIFailureFn = (deps: CIFeedbackDeps) => Promise<State>;
 
 export interface HandleChildOptions {
   /** The work-item number passed on the CLI. Cross-checked against state.json. */
@@ -80,6 +88,8 @@ export interface HandleChildOptions {
   runRefine?: RunRefineFn;
   /** Override the PR-feedback mode handler (tests). */
   runAddressingPrFeedback?: RunAddressingPrFeedbackFn;
+  /** Override the CI-failure mode handler (tests). */
+  runAddressingCIFailure?: RunAddressingCIFailureFn;
   /** Override the logger event sink (tests). */
   emit?: Logger["event"];
 }
@@ -102,6 +112,7 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
   const runAssess = opts.runAssess ?? defaultRunAssess;
   const runRefine = opts.runRefine ?? defaultRunRefine;
   const runAddressingPrFeedback = opts.runAddressingPrFeedback ?? defaultRunAddressingPrFeedback;
+  const runAddressingCIFailure = opts.runAddressingCIFailure ?? defaultRunAddressingCIFailure;
   const emit = opts.emit ?? defaultEvent;
 
   let state = await readState(cwd);
@@ -143,6 +154,7 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
         runAssess,
         runRefine,
         runAddressingPrFeedback,
+        runAddressingCIFailure,
       });
     } catch (err) {
       if (!isApiLimitError(err)) throw err;
@@ -191,6 +203,7 @@ interface DispatchDeps {
   runAssess: RunAssessFn;
   runRefine: RunRefineFn;
   runAddressingPrFeedback: RunAddressingPrFeedbackFn;
+  runAddressingCIFailure: RunAddressingCIFailureFn;
 }
 
 async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
@@ -205,6 +218,8 @@ async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
       return deps.runRefine({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "AddressingPRFeedback":
       return deps.runAddressingPrFeedback({ config: deps.config, cwd: deps.cwd, state: deps.state });
+    case "AddressingCIFailure":
+      return deps.runAddressingCIFailure({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "Delegated":
       throw new Error(
         `child handler: dispatched into terminal mode=${mode} with non-terminal status=${deps.state.status}`,
