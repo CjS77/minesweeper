@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-06-16
+
+### Added
+- GitHub App bot identity. When a GitHub App is configured (new `MINESWEEPER_GITHUB_APP_ID`,
+  `MINESWEEPER_GITHUB_APP_INSTALLATION_ID`, and `MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH` /
+  `MINESWEEPER_GITHUB_APP_PRIVATE_KEY` settings), Minesweeper mints a short-lived installation access token and uses it
+  for every `gh` call, the branch push, and the worktree commit identity — so PRs are opened by, and commits authored
+  by, the App's bot user instead of whoever runs the daemon. The branch push is forced over an https URL with the token
+  injected via `GIT_CONFIG_*` env (never argv or `.git/config`), so an ssh `origin` cannot bypass it. Default-off: with
+  no App configured the ambient `gh`/git identity is used exactly as before.
+- The daemon announces at startup which GitHub identity it is acting as — the App bot (with app id, bot login, and
+  repo) or ambient `gh` credentials — so it is obvious when the App is not actually active.
+
+### Changed
+- Alert-fetch warnings no longer carry gh's misleading "needs the admin:repo_hook scope … gh auth refresh" advisory,
+  which is unrelated to the code/secret-scanning endpoints; the substantive error (e.g. "no analysis found") is kept.
+
+### Fixed
+- `+1`-curated reviewer-bot comments on Minesweeper PRs are now handled correctly. Fixes #70.
+
+### Dependency updates
+- @anthropic-ai/sdk: 0.81.0 => 0.93.0
+- qs: 6.15.1 => 6.15.2
+- tsx: 4.22.2 => 4.22.4
+
+## [0.9.0] — 2026-06-02
+
+### Added
+- The daemon terminates an in-flight child when its work item is closed on GitHub mid-run, instead of letting the child
+  keep working a dead issue. Fixes #59.
+- Minesweeper responds to failing CI checks on its open PRs: the daemon polls check runs and re-dispatches the executor
+  to address the failures. Fixes #66.
+
+### Dependency updates
+- typescript-eslint: 8.59.2 => 8.59.4
+- @typescript-eslint/parser: 8.59.2 => 8.59.4
+- tsx: 4.21.0 => 4.22.2
+
 ## [0.8.0] — 2026-05-15
 
 ### Added
@@ -208,7 +246,9 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/CjS77/minesweeper/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/CjS77/minesweeper/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/CjS77/minesweeper/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/CjS77/minesweeper/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/CjS77/minesweeper/compare/v0.5.0...v0.6.0
