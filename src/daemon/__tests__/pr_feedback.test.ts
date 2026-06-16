@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadConfig } from "../../config.js";
 import type * as ghModule from "../../github/index.js";
-import type { PrReviewThread, PullRequest } from "../../github/index.js";
+import type { PrReviewThread, PullRequest, ReviewCommentReaction } from "../../github/index.js";
 import type * as worktreeModule from "../../worktree.js";
 import { pollPrFeedback, type PrFeedbackDeps } from "../pr_feedback.js";
 import {
@@ -23,6 +23,7 @@ interface MakeStateOpts {
   mode?: State["mode"];
   status?: State["status"];
   prFeedbackProcessedAt?: string | null;
+  prReactionsProcessedAt?: string | null;
 }
 
 async function seedWorktree(root: string, opts: MakeStateOpts): Promise<string> {
@@ -40,6 +41,7 @@ async function seedWorktree(root: string, opts: MakeStateOpts): Promise<string> 
     status: opts.status ?? "Complete",
     prNumber: opts.prNumber,
     prFeedbackProcessedAt: opts.prFeedbackProcessedAt ?? null,
+    prReactionsProcessedAt: opts.prReactionsProcessedAt ?? null,
   });
   return path;
 }
@@ -79,17 +81,21 @@ function makeDeps(overrides: Partial<PrFeedbackDeps> = {}): {
   deps: PrFeedbackDeps;
   getPullRequest: ReturnType<typeof vi.fn>;
   getReviewThreads: ReturnType<typeof vi.fn>;
+  getReviewCommentReactions: ReturnType<typeof vi.fn>;
   getRepoOwner: ReturnType<typeof vi.fn>;
   listOrphans: ReturnType<typeof vi.fn>;
   loadCodeownerLogins: ReturnType<typeof vi.fn>;
+  loadExtraReviewers: ReturnType<typeof vi.fn>;
   resume: ReturnType<typeof vi.fn>;
   emit: ReturnType<typeof vi.fn>;
 } {
   const getPullRequest = vi.fn(async () => makePr());
   const getReviewThreads = vi.fn(async () => [] as PrReviewThread[]);
+  const getReviewCommentReactions = vi.fn(async () => [] as ReviewCommentReaction[]);
   const getRepoOwner = vi.fn(async () => "repoOwner");
   const listOrphans = vi.fn(async () => [] as Array<{ path: string; state?: State }>);
   const loadCodeownerLogins = vi.fn(async () => new Set<string>());
+  const loadExtraReviewers = vi.fn(async () => new Set<string>());
   const resume = vi.fn(async () => true);
   const emit = vi.fn();
   const deps: PrFeedbackDeps = {
@@ -101,16 +107,29 @@ function makeDeps(overrides: Partial<PrFeedbackDeps> = {}): {
     github: {
       getPullRequest: getPullRequest as unknown as typeof ghModule.getPullRequest,
       getReviewThreads: getReviewThreads as unknown as typeof ghModule.getReviewThreads,
+      getReviewCommentReactions: getReviewCommentReactions as unknown as typeof ghModule.getReviewCommentReactions,
       getRepoOwner: getRepoOwner as unknown as typeof ghModule.getRepoOwner,
     },
     worktree: {
       listOrphans: listOrphans as unknown as typeof worktreeModule.listOrphans,
     },
     loadCodeownerLogins,
+    loadExtraReviewers,
     emit,
     ...overrides,
   };
-  return { deps, getPullRequest, getReviewThreads, getRepoOwner, listOrphans, loadCodeownerLogins, resume, emit };
+  return {
+    deps,
+    getPullRequest,
+    getReviewThreads,
+    getReviewCommentReactions,
+    getRepoOwner,
+    listOrphans,
+    loadCodeownerLogins,
+    loadExtraReviewers,
+    resume,
+    emit,
+  };
 }
 
 describe("pollPrFeedback", () => {
@@ -362,5 +381,128 @@ describe("pollPrFeedback", () => {
 
     await pollPrFeedback(ctx.deps);
     expect(ctx.getPullRequest).not.toHaveBeenCalled();
+  });
+
+  describe("+1-curated comments", () => {
+    const botThread = (overrides: Partial<PrReviewThread["comments"][number]> = {}): PrReviewThread => ({
+      id: "7001",
+      isResolved: false,
+      path: "src/foo.ts",
+      line: 22,
+      comments: [
+        {
+          id: "7001",
+          author: { login: "coderabbitai[bot]" },
+          body: "Avoid the unbounded loop here.",
+          createdAt: "2026-05-01T00:00:00Z",
+          plusOneCount: 1,
+          ...overrides,
+        },
+      ],
+    });
+
+    it("dispatches a bot comment approved by a trusted reviewer's fresh +1", async () => {
+      const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
+      const ctx = makeDeps();
+      ctx.loadExtraReviewers.mockResolvedValueOnce(new Set(["coderabbitai[bot]"]));
+      ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+      ctx.getReviewThreads.mockResolvedValueOnce([botThread()]);
+      ctx.getReviewCommentReactions.mockResolvedValueOnce([
+        { content: "+1", createdAt: "2026-06-01T10:00:00Z", user: { login: "repoOwner" } },
+      ] satisfies ReviewCommentReaction[]);
+
+      await pollPrFeedback(ctx.deps);
+
+      expect(ctx.resume).toHaveBeenCalledTimes(1);
+      const fileContent = await readFile(join(path, PR_REVIEW_COMMENTS_FILE), "utf8");
+      expect(fileContent).toContain("Avoid the unbounded loop here.");
+      expect(fileContent).toContain("selected via 👍");
+      expect(fileContent).toContain("@coderabbitai[bot]");
+
+      const acksJson = await readFile(join(path, PR_REVIEW_COMMENT_ACKS_FILE), "utf8");
+      expect(PrReviewCommentAcksSchema.parse(JSON.parse(acksJson)).commentIds).toEqual([7001]);
+
+      // Reaction axis advances to the +1 time; the feedback axis stays put.
+      const after = await readState(path);
+      expect(after.prReactionsProcessedAt).toBe("2026-06-01T10:00:00.000Z");
+      expect(after.prFeedbackProcessedAt).toBeNull();
+    });
+
+    it("does not dispatch when the +1 comes from a non-trusted reactor", async () => {
+      const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
+      const ctx = makeDeps();
+      ctx.loadExtraReviewers.mockResolvedValueOnce(new Set(["coderabbitai[bot]"]));
+      ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+      ctx.getReviewThreads.mockResolvedValueOnce([botThread()]);
+      ctx.getReviewCommentReactions.mockResolvedValueOnce([
+        { content: "+1", createdAt: "2026-06-01T10:00:00Z", user: { login: "random-passerby" } },
+      ] satisfies ReviewCommentReaction[]);
+
+      await pollPrFeedback(ctx.deps);
+      expect(ctx.resume).not.toHaveBeenCalled();
+    });
+
+    it("never fetches reactions for a comment whose author is not authorised", async () => {
+      const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
+      const ctx = makeDeps();
+      // No extra reviewers: coderabbit is not an allowed author.
+      ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+      ctx.getReviewThreads.mockResolvedValueOnce([botThread()]);
+
+      await pollPrFeedback(ctx.deps);
+      expect(ctx.getReviewCommentReactions).not.toHaveBeenCalled();
+      expect(ctx.resume).not.toHaveBeenCalled();
+    });
+
+    it("never fetches reactions when the +1 summary count is zero", async () => {
+      const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
+      const ctx = makeDeps();
+      ctx.loadExtraReviewers.mockResolvedValueOnce(new Set(["coderabbitai[bot]"]));
+      ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+      ctx.getReviewThreads.mockResolvedValueOnce([botThread({ plusOneCount: 0 })]);
+
+      await pollPrFeedback(ctx.deps);
+      expect(ctx.getReviewCommentReactions).not.toHaveBeenCalled();
+      expect(ctx.resume).not.toHaveBeenCalled();
+    });
+
+    it("ignores a +1 that predates the reactions watermark", async () => {
+      const path = await seedWorktree(worktreesRoot, {
+        issueNumber: 42,
+        prNumber: 101,
+        prReactionsProcessedAt: "2026-06-01T10:00:00.000Z",
+      });
+      const ctx = makeDeps();
+      ctx.loadExtraReviewers.mockResolvedValueOnce(new Set(["coderabbitai[bot]"]));
+      ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+      ctx.getReviewThreads.mockResolvedValueOnce([botThread()]);
+      ctx.getReviewCommentReactions.mockResolvedValueOnce([
+        { content: "+1", createdAt: "2026-06-01T10:00:00Z", user: { login: "repoOwner" } },
+      ] satisfies ReviewCommentReaction[]);
+
+      await pollPrFeedback(ctx.deps);
+      expect(ctx.resume).not.toHaveBeenCalled();
+    });
+
+    it("treats a trusted reviewer's own comment as actionable without a +1 (path 3 dedupe)", async () => {
+      const path = await seedWorktree(worktreesRoot, { issueNumber: 42, prNumber: 101 });
+      const ctx = makeDeps();
+      ctx.listOrphans.mockResolvedValueOnce([{ path, state: await readState(path) }]);
+      ctx.getReviewThreads.mockResolvedValueOnce([
+        botThread({ author: { login: "repoOwner" }, createdAt: "2026-06-02T00:00:00Z" }),
+      ]);
+
+      await pollPrFeedback(ctx.deps);
+
+      expect(ctx.resume).toHaveBeenCalledTimes(1);
+      // Authored path keys off createdAt, so the reactions fetch is never needed.
+      expect(ctx.getReviewCommentReactions).not.toHaveBeenCalled();
+      const acksJson = await readFile(join(path, PR_REVIEW_COMMENT_ACKS_FILE), "utf8");
+      expect(PrReviewCommentAcksSchema.parse(JSON.parse(acksJson)).commentIds).toEqual([7001]);
+
+      const after = await readState(path);
+      expect(after.prFeedbackProcessedAt).toBe("2026-06-02T00:00:00.000Z");
+      expect(after.prReactionsProcessedAt).toBeNull();
+    });
   });
 });

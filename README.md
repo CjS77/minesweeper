@@ -285,11 +285,18 @@ Once a Minesweeper PR is open, the daemon keeps watching it. On every poll tick,
 * Authorised reviewers are the **repo owner** (`gh repo view --json owner`) plus every bare `@username` listed in the
   repo's `CODEOWNERS` file (one of `.github/CODEOWNERS`, `CODEOWNERS`, or `docs/CODEOWNERS`). `@org/team` entries are
   ignored in v0 — resolving teams to member logins is deferred.
+* **Curating a bot reviewer's comments with a 👍.** Comments from a third-party reviewer such as CodeRabbit are not
+  authored by an authorised reviewer, so they are not actioned automatically. Add the bot's login to an extra-reviewer
+  allowlist with `minesweeper reviewers add 'coderabbitai[bot]'` (stored in `.minesweeper/reviewers.json`); then a
+  comment from that login becomes actionable **only** once an authorised reviewer adds a `+1` reaction to it. The `+1`
+  is the trigger — the code owner curates exactly which of the bot's suggestions to apply. A directly authored comment
+  from an authorised reviewer still needs no reaction. Manage the allowlist with `minesweeper reviewers add|remove|list`.
 * The executor's new commits are pushed with an **incremental `git push`** (no force, no re-squash) so the PR history
   stays readable and never overwrites a reviewer's own pushed commits. GitHub's squash-merge button still produces a
   single commit at merge time.
-* A watermark (`prFeedbackProcessedAt` on `state.json`) records the newest review/comment timestamp the daemon has
-  acted on, so the same feedback is never processed twice.
+* Two watermarks on `state.json` prevent reprocessing: `prFeedbackProcessedAt` tracks the newest review/authored-comment
+  timestamp acted on, and `prReactionsProcessedAt` separately tracks the newest authorising `+1` — reactions live on
+  their own clock because a thumbs-up can land long after the comment it approves.
 * If a reviewer force-pushes to the PR branch, the incremental push will fail and Minesweeper bails out — the issue is
   labelled with `$MINESWEEPER_FAILED_LABEL` and the worktree is preserved for a human to inspect.
 * The feedback loop ends naturally when the issue is closed (e.g. PR merged); the closed-issue sweep then archives and

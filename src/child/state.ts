@@ -35,9 +35,16 @@
  *     (count of CI-fix dispatches over the worktree's lifetime; `null`
  *     means the CI-fix mode has never been entered). Legacy v5 files are
  *     migrated with both fields `null`.
+ *   - v7 (👍-curated feedback): adds `prReactionsProcessedAt: string |
+ *     null` — a watermark, independent of `prFeedbackProcessedAt`, that
+ *     records the newest `+1` reaction timestamp the PR-feedback poller
+ *     has acted on. Reactions live on their own clock (a `+1` can land
+ *     long after the comment it approves), so folding them into the
+ *     feedback watermark would skip unrelated reviews/comments. Legacy
+ *     v6 files are migrated with the field `null`.
  *
- * Migrations run on read; v1 through v5 state files are upgraded
- * transparently. The migration chain is v1 → v2 → v3 → v4 → v5 → v6.
+ * Migrations run on read; v1 through v6 state files are upgraded
+ * transparently. The migration chain is v1 → v2 → v3 → v4 → v5 → v6 → v7.
  */
 
 import { promises as fs } from "node:fs";
@@ -79,7 +86,7 @@ export type Assessment = z.infer<typeof Assessment>;
 export const WorkItemKind = z.enum(["issue", "codeScanningAlert", "secretScanningAlert"]);
 export type WorkItemKind = z.infer<typeof WorkItemKind>;
 
-export const STATE_SCHEMA_VERSION = 6;
+export const STATE_SCHEMA_VERSION = 7;
 
 export const StateSchema = z.object({
   version: z.literal(STATE_SCHEMA_VERSION),
@@ -94,6 +101,7 @@ export const StateSchema = z.object({
   assessmentReason: z.string().nullable(),
   prNumber: z.number().int().positive().nullable(),
   prFeedbackProcessedAt: z.iso.datetime().nullable(),
+  prReactionsProcessedAt: z.iso.datetime().nullable(),
   ciChecksProcessedAt: z.string().nullable(),
   ciFixIterations: z.number().int().min(0).nullable(),
   canResumeAt: z.iso.datetime().nullable(),
@@ -204,6 +212,31 @@ const StateV5Schema = z.object({
   updatedAt: z.iso.datetime(),
 });
 
+/**
+ * v6 schema, kept around purely for migration. Identical to the current
+ * `StateSchema` minus the v7 `prReactionsProcessedAt` field.
+ */
+const StateV6Schema = z.object({
+  version: z.literal(6),
+  kind: WorkItemKind,
+  issueNumber: z.number().int().positive(),
+  branchName: z.string().min(1),
+  mode: Mode,
+  status: Status,
+  iterations: z.number().int().min(0),
+  maxIterations: z.number().int().min(1),
+  assessment: Assessment.nullable(),
+  assessmentReason: z.string().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  prFeedbackProcessedAt: z.iso.datetime().nullable(),
+  ciChecksProcessedAt: z.string().nullable(),
+  ciFixIterations: z.number().int().min(0).nullable(),
+  canResumeAt: z.iso.datetime().nullable(),
+  pausedFromStatus: Status.nullable(),
+  startedAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
 export const STATE_DIR = ".minesweeper";
 export const STATE_FILE = "state.json";
 
@@ -248,6 +281,7 @@ export async function initState(cwd: string, mode: Mode, opts: InitStateOptions)
     assessmentReason: null,
     prNumber: null,
     prFeedbackProcessedAt: null,
+    prReactionsProcessedAt: null,
     ciChecksProcessedAt: null,
     ciFixIterations: null,
     canResumeAt: null,
@@ -281,11 +315,12 @@ export async function readState(cwd: string): Promise<State> {
  * parse — otherwise a v1/v2 file on disk would fail the v3 literal
  * check and silently disappear from `listOrphans`.
  *
- * The chain is v1 → v2 → v3 → v4 → v5 → v6. Each step is additive:
+ * The chain is v1 → v2 → v3 → v4 → v5 → v6 → v7. Each step is additive:
  * v1 → v2 adds `assessmentReason: null`; v2 → v3 adds `prNumber: null`
  * and `prFeedbackProcessedAt: null`; v3 → v4 adds `kind: "issue"`;
  * v4 → v5 adds `canResumeAt: null` and `pausedFromStatus: null`;
- * v5 → v6 adds `ciChecksProcessedAt: null` and `ciFixIterations: null`.
+ * v5 → v6 adds `ciChecksProcessedAt: null` and `ciFixIterations: null`;
+ * v6 → v7 adds `prReactionsProcessedAt: null`.
  */
 export function migrateIfNeeded(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null) return raw;
@@ -315,6 +350,11 @@ export function migrateIfNeeded(raw: unknown): unknown {
   if (afterV4.version === 5) {
     const v5 = StateV5Schema.parse(current);
     current = { ...v5, version: 6, ciChecksProcessedAt: null, ciFixIterations: null };
+  }
+  const afterV5 = current as { version?: unknown };
+  if (afterV5.version === 6) {
+    const v6 = StateV6Schema.parse(current);
+    current = { ...v6, version: 7, prReactionsProcessedAt: null };
   }
   return current;
 }

@@ -46,7 +46,8 @@ describe("initState", () => {
     expect(state.pausedFromStatus).toBeNull();
     expect(state.ciChecksProcessedAt).toBeNull();
     expect(state.ciFixIterations).toBeNull();
-    expect(state.version).toBe(6);
+    expect(state.prReactionsProcessedAt).toBeNull();
+    expect(state.version).toBe(7);
 
     const onDisk = JSON.parse(await readFile(statePath(tmp), "utf8"));
     expect(onDisk).toEqual(state);
@@ -126,7 +127,7 @@ describe("readState / writeState", () => {
     await expect(readState(tmp)).rejects.toThrow(/not valid JSON/);
   });
 
-  it("migrates v1 state on read by chaining v1 → v2 → v3 → v4 → v5 → v6 with new fields defaulted", async () => {
+  it("migrates v1 state on read by chaining v1 → v2 → v3 → v4 → v5 → v6 → v7 with new fields defaulted", async () => {
     const v1 = {
       version: 1,
       issueNumber: 5,
@@ -143,7 +144,8 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v1));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(6);
+    expect(loaded.version).toBe(7);
+    expect(loaded.prReactionsProcessedAt).toBeNull();
     expect(loaded.assessmentReason).toBeNull();
     expect(loaded.prNumber).toBeNull();
     expect(loaded.prFeedbackProcessedAt).toBeNull();
@@ -174,7 +176,8 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v2));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(6);
+    expect(loaded.version).toBe(7);
+    expect(loaded.prReactionsProcessedAt).toBeNull();
     expect(loaded.prNumber).toBeNull();
     expect(loaded.prFeedbackProcessedAt).toBeNull();
     expect(loaded.kind).toBe("issue");
@@ -207,7 +210,8 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v3));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(6);
+    expect(loaded.version).toBe(7);
+    expect(loaded.prReactionsProcessedAt).toBeNull();
     expect(loaded.kind).toBe("issue");
     expect(loaded.prNumber).toBe(42);
     expect(loaded.prFeedbackProcessedAt).toBe("2026-05-02T00:00:00.000Z");
@@ -238,7 +242,8 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v4));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(6);
+    expect(loaded.version).toBe(7);
+    expect(loaded.prReactionsProcessedAt).toBeNull();
     expect(loaded.canResumeAt).toBeNull();
     expect(loaded.pausedFromStatus).toBeNull();
     expect(loaded.ciChecksProcessedAt).toBeNull();
@@ -263,7 +268,8 @@ describe("readState / writeState", () => {
       updatedAt: "2026-05-01T00:00:00.000Z",
     };
     const migrated = migrateIfNeeded(v1) as Record<string, unknown>;
-    expect(migrated["version"]).toBe(6);
+    expect(migrated["version"]).toBe(7);
+    expect(migrated["prReactionsProcessedAt"]).toBeNull();
     expect(migrated["assessmentReason"]).toBeNull();
     expect(migrated["prNumber"]).toBeNull();
     expect(migrated["prFeedbackProcessedAt"]).toBeNull();
@@ -275,13 +281,46 @@ describe("readState / writeState", () => {
 
     const v2 = { ...v1, version: 2, assessmentReason: null };
     const migrated2 = migrateIfNeeded(v2) as Record<string, unknown>;
-    expect(migrated2["version"]).toBe(6);
+    expect(migrated2["version"]).toBe(7);
     expect(migrated2["prNumber"]).toBeNull();
     expect(migrated2["kind"]).toBe("issue");
     expect(migrated2["canResumeAt"]).toBeNull();
     expect(migrated2["pausedFromStatus"]).toBeNull();
     expect(migrated2["ciChecksProcessedAt"]).toBeNull();
     expect(migrated2["ciFixIterations"]).toBeNull();
+    expect(migrated2["prReactionsProcessedAt"]).toBeNull();
+  });
+
+  it("migrates v6 state on read by adding prReactionsProcessedAt defaulted to null", async () => {
+    const v6 = {
+      version: 6,
+      kind: "issue",
+      issueNumber: 21,
+      branchName: "feat/v6-legacy",
+      mode: "AddressingPRFeedback",
+      status: "Complete",
+      iterations: 0,
+      maxIterations: 2,
+      assessment: null,
+      assessmentReason: null,
+      prNumber: 88,
+      prFeedbackProcessedAt: "2026-05-03T00:00:00.000Z",
+      ciChecksProcessedAt: null,
+      ciFixIterations: null,
+      canResumeAt: null,
+      pausedFromStatus: null,
+      startedAt: "2026-05-01T00:00:00.000Z",
+      updatedAt: "2026-05-03T00:00:00.000Z",
+    };
+    await fs.mkdir(join(tmp, ".minesweeper"), { recursive: true });
+    await writeFile(statePath(tmp), JSON.stringify(v6));
+
+    const loaded = await readState(tmp);
+    expect(loaded.version).toBe(7);
+    expect(loaded.prReactionsProcessedAt).toBeNull();
+    expect(loaded.prNumber).toBe(88);
+    expect(loaded.prFeedbackProcessedAt).toBe("2026-05-03T00:00:00.000Z");
+    expect(loaded.mode).toBe("AddressingPRFeedback");
   });
 
   it("round-trips a Paused state with canResumeAt and pausedFromStatus", async () => {
@@ -354,7 +393,7 @@ describe("atomic writes", () => {
       // Each snapshot must be parseable JSON matching the schema, with no
       // torn payload. JSON.parse would throw on a partial write.
       const parsed = JSON.parse(raw);
-      expect(parsed.version).toBe(6);
+      expect(parsed.version).toBe(7);
       expect(parsed.issueNumber).toBe(99);
       expect(typeof parsed.branchName).toBe("string");
       const branch = parsed.branchName as string;
