@@ -22,6 +22,7 @@ import {
   addReactionToReviewComment,
   getPullRequest,
   getRepoOwner,
+  getReviewCommentReactions,
   getReviewThreads,
   listCodeScanningAlerts,
   listIssues,
@@ -350,6 +351,40 @@ describe("getReviewThreads", () => {
   it("returns an empty array when the PR has no inline comments", async () => {
     mockExeca.mockResolvedValueOnce(ok("[]") as never);
     expect(await getReviewThreads(99)).toEqual([]);
+  });
+
+  it("surfaces the +1 reaction count from the comment's reactions summary", async () => {
+    mockExeca.mockResolvedValueOnce(ok(fixtureText("pr_review_comments_with_reactions.json")) as never);
+    const threads = await getReviewThreads(101);
+    expect(threads[0]?.comments[0]?.plusOneCount).toBe(1);
+    expect(threads[1]?.comments[0]?.plusOneCount).toBe(0);
+  });
+});
+
+describe("getReviewCommentReactions", () => {
+  it("calls the paginated reactions endpoint and normalises users to string-id shape", async () => {
+    mockExeca.mockResolvedValueOnce(ok(fixtureText("review_comment_reactions.json")) as never);
+    const reactions = await getReviewCommentReactions(7001);
+
+    expect(reactions).toEqual([
+      { content: "+1", createdAt: "2026-06-01T10:00:00Z", user: { login: "RepoOwner" } },
+      { content: "heart", createdAt: "2026-06-01T10:01:00Z", user: { login: "codeowner-alice" } },
+      { content: "+1", createdAt: "2026-06-01T10:02:00Z", user: { login: "ghost" } },
+    ]);
+
+    const { args } = lastCall();
+    expect(args.slice(0, 2)).toEqual(["api", "--paginate"]);
+    expect(args).toContain("repos/{owner}/{repo}/pulls/comments/7001/reactions");
+  });
+
+  it("returns an empty array when the comment has no reactions", async () => {
+    mockExeca.mockResolvedValueOnce(ok("[]") as never);
+    expect(await getReviewCommentReactions(7001)).toEqual([]);
+  });
+
+  it("surfaces gh failures as a thrown GhError", async () => {
+    mockExeca.mockResolvedValueOnce(fail("HTTP 404") as never);
+    await expect(getReviewCommentReactions(7001)).rejects.toBeInstanceOf(GhError);
   });
 });
 

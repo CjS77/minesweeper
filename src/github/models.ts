@@ -104,6 +104,12 @@ export const PrReviewThreadCommentSchema = z
     createdAt: z.iso.datetime(),
     path: z.string().nullable().optional(),
     line: z.number().int().nullable().optional(),
+    /**
+     * `+1` reaction count from the REST `reactions` summary, surfaced so
+     * the PR-feedback poller can cheaply skip the per-comment reactions
+     * fetch when nobody has thumbed-up the comment. Defaults to 0.
+     */
+    plusOneCount: z.number().int().nonnegative().default(0),
   })
   .loose();
 export type PrReviewThreadComment = z.infer<typeof PrReviewThreadCommentSchema>;
@@ -138,6 +144,21 @@ const RestUserSchema = z
  * {@link PrReviewThread} by `getReviewThreads`. Fields outside the set
  * Minesweeper keys on are passed through via `.loose()`.
  */
+/**
+ * The `reactions` summary object GitHub embeds in review-comment (and
+ * many other) REST payloads. Counts only — it does not say *who*
+ * reacted. The poller uses the `+1` count to decide whether the
+ * per-comment reactions endpoint is worth fetching. `.loose()` keeps the
+ * other emoji counts and the `url` field around without enumerating them.
+ */
+export const ReactionSummarySchema = z
+  .object({
+    total_count: z.number().int().optional(),
+    "+1": z.number().int().optional(),
+  })
+  .loose();
+export type ReactionSummary = z.infer<typeof ReactionSummarySchema>;
+
 export const RestReviewCommentSchema = z
   .object({
     id: z.number().int(),
@@ -147,9 +168,39 @@ export const RestReviewCommentSchema = z
     path: z.string().nullable().optional(),
     line: z.number().int().nullable().optional(),
     original_line: z.number().int().nullable().optional(),
+    reactions: ReactionSummarySchema.optional(),
   })
   .loose();
 export type RestReviewComment = z.infer<typeof RestReviewCommentSchema>;
+
+/**
+ * Raw REST shape of a single reaction as returned by
+ * `GET /repos/{o}/{r}/pulls/comments/{id}/reactions`. Unlike the
+ * summary, each row names the reacting `user` and its `created_at`, which
+ * is what the `+1` trigger keys on. REST `user.id` is numeric, so we
+ * reuse the same numeric-id variant as the review comments.
+ */
+export const RestReactionSchema = z
+  .object({
+    id: z.number().int(),
+    content: z.string(),
+    created_at: z.iso.datetime(),
+    user: RestUserSchema.nullable(),
+  })
+  .loose();
+export type RestReaction = z.infer<typeof RestReactionSchema>;
+
+/**
+ * Normalised reaction shape returned by `getReviewCommentReactions`. The
+ * numeric REST user id is dropped so the canonical (string-id)
+ * {@link UserSchema} applies, matching the rest of the github wrapper.
+ */
+export const ReviewCommentReactionSchema = z.object({
+  content: z.string(),
+  createdAt: z.iso.datetime(),
+  user: UserSchema,
+});
+export type ReviewCommentReaction = z.infer<typeof ReviewCommentReactionSchema>;
 
 export const PullRequestSchema = z
   .object({

@@ -15,6 +15,7 @@ import { runIssueListCommand, runIssueNewCommand } from "./commands/issues.js";
 import { runLabelsCommand } from "./commands/labels.js";
 import { runLogViewCommand } from "./commands/log.js";
 import { runModelsCommand } from "./commands/models.js";
+import { runReviewersCommand } from "./commands/reviewers.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { listOrphans } from "./worktree.js";
 
@@ -41,6 +42,9 @@ const LOGGER_FREE_COMMANDS = new Set([
   "config init",
   "config show",
   "config prompts",
+  "reviewers add",
+  "reviewers remove",
+  "reviewers list",
 ]);
 
 // Emits a single "config loaded" line for each command that runs with an
@@ -193,6 +197,34 @@ config
   .option("-f, --force", "overwrite the prompts directory if it already contains files")
   .action((opts: { force?: boolean }) => {
     runConfigPromptsCommand({ cwd: process.cwd(), force: Boolean(opts.force) });
+  });
+
+const reviewers = program
+  .command("reviewers")
+  .description("Manage the extra authorised-reviewer allowlist (e.g. CodeRabbit) the PR-feedback loop trusts.");
+
+reviewers
+  .command("add")
+  .description("Authorise a GitHub login so the code owner can curate its review comments with a +1.")
+  .argument("<login>", "GitHub login, e.g. coderabbitai[bot]")
+  .action(async (login: string) => {
+    await runReviewersCommand({ repoRoot: process.cwd(), action: "add", login });
+  });
+
+reviewers
+  .command("remove")
+  .alias("rm")
+  .description("De-authorise a previously added GitHub login.")
+  .argument("<login>", "GitHub login to remove")
+  .action(async (login: string) => {
+    await runReviewersCommand({ repoRoot: process.cwd(), action: "remove", login });
+  });
+
+reviewers
+  .command("list")
+  .description("Print the extra authorised reviewers configured for this repo.")
+  .action(async () => {
+    await runReviewersCommand({ repoRoot: process.cwd(), action: "list" });
   });
 
 program.parseAsync(process.argv).catch(handleFatal);
