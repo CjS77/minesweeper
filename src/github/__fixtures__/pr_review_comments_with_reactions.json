@@ -1,0 +1,26 @@
+[
+  {
+    "id": 7001,
+    "user": { "login": "coderabbitai[bot]", "id": 99 },
+    "body": "Avoid the unbounded loop here.",
+    "created_at": "2026-05-10T11:00:00Z",
+    "path": "src/foo.ts",
+    "line": 22,
+    "original_line": 22,
+    "in_reply_to_id": null,
+    "pull_request_review_id": 8101,
+    "reactions": { "url": "https://api.github.com/...", "total_count": 1, "+1": 1, "-1": 0, "heart": 0 }
+  },
+  {
+    "id": 7002,
+    "user": { "login": "coderabbitai[bot]", "id": 99 },
+    "body": "Nit: prefer const here.",
+    "created_at": "2026-05-10T11:05:00Z",
+    "path": "src/foo.ts",
+    "line": 30,
+    "original_line": 30,
+    "in_reply_to_id": null,
+    "pull_request_review_id": 8101,
+    "reactions": { "url": "https://api.github.com/...", "total_count": 0, "+1": 0 }
+  }
+]

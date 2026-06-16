@@ -164,9 +164,26 @@ async function safeList<T>(label: string, fn: () => Promise<T[]>, emit: Logger["
   try {
     return await fn();
   } catch (err) {
-    emit("daemon", "WARN", null, `poll: ${label} fetch failed (${(err as Error).message}); continuing without`);
+    const message = stripGhScopeHint((err as Error).message);
+    emit("daemon", "WARN", null, `poll: ${label} fetch failed (${message}); continuing without`);
     return [];
   }
+}
+
+/**
+ * `gh` tacks a misleading advisory onto some 404s, e.g. `gh: This API
+ * operation needs the "admin:repo_hook" scope. To request it, run: gh auth
+ * refresh -h github.com -s admin:repo_hook`. That scope is unrelated to the
+ * alert endpoints — the real cause is "no analysis found" / the feature being
+ * disabled on the repo — so we drop the advisory line to avoid sending
+ * operators down a dead end. The substantive error line is kept.
+ */
+export function stripGhScopeHint(message: string): string {
+  return message
+    .split("\n")
+    .filter((line) => !/needs the ".*?" scope|gh auth refresh/i.test(line))
+    .join("\n")
+    .trimEnd();
 }
 
 export interface PollLoopOptions {

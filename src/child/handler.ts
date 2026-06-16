@@ -44,6 +44,8 @@ import { runRefine as defaultRunRefine, type RefineDeps } from "./modes/refine.j
 import { runAddressingPrFeedback as defaultRunAddressingPrFeedback, type FeedbackDeps } from "./modes/feedback.js";
 import { runAddressingCIFailure as defaultRunAddressingCIFailure, type CIFeedbackDeps } from "./modes/ci_feedback.js";
 import { isApiLimitError, resumeTimeFromError } from "../claude/index.js";
+import { activateBotAuth as defaultActivateBotAuth, type PushAuth } from "../botAuth.js";
+import { setWorktreeGitIdentity as defaultSetWorktreeGitIdentity } from "../worktree.js";
 
 /** Test seam: the planning mode runner. Default delegates to `runPlanning`. */
 export type RunPlanningFn = (deps: PlanningDeps) => Promise<State>;
@@ -90,6 +92,10 @@ export interface HandleChildOptions {
   runAddressingPrFeedback?: RunAddressingPrFeedbackFn;
   /** Override the CI-failure mode handler (tests). */
   runAddressingCIFailure?: RunAddressingCIFailureFn;
+  /** Override bot-auth activation (tests). Returns `null` when no App is configured. */
+  activateBotAuth?: typeof defaultActivateBotAuth;
+  /** Override the worktree git-identity setter (tests). */
+  setWorktreeGitIdentity?: typeof defaultSetWorktreeGitIdentity;
   /** Override the logger event sink (tests). */
   emit?: Logger["event"];
 }
@@ -113,6 +119,8 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
   const runRefine = opts.runRefine ?? defaultRunRefine;
   const runAddressingPrFeedback = opts.runAddressingPrFeedback ?? defaultRunAddressingPrFeedback;
   const runAddressingCIFailure = opts.runAddressingCIFailure ?? defaultRunAddressingCIFailure;
+  const activateBotAuth = opts.activateBotAuth ?? defaultActivateBotAuth;
+  const setWorktreeGitIdentity = opts.setWorktreeGitIdentity ?? defaultSetWorktreeGitIdentity;
   const emit = opts.emit ?? defaultEvent;
 
   let state = await readState(cwd);
@@ -135,6 +143,54 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
 
   const config = loadConfig();
 
+  // When a GitHub App is configured, mint an installation token (priming
+  // GH_TOKEN so every gh call runs as the bot) and stamp the worktree's commit
+  // identity before any mode commits. `botAuth` is null in the default
+  // ambient-credential path, leaving behaviour unchanged.
+  const botAuth = await activateBotAuth(config, { cwd });
+  try {
+    if (botAuth) {
+      const identity = await botAuth.getBotIdentity();
+      await setWorktreeGitIdentity(cwd, { name: identity.login, email: identity.email });
+    }
+    return await runModeLoop({
+      state,
+      cwd,
+      config,
+      emit,
+      readState,
+      runPlanning,
+      runExecution,
+      runAssess,
+      runRefine,
+      runAddressingPrFeedback,
+      runAddressingCIFailure,
+      pushAuth: botAuth?.pushAuth,
+    });
+  } finally {
+    botAuth?.stop();
+  }
+}
+
+interface RunModeLoopDeps {
+  state: State;
+  cwd: string;
+  config: Config;
+  emit: Logger["event"];
+  readState: typeof defaultReadState;
+  runPlanning: RunPlanningFn;
+  runExecution: RunExecutionFn;
+  runAssess: RunAssessFn;
+  runRefine: RunRefineFn;
+  runAddressingPrFeedback: RunAddressingPrFeedbackFn;
+  runAddressingCIFailure: RunAddressingCIFailureFn;
+  pushAuth?: PushAuth;
+}
+
+async function runModeLoop(deps: RunModeLoopDeps): Promise<State> {
+  const { cwd, config, emit, readState } = deps;
+  let state = deps.state;
+
   while (!isTerminal(state)) {
     emit(
       "daemon",
@@ -149,12 +205,13 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
         config,
         cwd,
         state,
-        runPlanning,
-        runExecution,
-        runAssess,
-        runRefine,
-        runAddressingPrFeedback,
-        runAddressingCIFailure,
+        runPlanning: deps.runPlanning,
+        runExecution: deps.runExecution,
+        runAssess: deps.runAssess,
+        runRefine: deps.runRefine,
+        runAddressingPrFeedback: deps.runAddressingPrFeedback,
+        runAddressingCIFailure: deps.runAddressingCIFailure,
+        pushAuth: deps.pushAuth,
       });
     } catch (err) {
       if (!isApiLimitError(err)) throw err;
@@ -204,6 +261,7 @@ interface DispatchDeps {
   runRefine: RunRefineFn;
   runAddressingPrFeedback: RunAddressingPrFeedbackFn;
   runAddressingCIFailure: RunAddressingCIFailureFn;
+  pushAuth?: PushAuth;
 }
 
 async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
@@ -213,13 +271,23 @@ async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
     case "Assess":
       return deps.runAssess({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "Execution":
-      return deps.runExecution({ config: deps.config, cwd: deps.cwd, state: deps.state });
+      return deps.runExecution({ config: deps.config, cwd: deps.cwd, state: deps.state, pushAuth: deps.pushAuth });
     case "Refine":
       return deps.runRefine({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "AddressingPRFeedback":
-      return deps.runAddressingPrFeedback({ config: deps.config, cwd: deps.cwd, state: deps.state });
+      return deps.runAddressingPrFeedback({
+        config: deps.config,
+        cwd: deps.cwd,
+        state: deps.state,
+        pushAuth: deps.pushAuth,
+      });
     case "AddressingCIFailure":
-      return deps.runAddressingCIFailure({ config: deps.config, cwd: deps.cwd, state: deps.state });
+      return deps.runAddressingCIFailure({
+        config: deps.config,
+        cwd: deps.cwd,
+        state: deps.state,
+        pushAuth: deps.pushAuth,
+      });
     case "Delegated":
       throw new Error(
         `child handler: dispatched into terminal mode=${mode} with non-terminal status=${deps.state.status}`,

@@ -107,6 +107,7 @@ export interface SupervisorDeps {
     | "getSecretScanningAlert"
     | "getPullRequest"
     | "getReviewThreads"
+    | "getReviewCommentReactions"
     | "getRepoOwner"
     | "getCheckRuns"
   >;

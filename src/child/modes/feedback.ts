@@ -51,7 +51,8 @@ import { event as defaultEvent, type Logger } from "../../logging.js";
 import { runSubagent as defaultRunSubagent } from "../../claude/index.js";
 import * as defaultState from "../state.js";
 import type { State } from "../state.js";
-import { defaultGit, FINAL_PLAN_FILE, type GitOps, type RunSubagentFn } from "./execution.js";
+import { createGit, FINAL_PLAN_FILE, type GitOps, type RunSubagentFn } from "./execution.js";
+import { type PushAuth } from "../../botAuth.js";
 
 /** Path (worktree-relative) the daemon writes fresh PR review comments to. */
 export const PR_REVIEW_COMMENTS_FILE = join(".minesweeper", "pr_review_comments.md");
@@ -107,6 +108,8 @@ export interface FeedbackDeps {
   writeState?: typeof defaultState.writeState;
   /** Override the git wrapper (tests). */
   git?: GitOps;
+  /** When set (app mode), the branch push authenticates as the GitHub App bot. */
+  pushAuth?: PushAuth;
   /** Override the github wrapper (tests). Used to post the post-fix `+1` reaction on inline review comments. */
   github?: Pick<typeof defaultGithub, "addReactionToReviewComment">;
   /** Override the logger event sink (tests, or to suppress logging). */
@@ -131,7 +134,7 @@ export async function runAddressingPrFeedback(deps: FeedbackDeps): Promise<State
   const emit = deps.emit ?? defaultEvent;
   const runSubagent = deps.runSubagent ?? defaultRunSubagent;
   const writeState = deps.writeState ?? defaultState.writeState;
-  const git = deps.git ?? defaultGit;
+  const git = deps.git ?? createGit(deps.pushAuth);
   const gh = deps.github ?? defaultGithub;
 
   const state = deps.state;

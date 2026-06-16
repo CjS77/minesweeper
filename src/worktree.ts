@@ -139,6 +139,29 @@ function escapeRegExp(s: string): string {
 }
 
 /**
+ * Set the git author/committer identity used for commits made inside
+ * `worktreePath`, scoped to that worktree only via `git config --worktree`.
+ *
+ * Worktree-scoping (rather than a plain `--local` write, which targets the
+ * repo's shared config) means two children handling different issues never
+ * clobber each other's identity when `maxConcurrency > 1`. `--worktree`
+ * requires the `extensions.worktreeConfig` flag, which we enable first
+ * (idempotent).
+ *
+ * Used by the child handler when bot auth is active so the executor subagent's
+ * commits and the orchestrator's squash commit are both authored by the App
+ * bot, with an email that links them to the bot's GitHub profile.
+ */
+export async function setWorktreeGitIdentity(
+  worktreePath: string,
+  identity: { name: string; email: string },
+): Promise<void> {
+  await execa("git", ["config", "extensions.worktreeConfig", "true"], { cwd: worktreePath });
+  await execa("git", ["config", "--worktree", "user.name", identity.name], { cwd: worktreePath });
+  await execa("git", ["config", "--worktree", "user.email", identity.email], { cwd: worktreePath });
+}
+
+/**
  * Copy the worktree's `.minesweeper/` directory (state, transcripts, traces) to
  * `archiveRoot/{issueNumber}-{ISO8601 timestamp}/`. Returns the absolute path of the created
  * archive directory.

@@ -15,6 +15,7 @@ import { initState, readState, type State } from "../state.js";
 import {
   FINAL_PLAN_FILE,
   REVIEW_COMMENTS_FILE,
+  createGit,
   defaultGit,
   isNonFastForwardRejection,
   normalisePrBody,
@@ -655,6 +656,73 @@ describe("defaultGit.pushBranch", () => {
 
     await expect(defaultGit.pushBranch("/repo", "feat")).rejects.toBe(networkErr);
     expect(mockExeca).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("createGit", () => {
+  it("returns the ambient defaultGit when no pushAuth is given", () => {
+    expect(createGit()).toBe(defaultGit);
+  });
+});
+
+describe("createGit(pushAuth).pushBranch (bot mode)", () => {
+  const pushAuth = {
+    remoteUrl: "https://github.com/acme/widgets.git",
+    extraHeaderValue: vi.fn(async () => "AUTHORIZATION: basic c2VjcmV0"),
+  };
+
+  beforeEach(() => {
+    mockExeca.mockReset();
+    pushAuth.extraHeaderValue.mockClear();
+  });
+
+  function pushFailure(stderr: string): Error & { stderr: string } {
+    return Object.assign(new Error("Command failed with exit code 1"), { stderr, stdout: "", exitCode: 1 });
+  }
+
+  it("pushes to the explicit https URL with the token injected via GIT_CONFIG env, never argv", async () => {
+    mockExeca.mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+
+    await createGit(pushAuth).pushBranch("/repo", "feat");
+
+    expect(mockExeca).toHaveBeenCalledTimes(1);
+    const [bin, args, opts] = mockExeca.mock.calls[0] as unknown as [
+      string,
+      string[],
+      { cwd: string; env: Record<string, string> },
+    ];
+    expect(bin).toBe("git");
+    expect(args).toEqual(["push", "-u", "https://github.com/acme/widgets.git", "feat:feat"]);
+    // The token-bearing header is in the env, not the command line.
+    expect(args.join(" ")).not.toContain("AUTHORIZATION");
+    expect(opts.env.GIT_CONFIG_KEY_0).toBe("http.https://github.com/.extraheader");
+    expect(opts.env.GIT_CONFIG_VALUE_0).toBe("AUTHORIZATION: basic c2VjcmV0");
+    expect(opts.env.GIT_CONFIG_COUNT).toBe("1");
+  });
+
+  it("rebases and retries on a non-fast-forward rejection, re-minting the header each push", async () => {
+    mockExeca
+      .mockRejectedValueOnce(pushFailure("! [rejected] feat -> feat (non-fast-forward)\n"))
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never)
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+
+    await createGit(pushAuth).pushBranch("/repo", "feat");
+
+    expect(mockExeca).toHaveBeenCalledTimes(3);
+    expect(mockExeca.mock.calls[1]?.[1]).toEqual(["pull", "--rebase", "https://github.com/acme/widgets.git", "feat"]);
+    // A fresh header is requested for each of the three git invocations.
+    expect(pushAuth.extraHeaderValue).toHaveBeenCalledTimes(3);
+  });
+
+  it("aborts the rebase on conflict and propagates the error", async () => {
+    const rebaseErr = pushFailure("CONFLICT (content): Merge conflict in README.md\n");
+    mockExeca
+      .mockRejectedValueOnce(pushFailure("! [rejected] feat -> feat (fetch first)\n"))
+      .mockRejectedValueOnce(rebaseErr)
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+
+    await expect(createGit(pushAuth).pushBranch("/repo", "feat")).rejects.toBe(rebaseErr);
+    expect(mockExeca).toHaveBeenNthCalledWith(3, "git", ["rebase", "--abort"], { cwd: "/repo", reject: false });
   });
 });
 

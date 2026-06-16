@@ -6,6 +6,7 @@ import {
   IssueSchema,
   LabelSchema,
   PullRequestSchema,
+  RestReactionSchema,
   RestReviewCommentSchema,
   SecretScanningAlertListSchema,
   SecretScanningAlertSchema,
@@ -16,6 +17,7 @@ import {
   type PrReviewThread,
   type PullRequest,
   type RestReviewComment,
+  type ReviewCommentReaction,
   type SecretScanningAlert,
 } from "./models.js";
 import { z } from "zod";
@@ -24,7 +26,9 @@ import { runGh, type RunGhOptions } from "./process.js";
 const RepoLabelListSchema = z.array(LabelSchema);
 const PullRequestListSchema = z.array(PullRequestSchema);
 const RestReviewCommentListSchema = z.array(RestReviewCommentSchema);
+const RestReactionListSchema = z.array(RestReactionSchema);
 const RepoOwnerResponseSchema = z.object({ owner: z.object({ login: z.string() }) });
+const RepoNameWithOwnerResponseSchema = z.object({ nameWithOwner: z.string() });
 
 export { GhError, GhMissingError, GhNotARepoError, runGh, type RunGhOptions } from "./process.js";
 export {
@@ -45,6 +49,8 @@ export {
   PrReviewThreadSchema,
   PrStateSchema,
   PullRequestSchema,
+  ReactionSummarySchema,
+  ReviewCommentReactionSchema,
   SecretScanningAlertListSchema,
   SecretScanningAlertSchema,
   UserSchema,
@@ -62,6 +68,8 @@ export {
   type PrReviewThreadComment,
   type PrState,
   type PullRequest,
+  type ReactionSummary,
+  type ReviewCommentReaction,
   type SecretScanningAlert,
   type User,
 } from "./models.js";
@@ -325,9 +333,38 @@ function toSyntheticThread(c: RestReviewComment): PrReviewThread {
         createdAt: c.created_at,
         path: c.path ?? null,
         line,
+        plusOneCount: c.reactions?.["+1"] ?? 0,
       },
     ],
   };
+}
+
+/**
+ * Fetch the reactions on a single inline PR review comment via
+ * `GET /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions`
+ * (paginated). Unlike the `reactions` summary embedded in the comment
+ * list, this names the reacting user and timestamp — which the
+ * PR-feedback poller needs to tell whether an *authorised* reviewer
+ * added a `+1`, and when (the reaction timestamp, not the comment's, is
+ * the freshness key).
+ *
+ * `{owner}` / `{repo}` are templated by `gh api` from the cwd's git
+ * remote. The numeric REST `user.id` is dropped so the canonical
+ * string-id `UserSchema` applies; a null user becomes `"ghost"`.
+ */
+export async function getReviewCommentReactions(
+  commentId: number,
+  opts: GhOverridable = {},
+): Promise<ReviewCommentReaction[]> {
+  const raw = await runGh(["api", "--paginate", `repos/{owner}/{repo}/pulls/comments/${commentId}/reactions`], {
+    ...ghOpts(opts),
+    json: true,
+  });
+  return RestReactionListSchema.parse(raw).map((r) => ({
+    content: r.content,
+    createdAt: r.created_at,
+    user: r.user === null ? { login: "ghost" } : { login: r.user.login },
+  }));
 }
 
 /**
@@ -369,6 +406,28 @@ export async function addReactionToReviewComment(
 export async function getRepoOwner(opts: GhOverridable = {}): Promise<string> {
   const raw = await runGh(["repo", "view", "--json", "owner"], { ...ghOpts(opts), json: true });
   return RepoOwnerResponseSchema.parse(raw).owner.login;
+}
+
+/** `owner` and `name` of the current repo, parsed from `gh repo view --json nameWithOwner`. */
+export interface RepoNameWithOwner {
+  owner: string;
+  name: string;
+  nameWithOwner: string;
+}
+
+/**
+ * Return the `owner`/`name` of the repository (`gh repo view --json
+ * nameWithOwner`). Used to build the tokenized https push URL and to resolve
+ * the GitHub App installation when authoring PRs as the bot.
+ */
+export async function getRepoNameWithOwner(opts: GhOverridable = {}): Promise<RepoNameWithOwner> {
+  const raw = await runGh(["repo", "view", "--json", "nameWithOwner"], { ...ghOpts(opts), json: true });
+  const { nameWithOwner } = RepoNameWithOwnerResponseSchema.parse(raw);
+  const slash = nameWithOwner.indexOf("/");
+  if (slash <= 0 || slash === nameWithOwner.length - 1) {
+    throw new Error(`gh returned an unexpected nameWithOwner: ${JSON.stringify(nameWithOwner)}`);
+  }
+  return { owner: nameWithOwner.slice(0, slash), name: nameWithOwner.slice(slash + 1), nameWithOwner };
 }
 
 export interface ListAlertsOptions extends GhOverridable {

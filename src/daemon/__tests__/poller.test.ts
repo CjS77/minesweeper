@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../../config.js";
 import type * as ghModule from "../../github/index.js";
 import type { CodeScanningAlert, Issue, SecretScanningAlert } from "../../github/index.js";
-import { pollOnce, runPollLoop, type PollerDeps } from "../poller.js";
+import { pollOnce, runPollLoop, stripGhScopeHint, type PollerDeps } from "../poller.js";
 import { workItemNumber, type WorkItem } from "../../workitem.js";
 
 const config = loadConfig({}, { configFile: null });
@@ -180,6 +180,25 @@ describe("pollOnce", () => {
     expect(warns.some((c) => String(c[3]).includes("code-scanning alerts fetch failed"))).toBe(true);
   });
 
+  it("strips gh's misleading scope advisory from the alert-fetch WARN", async () => {
+    const deps = makeDeps();
+    deps.listIssuesMock.mockResolvedValueOnce([]);
+    deps.listCsaMock.mockRejectedValueOnce(
+      new Error(
+        "gh api ... failed (exit 1): gh: no analysis found (HTTP 404)\n" +
+          'gh: This API operation needs the "admin:repo_hook" scope. To request it, run:  gh auth refresh -h github.com -s admin:repo_hook',
+      ),
+    );
+    deps.listSsaMock.mockResolvedValueOnce([]);
+    await pollOnce(deps);
+    const warn = deps.emitMock.mock.calls.find(
+      (c) => c[1] === "WARN" && String(c[3]).includes("code-scanning alerts fetch failed"),
+    );
+    expect(String(warn?.[3])).toContain("no analysis found (HTTP 404)");
+    expect(String(warn?.[3])).not.toContain("admin:repo_hook");
+    expect(String(warn?.[3])).not.toContain("gh auth refresh");
+  });
+
   it("openKeys covers every open work item, including ones the eligibility filter drops", async () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockResolvedValueOnce([makeIssue(1, ["autofix"]), makeIssue(2, ["bug"])]);
@@ -194,6 +213,19 @@ describe("pollOnce", () => {
     ]);
     // ...but `openKeys` still records it — closed-detection needs the full set.
     expect([...openKeys].sort()).toEqual(["codeScanningAlert:11", "issue:1", "issue:2", "secretScanningAlert:21"]);
+  });
+});
+
+describe("stripGhScopeHint", () => {
+  it("removes the scope advisory line but keeps the substantive error", () => {
+    const input =
+      "gh: no analysis found (HTTP 404)\n" +
+      'gh: This API operation needs the "admin:repo_hook" scope. To request it, run:  gh auth refresh -h github.com -s admin:repo_hook';
+    expect(stripGhScopeHint(input)).toBe("gh: no analysis found (HTTP 404)");
+  });
+
+  it("is a no-op when there is no advisory", () => {
+    expect(stripGhScopeHint("gh: Not Found (HTTP 404)")).toBe("gh: Not Found (HTTP 404)");
   });
 });
 

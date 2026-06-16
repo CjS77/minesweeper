@@ -6,6 +6,7 @@ import chalk from "chalk";
 import { Command, Option } from "commander";
 
 import { loadConfig, redactSecrets } from "./config.js";
+import { activateBotAuth } from "./botAuth.js";
 import { createLogger, event, getActiveLogger } from "./logging.js";
 import { createSupervisor, defaultSpawnChild, runPollLoop, type Schedule, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
@@ -15,6 +16,7 @@ import { runIssueListCommand, runIssueNewCommand } from "./commands/issues.js";
 import { runLabelsCommand } from "./commands/labels.js";
 import { runLogViewCommand } from "./commands/log.js";
 import { runModelsCommand } from "./commands/models.js";
+import { runReviewersCommand } from "./commands/reviewers.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { listOrphans } from "./worktree.js";
 
@@ -41,6 +43,9 @@ const LOGGER_FREE_COMMANDS = new Set([
   "config init",
   "config show",
   "config prompts",
+  "reviewers add",
+  "reviewers remove",
+  "reviewers list",
 ]);
 
 // Emits a single "config loaded" line for each command that runs with an
@@ -195,6 +200,34 @@ config
     runConfigPromptsCommand({ cwd: process.cwd(), force: Boolean(opts.force) });
   });
 
+const reviewers = program
+  .command("reviewers")
+  .description("Manage the extra authorised-reviewer allowlist (e.g. CodeRabbit) the PR-feedback loop trusts.");
+
+reviewers
+  .command("add")
+  .description("Authorise a GitHub login so the code owner can curate its review comments with a +1.")
+  .argument("<login>", "GitHub login, e.g. coderabbitai[bot]")
+  .action(async (login: string) => {
+    await runReviewersCommand({ repoRoot: process.cwd(), action: "add", login });
+  });
+
+reviewers
+  .command("remove")
+  .alias("rm")
+  .description("De-authorise a previously added GitHub login.")
+  .argument("<login>", "GitHub login to remove")
+  .action(async (login: string) => {
+    await runReviewersCommand({ repoRoot: process.cwd(), action: "remove", login });
+  });
+
+reviewers
+  .command("list")
+  .description("Print the extra authorised reviewers configured for this repo.")
+  .action(async () => {
+    await runReviewersCommand({ repoRoot: process.cwd(), action: "list" });
+  });
+
 program.parseAsync(process.argv).catch(handleFatal);
 
 async function handleFatal(err: unknown): Promise<never> {
@@ -218,6 +251,22 @@ async function runDaemon(): Promise<void> {
   const repoRoot = process.cwd();
   const config = loadConfig(process.env, { cwd: repoRoot });
   logConfigSummary(config);
+
+  // When a GitHub App is configured, mint an installation token and prime
+  // GH_TOKEN so the daemon's gh polling/labelling runs as the bot (it logs
+  // the bot identity). Children mint their own tokens; this is null in the
+  // ambient-credential path, which we announce so the operator can see which
+  // identity the daemon is acting as.
+  const botAuth = await activateBotAuth(config, { cwd: repoRoot });
+  if (!botAuth) {
+    event(
+      "daemon",
+      "INFO",
+      null,
+      "GitHub auth: ambient gh credentials (gh auth login / GH_TOKEN); no GitHub App configured",
+    );
+  }
+
   const worktreesRoot = resolve(config.worktreePath, "worktrees");
   const archiveRoot = resolve(config.worktreePath, "archive");
   const childScript = fileURLToPath(import.meta.url);
@@ -266,6 +315,7 @@ async function runDaemon(): Promise<void> {
   event("daemon", "INFO", null, "shutdown signal received; draining in-flight children");
   loop.stop();
   await supervisor.drain();
+  botAuth?.stop();
   event("daemon", "OK", null, "daemon stopped cleanly");
   await getActiveLogger()?.flush();
 }
