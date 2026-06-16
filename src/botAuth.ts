@@ -109,7 +109,14 @@ export async function activateBotAuth(config: Config, deps: BotAuthDeps = {}): P
   // confirm the bot user resolves (catches a wrong app id / uninstalled app).
   await applyToken(manager, emit, true);
   const identity = await manager.getBotIdentity();
-  emit("daemon", "INFO", null, `bot auth active as ${identity.login}`);
+  const installSource = config.githubAppInstallationId !== undefined ? "configured" : "resolved from repo";
+  emit(
+    "daemon",
+    "INFO",
+    null,
+    `GitHub auth: GitHub App #${config.githubAppId} acting as ${identity.login} ` +
+      `(installation ${installSource}, ${repo.owner}/${repo.name}); installation token primed`,
+  );
 
   const handle = setIntervalFn(() => {
     void applyToken(manager, emit, false);

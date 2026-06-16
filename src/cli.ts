@@ -253,9 +253,19 @@ async function runDaemon(): Promise<void> {
   logConfigSummary(config);
 
   // When a GitHub App is configured, mint an installation token and prime
-  // GH_TOKEN so the daemon's gh polling/labelling runs as the bot. Children
-  // mint their own tokens; this is null in the ambient-credential path.
+  // GH_TOKEN so the daemon's gh polling/labelling runs as the bot (it logs
+  // the bot identity). Children mint their own tokens; this is null in the
+  // ambient-credential path, which we announce so the operator can see which
+  // identity the daemon is acting as.
   const botAuth = await activateBotAuth(config, { cwd: repoRoot });
+  if (!botAuth) {
+    event(
+      "daemon",
+      "INFO",
+      null,
+      "GitHub auth: ambient gh credentials (gh auth login / GH_TOKEN); no GitHub App configured",
+    );
+  }
 
   const worktreesRoot = resolve(config.worktreePath, "worktrees");
   const archiveRoot = resolve(config.worktreePath, "archive");
