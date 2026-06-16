@@ -56,6 +56,7 @@ import * as defaultState from "../child/state.js";
 import type { State, WorkItemKind } from "../child/state.js";
 import { loadCodeownerLogins as defaultLoadCodeownerLogins } from "../codeowners.js";
 import { pollPrFeedback as defaultPollPrFeedback } from "./pr_feedback.js";
+import { pollCIFeedback as defaultPollCIFeedback } from "./ci_feedback.js";
 import { branchSegmentForKind, workItemKey, workItemNumber, type WorkItem } from "../workitem.js";
 
 const ISSUE_NUMBER_PAD = 4;
@@ -107,6 +108,7 @@ export interface SupervisorDeps {
     | "getPullRequest"
     | "getReviewThreads"
     | "getRepoOwner"
+    | "getCheckRuns"
   >;
   /** Override worktree helpers (tests). */
   worktree?: Pick<typeof defaultWorktree, "addWorktree" | "archiveWorktreeState" | "removeWorktree" | "listOrphans">;
@@ -118,6 +120,8 @@ export interface SupervisorDeps {
   writeState?: typeof defaultState.writeState;
   /** Override the PR-feedback poller (tests). */
   pollPrFeedback?: typeof defaultPollPrFeedback;
+  /** Override the CI-feedback poller (tests). */
+  pollCIFeedback?: typeof defaultPollCIFeedback;
   /** Override the logger event sink. */
   emit?: Logger["event"];
   /** Test seam for the worktree-exists pre-flight check. */
@@ -160,6 +164,13 @@ export interface Supervisor {
    * mode. Errors talking to `gh` are logged and swallowed.
    */
   pollPrFeedback(): Promise<void>;
+  /**
+   * Inspect each Minesweeper-owned PR branch for failing CI check runs
+   * and, when all checks have settled with at least one failure, re-
+   * dispatch the worktree into `AddressingCIFailure` mode. Errors
+   * talking to `gh` are logged and swallowed.
+   */
+  pollCIFeedback(): Promise<void>;
   /**
    * Per-poll-cycle sweep — re-queues `Paused` orphans whose `canResumeAt`
    * has elapsed (or is `null`, meaning retry next cycle). Skips orphans
@@ -278,6 +289,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
   const writeState = deps.writeState ?? defaultState.writeState;
   const loadCodeownerLogins = deps.loadCodeownerLogins ?? defaultLoadCodeownerLogins;
   const pollPrFeedbackFn = deps.pollPrFeedback ?? defaultPollPrFeedback;
+  const pollCIFeedbackFn = deps.pollCIFeedback ?? defaultPollCIFeedback;
   const exists = deps.pathExists ?? pathExistsImpl;
   const spawn = deps.spawnChild ?? defaultSpawnChild({ childScript: requiredChildScript(), repoRoot: deps.repoRoot });
 
@@ -449,6 +461,20 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     });
   };
 
+  const pollCIFeedback = async (): Promise<void> => {
+    await pollCIFeedbackFn({
+      config: deps.config,
+      repoRoot: deps.repoRoot,
+      worktreesRoot: deps.worktreesRoot,
+      isInFlight: (n) => inflight.has(workItemKey("issue", n)),
+      resume,
+      github: gh,
+      worktree: wt,
+      writeState,
+      emit,
+    });
+  };
+
   /** Move queue entries into the inflight map until at capacity. */
   const drain = async (): Promise<void> => {
     while (inflight.size < deps.config.maxConcurrency && queue.length > 0) {
@@ -548,6 +574,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     reapClosedInFlight,
     resumePausedWorktrees,
     pollPrFeedback,
+    pollCIFeedback,
     inFlight: () => [...inflight.keys()],
     queueLength: () => queue.length,
     async drain(): Promise<void> {

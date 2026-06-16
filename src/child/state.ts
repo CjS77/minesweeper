@@ -28,9 +28,16 @@
  *     retry next poll cycle) and `pausedFromStatus: Status | null` (the
  *     working status captured at pause time, restored verbatim on
  *     resume). Legacy v4 files are migrated with both fields `null`.
+ *   - v6 (CI feedback): adds `AddressingCIFailure` to the mode enum;
+ *     adds `ciChecksProcessedAt: string | null` (HEAD SHA of the most
+ *     recent commit whose failing checks triggered a dispatch — prevents
+ *     re-acting on the same SHA) and `ciFixIterations: number | null`
+ *     (count of CI-fix dispatches over the worktree's lifetime; `null`
+ *     means the CI-fix mode has never been entered). Legacy v5 files are
+ *     migrated with both fields `null`.
  *
- * Migrations run on read; v1 through v4 state files are upgraded
- * transparently. The migration chain is v1 → v2 → v3 → v4 → v5.
+ * Migrations run on read; v1 through v5 state files are upgraded
+ * transparently. The migration chain is v1 → v2 → v3 → v4 → v5 → v6.
  */
 
 import { promises as fs } from "node:fs";
@@ -38,7 +45,15 @@ import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { z } from "zod";
 
-export const Mode = z.enum(["Planning", "Assess", "Refine", "Execution", "AddressingPRFeedback", "Delegated"]);
+export const Mode = z.enum([
+  "Planning",
+  "Assess",
+  "Refine",
+  "Execution",
+  "AddressingPRFeedback",
+  "AddressingCIFailure",
+  "Delegated",
+]);
 export type Mode = z.infer<typeof Mode>;
 
 export const Status = z.enum([
@@ -64,7 +79,7 @@ export type Assessment = z.infer<typeof Assessment>;
 export const WorkItemKind = z.enum(["issue", "codeScanningAlert", "secretScanningAlert"]);
 export type WorkItemKind = z.infer<typeof WorkItemKind>;
 
-export const STATE_SCHEMA_VERSION = 5;
+export const STATE_SCHEMA_VERSION = 6;
 
 export const StateSchema = z.object({
   version: z.literal(STATE_SCHEMA_VERSION),
@@ -79,6 +94,8 @@ export const StateSchema = z.object({
   assessmentReason: z.string().nullable(),
   prNumber: z.number().int().positive().nullable(),
   prFeedbackProcessedAt: z.iso.datetime().nullable(),
+  ciChecksProcessedAt: z.string().nullable(),
+  ciFixIterations: z.number().int().min(0).nullable(),
   canResumeAt: z.iso.datetime().nullable(),
   pausedFromStatus: Status.nullable(),
   startedAt: z.iso.datetime(),
@@ -144,8 +161,8 @@ const StateV3Schema = z.object({
 });
 
 /**
- * v4 schema, kept around purely for migration. Identical to the current
- * `StateSchema` minus the v5 `canResumeAt` / `pausedFromStatus` fields.
+ * v4 schema, kept around purely for migration. Identical to the v5 schema
+ * minus the v5 `canResumeAt` / `pausedFromStatus` fields.
  */
 const StateV4Schema = z.object({
   version: z.literal(4),
@@ -160,6 +177,29 @@ const StateV4Schema = z.object({
   assessmentReason: z.string().nullable(),
   prNumber: z.number().int().positive().nullable(),
   prFeedbackProcessedAt: z.iso.datetime().nullable(),
+  startedAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+/**
+ * v5 schema, kept around purely for migration. Identical to the current
+ * `StateSchema` minus the v6 `ciChecksProcessedAt` / `ciFixIterations` fields.
+ */
+const StateV5Schema = z.object({
+  version: z.literal(5),
+  kind: WorkItemKind,
+  issueNumber: z.number().int().positive(),
+  branchName: z.string().min(1),
+  mode: Mode,
+  status: Status,
+  iterations: z.number().int().min(0),
+  maxIterations: z.number().int().min(1),
+  assessment: Assessment.nullable(),
+  assessmentReason: z.string().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  prFeedbackProcessedAt: z.iso.datetime().nullable(),
+  canResumeAt: z.iso.datetime().nullable(),
+  pausedFromStatus: Status.nullable(),
   startedAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
 });
@@ -189,6 +229,7 @@ export const INITIAL_STATUS: Record<Mode, Status> = {
   Refine: "InProgress",
   Execution: "Writing",
   AddressingPRFeedback: "InProgress",
+  AddressingCIFailure: "InProgress",
   Delegated: "Complete",
 };
 
@@ -207,6 +248,8 @@ export async function initState(cwd: string, mode: Mode, opts: InitStateOptions)
     assessmentReason: null,
     prNumber: null,
     prFeedbackProcessedAt: null,
+    ciChecksProcessedAt: null,
+    ciFixIterations: null,
     canResumeAt: null,
     pausedFromStatus: null,
     startedAt: now,
@@ -238,10 +281,11 @@ export async function readState(cwd: string): Promise<State> {
  * parse — otherwise a v1/v2 file on disk would fail the v3 literal
  * check and silently disappear from `listOrphans`.
  *
- * The chain is v1 → v2 → v3 → v4 → v5. Each step is additive:
+ * The chain is v1 → v2 → v3 → v4 → v5 → v6. Each step is additive:
  * v1 → v2 adds `assessmentReason: null`; v2 → v3 adds `prNumber: null`
  * and `prFeedbackProcessedAt: null`; v3 → v4 adds `kind: "issue"`;
- * v4 → v5 adds `canResumeAt: null` and `pausedFromStatus: null`.
+ * v4 → v5 adds `canResumeAt: null` and `pausedFromStatus: null`;
+ * v5 → v6 adds `ciChecksProcessedAt: null` and `ciFixIterations: null`.
  */
 export function migrateIfNeeded(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null) return raw;
@@ -266,6 +310,11 @@ export function migrateIfNeeded(raw: unknown): unknown {
   if (afterV3.version === 4) {
     const v4 = StateV4Schema.parse(current);
     current = { ...v4, version: 5, canResumeAt: null, pausedFromStatus: null };
+  }
+  const afterV4 = current as { version?: unknown };
+  if (afterV4.version === 5) {
+    const v5 = StateV5Schema.parse(current);
+    current = { ...v5, version: 6, ciChecksProcessedAt: null, ciFixIterations: null };
   }
   return current;
 }

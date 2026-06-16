@@ -104,7 +104,9 @@ export async function pollPrFeedback(deps: PrFeedbackDeps): Promise<void> {
       o.state !== undefined &&
       o.state.prNumber !== null &&
       o.state.status === "Complete" &&
-      (o.state.mode === "Execution" || o.state.mode === "AddressingPRFeedback") &&
+      (o.state.mode === "Execution" ||
+        o.state.mode === "AddressingPRFeedback" ||
+        o.state.mode === "AddressingCIFailure") &&
       !deps.isInFlight(o.state.issueNumber),
   );
   if (candidates.length === 0) return;
