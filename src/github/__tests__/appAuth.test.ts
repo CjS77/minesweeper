@@ -169,8 +169,9 @@ describe("createAppTokenManager.getBotIdentity", () => {
   const now = (): number => nowMs;
 
   it("builds the linked-commit identity from the app slug and bot user id", async () => {
-    const { fetch } = fakeFetch({
+    const { fetch, requests } = fakeFetch({
       "/app": () => ({ body: { id: 123, slug: "minesweeper-ai-bot" } }),
+      [TOKEN_PATH]: () => ({ body: { token: "ghs_id", expires_at: expiresAt(60 * 60 * 1000, nowMs) } }),
       "/users/minesweeper-ai-bot%5Bbot%5D": () => ({ body: { id: 555, login: "minesweeper-ai-bot[bot]" } }),
     });
     const mgr = createAppTokenManager({
@@ -185,6 +186,13 @@ describe("createAppTokenManager.getBotIdentity", () => {
       login: "minesweeper-ai-bot[bot]",
       email: "555+minesweeper-ai-bot[bot]@users.noreply.github.com",
     });
+
+    // `/app` is JWT-authed; `/users/...` must use the installation token (a JWT
+    // is rejected on general REST endpoints), so it carries the `ghs_` token.
+    const appReq = requests.find((r) => new URL(r.url).pathname === "/app");
+    const usersReq = requests.find((r) => new URL(r.url).pathname === "/users/minesweeper-ai-bot%5Bbot%5D");
+    expect(appReq?.authorization).toMatch(/^Bearer /);
+    expect(usersReq?.authorization).toBe("Bearer ghs_id");
   });
 });
 

@@ -184,8 +184,11 @@ export function createAppTokenManager(opts: CreateAppTokenManagerOptions): Token
     if (botIdentity) return botIdentity;
     const app = await githubJson(`/app`, AppMetadataSchema, { headers: jwtAuthHeaders() });
     const login = `${app.slug}[bot]`;
+    // `/users/{login}` is a general REST endpoint — the App JWT is only valid
+    // for `/app*`, so authenticate this lookup with the installation token.
+    const token = await getToken();
     const user = await githubJson(`/users/${encodeURIComponent(login)}`, BotUserSchema, {
-      headers: jwtAuthHeaders(),
+      headers: { Authorization: `Bearer ${token}` },
     });
     botIdentity = { login: user.login, email: `${user.id}+${user.login}@users.noreply.github.com` };
     return botIdentity;
