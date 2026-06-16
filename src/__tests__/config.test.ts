@@ -458,16 +458,23 @@ const EXPECTED_SUMMARY_KEYS = [
   "pollCooldownSeconds",
   "maxConcurrency",
   "customPromptsPath",
+  "githubAppId",
+  "githubAppInstallationId",
+  "githubAppPrivateKeyPath",
+  "githubAppPrivateKey",
 ] as const;
 
+/** Fields flagged secret by `SECRET_NAME_RE` (their name contains key/secret/token). */
+const SECRET_KEYS = new Set<string>(["githubAppPrivateKeyPath", "githubAppPrivateKey"]);
+
 describe("config.sources (provenance embedded in the resolved Config)", () => {
-  it("has all 24 non-derived keys with source 'default' when nothing is set", () => {
+  it("has all non-derived keys with source 'default' when nothing is set", () => {
     const cfg = loadConfigIsolated({}, { configFile: null, repoConfigFile: null });
 
     expect(Object.keys(cfg.sources).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());
     for (const key of EXPECTED_SUMMARY_KEYS) {
       expect(cfg.sources[key]?.source).toBe("default");
-      expect(cfg.sources[key]?.secret).toBe(false);
+      expect(cfg.sources[key]?.secret).toBe(SECRET_KEYS.has(key));
     }
     expect(cfg.sources["pollIntervalMs"]).toBeUndefined();
     expect(cfg.sources["pollCooldownMs"]).toBeUndefined();
@@ -520,11 +527,67 @@ describe("config.sources (provenance embedded in the resolved Config)", () => {
     expect(SECRET_NAME_RE.test("schedule")).toBe(false);
   });
 
-  it("flags no field as secret today — every entry has `secret: false`", () => {
+  it("flags only the GitHub App private-key fields as secret", () => {
     const cfg = loadConfigIsolated({}, { configFile: null });
     for (const key of EXPECTED_SUMMARY_KEYS) {
-      expect(cfg.sources[key]?.secret).toBe(false);
+      expect(cfg.sources[key]?.secret).toBe(SECRET_KEYS.has(key));
     }
+  });
+});
+
+describe("GitHub App credentials", () => {
+  it("resolves the app fields from env and tags the private key as secret", () => {
+    const cfg = loadConfigIsolated(
+      {
+        MINESWEEPER_GITHUB_APP_ID: "123456",
+        MINESWEEPER_GITHUB_APP_INSTALLATION_ID: "987",
+        MINESWEEPER_GITHUB_APP_PRIVATE_KEY: "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+      },
+      { configFile: null, repoConfigFile: null },
+    );
+    expect(cfg.githubAppId).toBe("123456");
+    expect(cfg.githubAppInstallationId).toBe(987);
+    expect(cfg.sources["githubAppId"]).toEqual<ConfigFieldSource>({ source: "envar", secret: false });
+    expect(cfg.sources["githubAppInstallationId"]).toEqual<ConfigFieldSource>({ source: "envar", secret: false });
+    expect(cfg.sources["githubAppPrivateKey"]).toEqual<ConfigFieldSource>({ source: "envar", secret: true });
+    // The secret value is redacted before logging.
+    expect(redactSecrets(cfg).githubAppPrivateKey).toBe("<redacted>");
+    expect(redactSecrets(cfg).githubAppId).toBe("123456");
+  });
+
+  it("leaves the app fields absent when nothing is configured", () => {
+    const cfg = loadConfigIsolated({}, { configFile: null, repoConfigFile: null });
+    expect(cfg.githubAppId).toBeUndefined();
+    expect(cfg.githubAppPrivateKey).toBeUndefined();
+    expect(cfg.githubAppPrivateKeyPath).toBeUndefined();
+  });
+
+  it("throws when an app id is set without any private key", () => {
+    expect(() =>
+      loadConfigIsolated({ MINESWEEPER_GITHUB_APP_ID: "123" }, { configFile: null, repoConfigFile: null }),
+    ).toThrow(ConfigError);
+  });
+
+  it("throws when both private-key sources are set", () => {
+    expect(() =>
+      loadConfigIsolated(
+        {
+          MINESWEEPER_GITHUB_APP_ID: "123",
+          MINESWEEPER_GITHUB_APP_PRIVATE_KEY: "inline",
+          MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH: "/tmp/key.pem",
+        },
+        { configFile: null, repoConfigFile: null },
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it("rejects a non-integer installation id", () => {
+    expect(() =>
+      loadConfigIsolated(
+        { MINESWEEPER_GITHUB_APP_INSTALLATION_ID: "not-a-number" },
+        { configFile: null, repoConfigFile: null },
+      ),
+    ).toThrow(ConfigError);
   });
 });
 

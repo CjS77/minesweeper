@@ -16,7 +16,8 @@ Minesweeper periodically:
 # Requirements
 
 * [Claude Code](https://claude.com/claude-code) (the CLI) — drives the agent loop via `@anthropic-ai/claude-agent-sdk`.
-* [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against the repo (`gh auth login` or `GH_TOKEN`).
+* [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against the repo (`gh auth login` or `GH_TOKEN`, or a
+  GitHub App — see [Authoring PRs as a bot](#authoring-prs-as-a-bot-github-app)).
 * Node.js 20 or later.
 * `git` 2.20+ (for `git worktree`).
 
@@ -355,6 +356,37 @@ copy-pasteable template.
    set `ANTHROPIC_API_KEY` in the environment.
 4. Optional: copy `.env.sample` into a shell-sourced `.env`, or write a `~/.minesweeper/config.json` / per-repo
    `.minesweeper/config.json` (see [Configuration](#configuration)). Every setting is optional and defaults sensibly.
+
+## Authoring PRs as a bot (GitHub App)
+
+By default Minesweeper acts as whoever `gh` is authenticated as, so PRs and commits are attributed to the operator. To
+have PRs **opened by** a dedicated bot and commits **authored by** it, register a GitHub App and point Minesweeper at it.
+When configured, Minesweeper mints a short-lived **installation access token** and uses it for every `gh` call (issue
+comments, labels, reactions, PR creation), the branch push, and sets the worktree's git identity — so the whole flow is
+attributed to the App's bot user (`<app-slug>[bot]`). Leaving the App unset keeps the ambient `gh`/git identity.
+
+Setup:
+
+1. Create a GitHub App (Settings → Developer settings → GitHub Apps) and generate a private key (`.pem`).
+2. Install the App on the target repo(s), granting:
+
+   | Permission | Why |
+   | --- | --- |
+   | Issues: Read & write | issue comments and labels |
+   | Pull requests: Read & write | PR creation, review comments and reactions |
+   | Contents: Read & write | branch push |
+   | Metadata: Read | mandatory |
+   | Checks: Read | the CI-feedback loop |
+   | Code scanning alerts: Read | only if `MINESWEEPER_ALERTS_ELIGIBLE` is true |
+   | Secret scanning alerts: Read | only if `MINESWEEPER_ALERTS_ELIGIBLE` is true |
+
+3. Set `MINESWEEPER_GITHUB_APP_ID` and one of `MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH` /
+   `MINESWEEPER_GITHUB_APP_PRIVATE_KEY` (see [`.env.sample`](.env.sample)). The installation id is resolved from the repo
+   automatically; set `MINESWEEPER_GITHUB_APP_INSTALLATION_ID` to pin it. The installation token takes precedence over
+   `GH_TOKEN` / `gh auth login`.
+
+The token is refreshed automatically before it expires and is never written to disk or logged. One caveat: commits made
+via the git CLI show as **"Unverified"** — GitHub only auto-verifies App commits created through its Contents API.
 
 ## Labelling issues for autofix
 

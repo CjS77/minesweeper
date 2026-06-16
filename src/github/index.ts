@@ -28,6 +28,7 @@ const PullRequestListSchema = z.array(PullRequestSchema);
 const RestReviewCommentListSchema = z.array(RestReviewCommentSchema);
 const RestReactionListSchema = z.array(RestReactionSchema);
 const RepoOwnerResponseSchema = z.object({ owner: z.object({ login: z.string() }) });
+const RepoNameWithOwnerResponseSchema = z.object({ nameWithOwner: z.string() });
 
 export { GhError, GhMissingError, GhNotARepoError, runGh, type RunGhOptions } from "./process.js";
 export {
@@ -405,6 +406,28 @@ export async function addReactionToReviewComment(
 export async function getRepoOwner(opts: GhOverridable = {}): Promise<string> {
   const raw = await runGh(["repo", "view", "--json", "owner"], { ...ghOpts(opts), json: true });
   return RepoOwnerResponseSchema.parse(raw).owner.login;
+}
+
+/** `owner` and `name` of the current repo, parsed from `gh repo view --json nameWithOwner`. */
+export interface RepoNameWithOwner {
+  owner: string;
+  name: string;
+  nameWithOwner: string;
+}
+
+/**
+ * Return the `owner`/`name` of the repository (`gh repo view --json
+ * nameWithOwner`). Used to build the tokenized https push URL and to resolve
+ * the GitHub App installation when authoring PRs as the bot.
+ */
+export async function getRepoNameWithOwner(opts: GhOverridable = {}): Promise<RepoNameWithOwner> {
+  const raw = await runGh(["repo", "view", "--json", "nameWithOwner"], { ...ghOpts(opts), json: true });
+  const { nameWithOwner } = RepoNameWithOwnerResponseSchema.parse(raw);
+  const slash = nameWithOwner.indexOf("/");
+  if (slash <= 0 || slash === nameWithOwner.length - 1) {
+    throw new Error(`gh returned an unexpected nameWithOwner: ${JSON.stringify(nameWithOwner)}`);
+  }
+  return { owner: nameWithOwner.slice(0, slash), name: nameWithOwner.slice(slash + 1), nameWithOwner };
 }
 
 export interface ListAlertsOptions extends GhOverridable {

@@ -56,6 +56,7 @@ import { dirname, join } from "node:path";
 
 import { execa } from "execa";
 
+import { GITHUB_HTTPS_BASE, type PushAuth } from "../../botAuth.js";
 import type { Config } from "../../config.js";
 import * as defaultGithub from "../../github/index.js";
 import { event as defaultEvent, type Logger } from "../../logging.js";
@@ -215,6 +216,61 @@ export const defaultGit: GitOps = {
   },
 };
 
+/**
+ * `GitOps` that pushes as the GitHub App bot. Identical to {@link defaultGit}
+ * except `pushBranch` authenticates over https with an installation token.
+ *
+ * The token is injected via `GIT_CONFIG_*` env vars (an `http.<base>.extraheader`
+ * setting), never on the command line — so it cannot leak through execa's
+ * error messages (which echo argv) or into the worktree's `.git/config`. The
+ * push targets an explicit https URL rather than `origin` so an ssh `origin`
+ * cannot silently bypass the token and push under the operator's key.
+ */
+function createBotGit(pushAuth: PushAuth): GitOps {
+  return { ...defaultGit, pushBranch: (cwd, branch) => botPushBranch(cwd, branch, pushAuth) };
+}
+
+/**
+ * Select the git implementation: the bot-authenticated push when `pushAuth` is
+ * present (app mode), otherwise the ambient {@link defaultGit}.
+ */
+export function createGit(pushAuth?: PushAuth): GitOps {
+  return pushAuth ? createBotGit(pushAuth) : defaultGit;
+}
+
+async function botPushBranch(cwd: string, branch: string, pushAuth: PushAuth): Promise<void> {
+  // A fresh token (and thus env) per git invocation, so a refresh mid-retry is
+  // picked up. `refspec` is explicit because we push to a URL, not a remote.
+  const refspec = `${branch}:${branch}`;
+  const gitWithToken = async (args: string[]): Promise<void> => {
+    const header = await pushAuth.extraHeaderValue();
+    await execa("git", args, {
+      cwd,
+      env: {
+        ...process.env,
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: `http.${GITHUB_HTTPS_BASE}.extraheader`,
+        GIT_CONFIG_VALUE_0: header,
+      },
+    });
+  };
+
+  try {
+    await gitWithToken(["push", "-u", pushAuth.remoteUrl, refspec]);
+    return;
+  } catch (err) {
+    const stderr = (err as { stderr?: string }).stderr ?? "";
+    if (!isNonFastForwardRejection(stderr)) throw err;
+  }
+  try {
+    await gitWithToken(["pull", "--rebase", pushAuth.remoteUrl, branch]);
+  } catch (rebaseErr) {
+    await execa("git", ["rebase", "--abort"], { cwd, reject: false });
+    throw rebaseErr;
+  }
+  await gitWithToken(["push", "-u", pushAuth.remoteUrl, refspec]);
+}
+
 /** Hook fired after approval, before the squash. Best-effort by contract. */
 export type RunCheckHookFn = (cwd: string) => Promise<void>;
 
@@ -233,6 +289,11 @@ export interface ExecutionDeps {
   writeState?: typeof defaultState.writeState;
   /** Override the git wrapper (tests). */
   git?: GitOps;
+  /**
+   * When set (app mode), the branch push authenticates as the GitHub App bot.
+   * Ignored when `git` is overridden directly. See {@link createGit}.
+   */
+  pushAuth?: PushAuth;
   /** Override the optional `npm run check` hook (tests use a no-op). */
   runCheckHook?: RunCheckHookFn;
   /** Override the logger event sink (tests, or to suppress logging). */
@@ -255,7 +316,7 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
   const gh = deps.github ?? defaultGithub;
   const runSubagent = deps.runSubagent ?? defaultRunSubagent;
   const writeState = deps.writeState ?? defaultState.writeState;
-  const git = deps.git ?? defaultGit;
+  const git = deps.git ?? createGit(deps.pushAuth);
   const runCheckHook = deps.runCheckHook ?? defaultRunCheckHook;
 
   let state = deps.state;

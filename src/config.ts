@@ -98,6 +98,19 @@ export const ConfigSchema = z.object({
    * (worktree cwd) transition.
    */
   customPromptsPath: z.string().min(1).optional(),
+  /**
+   * GitHub App identity (all optional; "app mode" is active when `githubAppId`
+   * is set together with exactly one of the two private-key fields). When
+   * active, `activateBotAuth` mints an installation access token and primes
+   * `GH_TOKEN`, so every `gh` call and the branch push run as the App bot, and
+   * commits are authored by it. When unset, Minesweeper uses the operator's
+   * ambient `gh`/git identity exactly as before. See `src/botAuth.ts`.
+   */
+  githubAppId: z.string().min(1).optional(),
+  githubAppInstallationId: z.number().int().positive().optional(),
+  githubAppPrivateKeyPath: z.string().min(1).optional(),
+  /** Inline PEM. Name contains "key" so `SECRET_NAME_RE` redacts it from logs. */
+  githubAppPrivateKey: z.string().min(1).optional(),
   sources: z.record(z.string(), ConfigFieldSourceSchema).default({}),
 });
 
@@ -196,6 +209,34 @@ function readInt(
   return { value: defaultVal, source: "default" };
 }
 
+/**
+ * Resolver for an optional integer with no built-in default. Returns
+ * `undefined` (sourced as `"default"`) when no layer supplies a value, so the
+ * field stays absent on the resulting `Config`.
+ */
+function readOptionalInt(
+  env: Env,
+  name: string,
+  min: number,
+  repoVal: number | undefined,
+  fileVal: number | undefined,
+): Resolved<number | undefined> {
+  const raw = env[name];
+  if (raw !== undefined) {
+    const trimmed = raw.trim();
+    if (trimmed === "") throw new ConfigError(name, "expected an integer, got an empty string");
+    const n = Number(trimmed);
+    if (!Number.isFinite(n) || !Number.isInteger(n)) {
+      throw new ConfigError(name, `expected an integer, got ${JSON.stringify(raw)}`);
+    }
+    if (n < min) throw new ConfigError(name, `must be >= ${min}, got ${n}`);
+    return { value: n, source: "envar" };
+  }
+  if (repoVal !== undefined) return { value: repoVal, source: "repo-config" };
+  if (fileVal !== undefined) return { value: fileVal, source: "config-file" };
+  return { value: undefined, source: "default" };
+}
+
 function readString(
   env: Env,
   name: string,
@@ -258,6 +299,30 @@ export function validateCron(expression: string): void {
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     throw new ConfigError("schedule", `invalid cron expression ${JSON.stringify(expression)}: ${detail}`);
+  }
+}
+
+/**
+ * Cross-field check for the GitHub App credentials: if `githubAppId` is set,
+ * the operator must supply exactly one private-key source (path or inline PEM).
+ * Setting both is ambiguous; setting neither leaves the App unable to mint a
+ * token. A key without an app id is harmless (app mode stays off) and is not
+ * rejected here.
+ */
+function validateAppCredentials(appId: string | undefined, keyPath: string | undefined, key: string | undefined): void {
+  if (appId === undefined) return;
+  const sources = [keyPath, key].filter((v) => v !== undefined).length;
+  if (sources === 0) {
+    throw new ConfigError(
+      "MINESWEEPER_GITHUB_APP_ID",
+      "a GitHub App id was set but no private key — also set MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH or MINESWEEPER_GITHUB_APP_PRIVATE_KEY",
+    );
+  }
+  if (sources === 2) {
+    throw new ConfigError(
+      "MINESWEEPER_GITHUB_APP_PRIVATE_KEY",
+      "set only one of MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH or MINESWEEPER_GITHUB_APP_PRIVATE_KEY, not both",
+    );
   }
 }
 
@@ -331,7 +396,10 @@ export function readRepoConfigFile(cwd: string, path: string | null | undefined)
 export function redactSecrets(config: Config): Config {
   const redacted: Record<string, unknown> = { ...config };
   for (const [key, { secret }] of Object.entries(config.sources)) {
-    if (secret) redacted[key] = REDACTED;
+    // Only redact fields that actually carry a value — an unset optional secret
+    // (e.g. `githubAppPrivateKey` when app mode is off) has nothing to leak, and
+    // replacing `undefined` with the marker would make an absent field look set.
+    if (secret && redacted[key] !== undefined) redacted[key] = REDACTED;
   }
   return redacted as Config;
 }
@@ -484,7 +552,33 @@ export function loadConfig(
       repoFile.customPromptsPath,
       file.customPromptsPath,
     ),
+    githubAppId: readOptionalString(env, "MINESWEEPER_GITHUB_APP_ID", repoFile.githubAppId, file.githubAppId),
+    githubAppInstallationId: readOptionalInt(
+      env,
+      "MINESWEEPER_GITHUB_APP_INSTALLATION_ID",
+      1,
+      repoFile.githubAppInstallationId,
+      file.githubAppInstallationId,
+    ),
+    githubAppPrivateKeyPath: readOptionalString(
+      env,
+      "MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH",
+      repoFile.githubAppPrivateKeyPath,
+      file.githubAppPrivateKeyPath,
+    ),
+    githubAppPrivateKey: readOptionalString(
+      env,
+      "MINESWEEPER_GITHUB_APP_PRIVATE_KEY",
+      repoFile.githubAppPrivateKey,
+      file.githubAppPrivateKey,
+    ),
   };
+
+  validateAppCredentials(
+    resolved.githubAppId.value,
+    resolved.githubAppPrivateKeyPath.value,
+    resolved.githubAppPrivateKey.value,
+  );
 
   const entries = Object.entries(resolved);
   const values = Object.fromEntries(entries.map(([key, { value }]) => [key, value]));

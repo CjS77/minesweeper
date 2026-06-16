@@ -6,6 +6,7 @@ import chalk from "chalk";
 import { Command, Option } from "commander";
 
 import { loadConfig, redactSecrets } from "./config.js";
+import { activateBotAuth } from "./botAuth.js";
 import { createLogger, event, getActiveLogger } from "./logging.js";
 import { createSupervisor, defaultSpawnChild, runPollLoop, type Schedule, type Supervisor } from "./daemon/index.js";
 import { handleChild } from "./child/handler.js";
@@ -250,6 +251,12 @@ async function runDaemon(): Promise<void> {
   const repoRoot = process.cwd();
   const config = loadConfig(process.env, { cwd: repoRoot });
   logConfigSummary(config);
+
+  // When a GitHub App is configured, mint an installation token and prime
+  // GH_TOKEN so the daemon's gh polling/labelling runs as the bot. Children
+  // mint their own tokens; this is null in the ambient-credential path.
+  const botAuth = await activateBotAuth(config, { cwd: repoRoot });
+
   const worktreesRoot = resolve(config.worktreePath, "worktrees");
   const archiveRoot = resolve(config.worktreePath, "archive");
   const childScript = fileURLToPath(import.meta.url);
@@ -298,6 +305,7 @@ async function runDaemon(): Promise<void> {
   event("daemon", "INFO", null, "shutdown signal received; draining in-flight children");
   loop.stop();
   await supervisor.drain();
+  botAuth?.stop();
   event("daemon", "OK", null, "daemon stopped cleanly");
   await getActiveLogger()?.flush();
 }

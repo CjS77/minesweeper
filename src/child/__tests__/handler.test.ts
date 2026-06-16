@@ -176,6 +176,83 @@ describe("handleChild", () => {
     expect(persisted.status).toBe("Complete");
   });
 
+  it("activates bot auth, stamps the worktree identity before modes, threads pushAuth, and stops on exit", async () => {
+    await initState(tmp, "Execution", {
+      issueNumber: 7,
+      branchName: "minesweeper-issue0007",
+      maxIterations: 3,
+    });
+
+    const calls: string[] = [];
+    const pushAuth = { remoteUrl: "https://github.com/acme/widgets.git", extraHeaderValue: vi.fn() };
+    const stop = vi.fn(() => calls.push("stop"));
+    const botHandle = {
+      getToken: vi.fn(),
+      getBotIdentity: vi.fn(async () => ({
+        login: "minesweeper-ai-bot[bot]",
+        email: "5+minesweeper-ai-bot[bot]@users.noreply.github.com",
+      })),
+      pushAuth,
+      stop,
+    };
+    const activateBotAuth = vi.fn(async () => botHandle);
+    const setWorktreeGitIdentity = vi.fn(async () => {
+      calls.push("set-identity");
+    });
+
+    let seenPushAuth: unknown;
+    const runExecution = vi.fn(async (deps: { state: State; cwd: string; pushAuth?: unknown }): Promise<State> => {
+      calls.push("execution");
+      seenPushAuth = deps.pushAuth;
+      return writeState(deps.cwd, { ...deps.state, status: "Complete" });
+    });
+
+    await handleChild({
+      issueNumber: 7,
+      cwd: tmp,
+      loadConfig: () => FAKE_CONFIG,
+      activateBotAuth: activateBotAuth as never,
+      setWorktreeGitIdentity,
+      runPlanning: vi.fn(),
+      runExecution,
+      emit: vi.fn(),
+    });
+
+    expect(setWorktreeGitIdentity).toHaveBeenCalledWith(tmp, {
+      name: "minesweeper-ai-bot[bot]",
+      email: "5+minesweeper-ai-bot[bot]@users.noreply.github.com",
+    });
+    // Identity stamped before the first mode runs; timer stopped after the loop.
+    expect(calls).toEqual(["set-identity", "execution", "stop"]);
+    expect(seenPushAuth).toBe(pushAuth);
+  });
+
+  it("stops the bot-auth timer even when a mode handler throws", async () => {
+    await initState(tmp, "Execution", { issueNumber: 7, branchName: "b", maxIterations: 3 });
+    const stop = vi.fn();
+    const botHandle = {
+      getToken: vi.fn(),
+      getBotIdentity: vi.fn(async () => ({ login: "minesweeper-ai-bot[bot]", email: "x@y" })),
+      pushAuth: { remoteUrl: "u", extraHeaderValue: vi.fn() },
+      stop,
+    };
+
+    await expect(
+      handleChild({
+        issueNumber: 7,
+        cwd: tmp,
+        loadConfig: () => FAKE_CONFIG,
+        activateBotAuth: (async () => botHandle) as never,
+        setWorktreeGitIdentity: vi.fn(),
+        runExecution: vi.fn(async () => {
+          throw new Error("boom");
+        }),
+        emit: vi.fn(),
+      }),
+    ).rejects.toThrow("boom");
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
   it("loops Planning → Assess → Execution end-to-end (Execute verdict)", async () => {
     await initState(tmp, "Planning", {
       issueNumber: 7,

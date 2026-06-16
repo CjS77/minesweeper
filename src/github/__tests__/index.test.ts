@@ -22,6 +22,7 @@ import {
   addReactionToReviewComment,
   getPullRequest,
   getRepoOwner,
+  getRepoNameWithOwner,
   getReviewCommentReactions,
   getReviewThreads,
   listCodeScanningAlerts,
@@ -412,6 +413,21 @@ describe("getRepoOwner", () => {
     expect(owner).toBe("RepoOwner");
     const { args } = lastCall();
     expect(args.slice(0, 4)).toEqual(["repo", "view", "--json", "owner"]);
+  });
+});
+
+describe("getRepoNameWithOwner", () => {
+  it("splits nameWithOwner into owner and name", async () => {
+    mockExeca.mockResolvedValueOnce(ok(JSON.stringify({ nameWithOwner: "RepoOwner/my-repo" })) as never);
+    const repo = await getRepoNameWithOwner();
+    expect(repo).toEqual({ owner: "RepoOwner", name: "my-repo", nameWithOwner: "RepoOwner/my-repo" });
+    const { args } = lastCall();
+    expect(args.slice(0, 4)).toEqual(["repo", "view", "--json", "nameWithOwner"]);
+  });
+
+  it("throws when gh returns a malformed nameWithOwner", async () => {
+    mockExeca.mockResolvedValueOnce(ok(JSON.stringify({ nameWithOwner: "no-slash" })) as never);
+    await expect(getRepoNameWithOwner()).rejects.toThrow(/nameWithOwner/);
   });
 });
 
