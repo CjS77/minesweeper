@@ -134,7 +134,7 @@ export async function runRefine(deps: RefineDeps): Promise<State> {
     );
   }
 
-  emit("refiner", "INFO", issueNumber, `parsed ${subTasks.length} sub-task(s) from refiner output`);
+  emit("refiner", "DEBUG", issueNumber, `parsed ${subTasks.length} sub-task(s) from refiner output`);
 
   const inheritedLabels = inheritedLabelsFor(item, config);
   const created: CreatedSubIssue[] = [];
@@ -158,7 +158,7 @@ export async function runRefine(deps: RefineDeps): Promise<State> {
   } else {
     emit(
       "refiner",
-      "INFO",
+      "DEBUG",
       issueNumber,
       `parent is a ${parentKindLabel(item)}; skipped parent-checklist comment (sub-issues link back via body)`,
     );

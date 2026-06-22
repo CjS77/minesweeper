@@ -34,13 +34,14 @@ afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
-function makeLogger(opts: { quiet?: boolean; filePath?: string } = {}): Logger {
+function makeLogger(opts: { quiet?: boolean; debug?: boolean; filePath?: string } = {}): Logger {
   logger = createLogger({
     filePath: opts.filePath ?? join(tmp, "logs", "daemon.log"),
     stdout,
     now: () => FIXED_NOW,
     sync: true,
     quiet: opts.quiet ?? false,
+    debug: opts.debug ?? false,
   });
   return logger;
 }
@@ -142,6 +143,25 @@ describe("--quiet behaviour", () => {
     const stdoutLine = strip(stdoutChunks.join(""));
     expect(stdoutLine).toContain(LEVEL_EMOJI[level]);
     expect(stdoutLine).toContain("loud");
+  });
+});
+
+describe("--debug behaviour", () => {
+  it("suppresses DEBUG on stdout by default but still writes it to the file", () => {
+    makeLogger();
+    logger.event("daemon", "DEBUG", null, "diagnostic");
+    expect(stdoutChunks.join("")).toBe("");
+
+    const [record] = readLogFile() as [Record<string, unknown>];
+    expect(record).toMatchObject({ tag: "DEBUG", msg: "diagnostic" });
+  });
+
+  it("emits DEBUG on stdout when debug is enabled", () => {
+    makeLogger({ debug: true });
+    logger.event("daemon", "DEBUG", null, "diagnostic");
+    const stdoutLine = strip(stdoutChunks.join(""));
+    expect(stdoutLine).toContain(LEVEL_EMOJI["DEBUG"]);
+    expect(stdoutLine).toContain("diagnostic");
   });
 });
 

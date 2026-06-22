@@ -141,7 +141,7 @@ function forwardToLogger(message: SDKMessage, role: RoleName, issueNumber: numbe
   const blocks = extractContentBlocks(message);
   blocks.forEach((block) => {
     if (block.type === "tool_use") {
-      emit(role, "INFO", issueNumber, `tool call: ${block.name ?? "<unknown>"}`);
+      emit(role, "DEBUG", issueNumber, `tool call: ${block.name ?? "<unknown>"}`);
     } else if (block.type === "text" && block.text) {
       const text = block.text.trim();
       if (text.length > 0) {

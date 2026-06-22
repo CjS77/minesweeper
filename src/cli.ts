@@ -27,13 +27,14 @@ program
   .description("An agentic bughunter that drives Claude Code to triage and fix GitHub issues.")
   .version(PACKAGE_VERSION)
   .option("-q, --quiet", "suppress INFO output on stdout (file logs are unaffected)")
+  .option("--debug", "write DEBUG diagnostics to stdout (file logs always include them)")
   .hook("preAction", (thisCommand, actionCommand) => {
     // Read-only utilities write their own output; spinning up pino's file
     // destination just to tear it down would also create `.minesweeper/logs/`
     // in whatever cwd the user happens to be in.
     if (LOGGER_FREE_COMMANDS.has(commandPath(actionCommand))) return;
     const opts = thisCommand.optsWithGlobals();
-    createLogger({ quiet: Boolean(opts.quiet) });
+    createLogger({ quiet: Boolean(opts.quiet), debug: Boolean(opts.debug) });
   });
 
 const LOGGER_FREE_COMMANDS = new Set([
@@ -336,7 +337,7 @@ async function recoverOrphans(supervisor: Supervisor, worktreesRoot: string): Pr
     if (orphan.state.status === "Complete") {
       event(
         "daemon",
-        "INFO",
+        "DEBUG",
         orphan.state.issueNumber,
         `orphan worktree ${orphan.path} already Complete; closed-issue sweep will reap it`,
       );

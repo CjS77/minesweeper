@@ -25,7 +25,7 @@
 
 import * as defaultGithub from "../github/index.js";
 import type { Config } from "../config.js";
-import { event as defaultEvent, type Logger } from "../logging.js";
+import { event as defaultEvent, type Level, type Logger } from "../logging.js";
 import { decideEligibility as defaultDecideEligibility, type EligibilityDecision } from "./eligibility.js";
 import type { ScreenIssueFn } from "./eligibility.js";
 import {
@@ -128,7 +128,7 @@ export async function pollOnce(deps: PollerDeps): Promise<PollResult> {
       });
       emit(
         "daemon",
-        "INFO",
+        "DEBUG",
         workItemNumber(item),
         `eligibility: ${decision.eligible ? "yes" : "no"} (${decision.reason})`,
         { kind: item.kind },
@@ -165,9 +165,28 @@ async function safeList<T>(label: string, fn: () => Promise<T[]>, emit: Logger["
     return await fn();
   } catch (err) {
     const message = stripGhScopeHint((err as Error).message);
-    emit("daemon", "WARN", null, `poll: ${label} fetch failed (${message}); continuing without`);
+    // A 404 means the endpoint/feature isn't available on this repo (e.g.
+    // code-scanning with no analysis) — routine, so log at DEBUG. Any other
+    // failure (auth, 5xx, network, 403) stays a WARN so real outages stay visible.
+    const level: Level = isNotFoundError(err) ? "DEBUG" : "WARN";
+    emit("daemon", level, null, `poll: ${label} fetch failed (${message}); continuing without`);
     return [];
   }
+}
+
+/**
+ * True when a gh failure is an HTTP 404 — the endpoint/feature isn't available on
+ * this repo (e.g. code-scanning with no analysis). gh errors carry no status field,
+ * so we match the `(HTTP 404)` text gh writes to stderr/message. Mirrors
+ * `isApiLimitError` in src/claude/errors.ts.
+ */
+export function isNotFoundError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const e = err as Record<string, unknown>;
+  const status = e["status"] ?? e["statusCode"];
+  if (typeof status === "number") return status === 404;
+  const text = [e["message"], e["stderr"]].filter((v): v is string => typeof v === "string").join("\n");
+  return /\bhttp[ -]?404\b/i.test(text);
 }
 
 /**
@@ -245,7 +264,7 @@ export function runPollLoop(deps: PollerDeps, schedules: readonly Schedule[], op
       const elapsed = now() - lastTickStartedAt;
       if (elapsed < cooldownMs) {
         const elapsedSeconds = Math.round(elapsed / 1000);
-        emit("daemon", "INFO", null, `skipped poll: within cooldown (${elapsedSeconds}s since last)`);
+        emit("daemon", "DEBUG", null, `skipped poll: within cooldown (${elapsedSeconds}s since last)`);
         return;
       }
     }

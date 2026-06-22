@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../../config.js";
 import type * as ghModule from "../../github/index.js";
 import type { CodeScanningAlert, Issue, SecretScanningAlert } from "../../github/index.js";
-import { pollOnce, runPollLoop, stripGhScopeHint, type PollerDeps } from "../poller.js";
+import { isNotFoundError, pollOnce, runPollLoop, stripGhScopeHint, type PollerDeps } from "../poller.js";
 import { workItemNumber, type WorkItem } from "../../workitem.js";
 
 const config = loadConfig({}, { configFile: null });
@@ -176,11 +176,12 @@ describe("pollOnce", () => {
     deps.listSsaMock.mockResolvedValueOnce([makeSsa(21)]);
     const { eligible } = await pollOnce(deps);
     expect(eligible.map((i) => `${i.kind}:${workItemNumber(i)}`).sort()).toEqual(["issue:1", "secretScanningAlert:21"]);
+    // A 403 is not a 404, so it stays a WARN.
     const warns = deps.emitMock.mock.calls.filter((c) => c[1] === "WARN");
     expect(warns.some((c) => String(c[3]).includes("code-scanning alerts fetch failed"))).toBe(true);
   });
 
-  it("strips gh's misleading scope advisory from the alert-fetch WARN", async () => {
+  it("logs a 404 alert-fetch failure at DEBUG, with the scope advisory stripped", async () => {
     const deps = makeDeps();
     deps.listIssuesMock.mockResolvedValueOnce([]);
     deps.listCsaMock.mockRejectedValueOnce(
@@ -191,12 +192,15 @@ describe("pollOnce", () => {
     );
     deps.listSsaMock.mockResolvedValueOnce([]);
     await pollOnce(deps);
-    const warn = deps.emitMock.mock.calls.find(
-      (c) => c[1] === "WARN" && String(c[3]).includes("code-scanning alerts fetch failed"),
+    // The 404 is demoted to DEBUG (file-only by default), never a WARN.
+    const debug = deps.emitMock.mock.calls.find(
+      (c) => c[1] === "DEBUG" && String(c[3]).includes("code-scanning alerts fetch failed"),
     );
-    expect(String(warn?.[3])).toContain("no analysis found (HTTP 404)");
-    expect(String(warn?.[3])).not.toContain("admin:repo_hook");
-    expect(String(warn?.[3])).not.toContain("gh auth refresh");
+    expect(debug).toBeDefined();
+    expect(deps.emitMock.mock.calls.some((c) => c[1] === "WARN")).toBe(false);
+    expect(String(debug?.[3])).toContain("no analysis found (HTTP 404)");
+    expect(String(debug?.[3])).not.toContain("admin:repo_hook");
+    expect(String(debug?.[3])).not.toContain("gh auth refresh");
   });
 
   it("openKeys covers every open work item, including ones the eligibility filter drops", async () => {
@@ -226,6 +230,28 @@ describe("stripGhScopeHint", () => {
 
   it("is a no-op when there is no advisory", () => {
     expect(stripGhScopeHint("gh: Not Found (HTTP 404)")).toBe("gh: Not Found (HTTP 404)");
+  });
+});
+
+describe("isNotFoundError", () => {
+  it.each([
+    ["(HTTP 404) text in the message", new Error("gh: no analysis found (HTTP 404)")],
+    ["HTTP 404: prefix form", new Error("HTTP 404: Not Found")],
+    ["a numeric status field", Object.assign(new Error("nope"), { status: 404 })],
+    ["a numeric statusCode field", Object.assign(new Error("nope"), { statusCode: 404 })],
+    ["(HTTP 404) text in stderr", Object.assign(new Error("gh failed"), { stderr: "gh: Not Found (HTTP 404)" })],
+  ])("is true for %s", (_label, err) => {
+    expect(isNotFoundError(err)).toBe(true);
+  });
+
+  it.each([
+    ["a 403", new Error("HTTP 403: Forbidden")],
+    ["a 403 status field", Object.assign(new Error("nope"), { status: 403 })],
+    ["an unrelated failure", new Error("gh down")],
+    ["a non-object", "gh: Not Found (HTTP 404)"],
+    ["null", null],
+  ])("is false for %s", (_label, err) => {
+    expect(isNotFoundError(err)).toBe(false);
   });
 });
 

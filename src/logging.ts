@@ -18,11 +18,12 @@ export const ROLES = [
 ] as const;
 export type Role = (typeof ROLES)[number];
 
-export const LEVELS = ["INFO", "OK", "WARN", "ERROR", "WORK", "SHIP"] as const;
+export const LEVELS = ["INFO", "DEBUG", "OK", "WARN", "ERROR", "WORK", "SHIP"] as const;
 export type Level = (typeof LEVELS)[number];
 
 export const LEVEL_EMOJI: Record<Level, string> = {
   INFO: "🔍",
+  DEBUG: "🔬",
   OK: "✅",
   WARN: "⚠️",
   ERROR: "❌",
@@ -43,8 +44,9 @@ export const ROLE_COLOUR: Record<Role, (s: string) => string> = {
   issuewriter: chalk.green.dim,
 };
 
-const LEVEL_TO_PINO: Record<Level, "info" | "warn" | "error"> = {
+const LEVEL_TO_PINO: Record<Level, "debug" | "info" | "warn" | "error"> = {
   INFO: "info",
+  DEBUG: "debug",
   OK: "info",
   WORK: "info",
   SHIP: "info",
@@ -59,6 +61,8 @@ export interface LoggerOptions {
   filePath?: string;
   /** Suppress INFO lines on stdout. Never affects file logs. Default: `false`. */
   quiet?: boolean;
+  /** Emit DEBUG lines on stdout. Never affects file logs (DEBUG is always recorded there). Default: `false`. */
+  debug?: boolean;
   /** Stream to write the pretty single-line output to. Default: `process.stdout`. */
   stdout?: NodeJS.WritableStream;
   /** Override the clock (used by tests for deterministic timestamps). */
@@ -89,6 +93,7 @@ let active: Logger | null = null;
 export function createLogger(opts: LoggerOptions = {}): Logger {
   const filePath = opts.filePath ?? DEFAULT_LOG_PATH;
   const quiet = opts.quiet ?? false;
+  const debug = opts.debug ?? false;
   const stdout = opts.stdout ?? process.stdout;
   const now = opts.now ?? (() => new Date());
 
@@ -117,6 +122,9 @@ export function createLogger(opts: LoggerOptions = {}): Logger {
 
   const event: Logger["event"] = (role, level, issueNumber, message, meta) => {
     writeFileLog(role, level, issueNumber, message, meta);
+    // DEBUG is always recorded in the file log above, but only reaches stdout
+    // when the operator opts in with --debug. INFO obeys --quiet as before.
+    if (level === "DEBUG" && !debug) return;
     if (quiet && level === "INFO") return;
     stdout.write(`${formatLine(role, level, issueNumber, message)}\n`);
   };

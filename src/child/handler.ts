@@ -194,7 +194,7 @@ async function runModeLoop(deps: RunModeLoopDeps): Promise<State> {
   while (!isTerminal(state)) {
     emit(
       "daemon",
-      "INFO",
+      "DEBUG",
       state.issueNumber,
       `child handle: mode=${state.mode} status=${state.status} iterations=${state.iterations}/${state.maxIterations}`,
     );
