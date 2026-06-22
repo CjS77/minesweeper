@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] — 2026-06-22
+
+### Added
+- `--debug` flag on all commands. Sets the log level to DEBUG, surfacing verbose internal events that were previously
+  demoted from INFO to avoid noise in normal operation.
+
+### Dependency updates
+- esbuild: 0.28.0 => 0.28.1
+- hono: 4.12.18 => 4.12.25
+- js-yaml: 4.1.1 => 4.2.0
+- vite: 8.0.12 => 8.0.16
+
 ## [0.10.0] — 2026-06-16
 
 ### Added
@@ -246,7 +258,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/CjS77/minesweeper/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/CjS77/minesweeper/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/CjS77/minesweeper/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/CjS77/minesweeper/compare/v0.7.0...v0.8.0
