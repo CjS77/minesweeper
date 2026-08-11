@@ -16,8 +16,9 @@ Minesweeper periodically:
 # Requirements
 
 * [Claude Code](https://claude.com/claude-code) (the CLI) — drives the agent loop via `@anthropic-ai/claude-agent-sdk`.
-* [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against the repo (`gh auth login` or `GH_TOKEN`, or a
-  GitHub App — see [Authoring PRs as a bot](#authoring-prs-as-a-bot-github-app)).
+* [GitHub CLI](https://cli.github.com/) (`gh`) authenticated against the repo (`gh auth login` or `GH_TOKEN`). This is
+  required in **both** identity modes — see
+  [GitHub identity: ambient mode vs app mode](#github-identity-ambient-mode-vs-app-mode).
 * Node.js 20 or later.
 * `git` 2.20+ (for `git worktree`).
 
@@ -345,6 +346,10 @@ copy-pasteable template.
 | `MINESWEEPER_CONFIG_FILE`              | Path to the **global** JSON config file (cross-repo defaults)        | `~/.minesweeper/config.json` |
 | `MINESWEEPER_REPO_CONFIG_FILE`         | Path to the **per-repo** JSON config file (overrides the global one) | `<cwd>/.minesweeper/config.json` |
 | `MINESWEEPER_MAX_CONCURRENCY`          | Maximum issue children running in parallel (v0 is single-threaded)   | `1`                   |
+| `MINESWEEPER_GITHUB_APP_ID`            | GitHub App id. **Setting this switches on [app mode](#github-identity-ambient-mode-vs-app-mode)** | _unset_ (ambient mode) |
+| `MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH` | Path to the App's `.pem` private key (app mode; preferred form)   | _unset_               |
+| `MINESWEEPER_GITHUB_APP_PRIVATE_KEY`   | The App private key inline, as PEM (alternative to the path form)    | _unset_               |
+| `MINESWEEPER_GITHUB_APP_INSTALLATION_ID` | Pin the installation id; resolved from the repo when unset         | _unset_               |
 
 # Operating Minesweeper
 
@@ -352,20 +357,52 @@ copy-pasteable template.
 
 1. Install Node.js 20+ and Minesweeper itself: `npm install -g cc-minesweeper` (see [Installation](#installation)).
 2. Install `gh` and authenticate it against the target repo (`gh auth login`, or set `GH_TOKEN` / `GITHUB_TOKEN`).
-3. Authenticate the Claude Agent SDK. The simplest path is to log in once with the Claude Code CLI; alternatively
+3. Decide whose name the work goes out under — yours or a bot's. Doing nothing gives you ambient mode; see
+   [GitHub identity: ambient mode vs app mode](#github-identity-ambient-mode-vs-app-mode).
+4. Authenticate the Claude Agent SDK. The simplest path is to log in once with the Claude Code CLI; alternatively
    set `ANTHROPIC_API_KEY` in the environment.
-4. Optional: copy `.env.sample` into a shell-sourced `.env`, or write a `~/.minesweeper/config.json` / per-repo
+5. Optional: copy `.env.sample` into a shell-sourced `.env`, or write a `~/.minesweeper/config.json` / per-repo
    `.minesweeper/config.json` (see [Configuration](#configuration)). Every setting is optional and defaults sensibly.
 
-## Authoring PRs as a bot (GitHub App)
+## GitHub identity: ambient mode vs app mode
 
-By default Minesweeper acts as whoever `gh` is authenticated as, so PRs and commits are attributed to the operator. To
-have PRs **opened by** a dedicated bot and commits **authored by** it, register a GitHub App and point Minesweeper at it.
-When configured, Minesweeper mints a short-lived **installation access token** and uses it for every `gh` call (issue
-comments, labels, reactions), the API commit publish and PR creation, and sets the worktree's git identity — so the whole
-flow is attributed to the App's bot user (`<app-slug>[bot]`). Leaving the App unset keeps the ambient `gh`/git identity.
+Everything Minesweeper writes to GitHub — issue comments, labels, reactions, branches, commits, PRs — is attributed to
+one of two identities. Which one is decided by a single setting: **app mode is on when `MINESWEEPER_GITHUB_APP_ID` is
+set, and off otherwise.** There is no separate enable flag.
 
-Setup:
+|                             | **Ambient mode** (default, "local user")                | **App mode**                                                 |
+|-----------------------------|---------------------------------------------------------|--------------------------------------------------------------|
+| Turned on by                | leaving `MINESWEEPER_GITHUB_APP_ID` unset               | setting `MINESWEEPER_GITHUB_APP_ID` + a private key           |
+| Acts as                     | whoever `gh` is logged in as — you                      | the App's bot user, `<app-slug>[bot]`                         |
+| API calls (issues, labels, comments, reactions, alerts) | your `gh` token           | a short-lived installation access token, auto-refreshed       |
+| Commit author               | the git identity the worktree inherits (your `user.name` / `user.email`) | the bot, stamped per-worktree by Minesweeper |
+| Branch publish              | `git push -u origin <branch>`                           | GitHub API `createCommitOnBranch` (no `git push`)             |
+| PR creation                 | `gh pr create`                                          | GitHub API, with the installation token                       |
+| Commit signature            | whatever your local `commit.gpgsign` produces           | signed server-side by GitHub → shows as **Verified**          |
+| Also needs                  | working `git push` credentials on the machine           | nothing beyond `gh` + the App key                             |
+
+Ambient mode is the zero-setup path and the right choice on your own machine. Choose app mode when PRs should be clearly
+attributed to a bot rather than to a human, when the repo enforces a **"Require signed commits"** ruleset (ambient-mode
+pushes fail against such a ruleset unless your own signing key is available to the daemon), or when the daemon runs on a
+shared or headless host where you'd rather not install a person's push credentials.
+
+### Ambient mode (default)
+
+1. Authenticate `gh` against the repo: `gh auth login` (or export `GH_TOKEN` / `GITHUB_TOKEN`).
+2. Make sure plain `git push` works from that machine for the repo — the branch push uses **git's** credentials
+   (SSH key or credential helper), not the `gh` token. If you only have `gh` auth, run `gh auth setup-git` once so
+   HTTPS remotes borrow it.
+3. Leave every `MINESWEEPER_GITHUB_APP_*` setting unset. That's the whole configuration.
+
+Two ambient-mode gotchas worth knowing:
+
+* Commits carry **your** name and email, and are signed if your git config says so. Minesweeper does not touch signing
+  config in this mode, so if `commit.gpgsign=true` but the key isn't reachable from the daemon's environment (no agent,
+  no passphrase prompt), the executor's `git commit` fails and the run is labelled `$MINESWEEPER_FAILED_LABEL`.
+* On a repo with a signed-commits or bot-only ruleset, use app mode instead — it is the only mode that produces
+  server-side-signed commits.
+
+### App mode (GitHub App bot identity)
 
 1. Create a GitHub App (Settings → Developer settings → GitHub Apps) and generate a private key (`.pem`).
 2. Install the App on the target repo(s), granting:
@@ -380,14 +417,66 @@ Setup:
    | Code scanning alerts: Read | only if `MINESWEEPER_ALERTS_ELIGIBLE` is true |
    | Secret scanning alerts: Read | only if `MINESWEEPER_ALERTS_ELIGIBLE` is true |
 
-3. Set `MINESWEEPER_GITHUB_APP_ID` and one of `MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH` /
-   `MINESWEEPER_GITHUB_APP_PRIVATE_KEY` (see [`.env.sample`](.env.sample)). The installation id is resolved from the repo
-   automatically; set `MINESWEEPER_GITHUB_APP_INSTALLATION_ID` to pin it. The installation token takes precedence over
-   `GH_TOKEN` / `gh auth login`.
+3. Point Minesweeper at the App — via environment (see [`.env.sample`](.env.sample)):
 
-The token is refreshed automatically before it expires and is never written to disk or logged. In app mode Minesweeper
-publishes commits through the GitHub Contents API rather than via `git push` — GitHub signs these server-side with its
-web-flow key, so they show as **Verified** on the PR and satisfy repos with a "Require signed commits" ruleset.
+   ```sh
+   MINESWEEPER_GITHUB_APP_ID=123456
+   MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH=/abs/path/to/minesweeper-bot.private-key.pem
+   # optional — resolved from the repo when omitted:
+   # MINESWEEPER_GITHUB_APP_INSTALLATION_ID=987654
+   ```
+
+   or via either JSON config file, using the camelCase keys:
+
+   ```jsonc
+   // ~/.minesweeper/config.json — same App across every repo you service
+   {
+     "githubAppId": "123456",
+     "githubAppPrivateKeyPath": "/abs/path/to/minesweeper-bot.private-key.pem"
+   }
+   ```
+
+   Prefer the `…PRIVATE_KEY_PATH` form over the inline `MINESWEEPER_GITHUB_APP_PRIVATE_KEY` PEM (set exactly one of the
+   two — setting both is a config error). The path form keeps the key material out of the daemon environment that is
+   inherited by every child process, and out of a JSON file you might later commit.
+
+These settings layer like any other (env > per-repo file > global file), so one App can be the cross-repo default and a
+different one pinned per repo. There is no way to *unset* the id from a higher layer, though — an empty
+`MINESWEEPER_GITHUB_APP_ID=` is a config error, not an opt-out. If some of your repos should stay in ambient mode, put
+the App id in each bot-serviced repo's `.minesweeper/config.json` rather than in the global file.
+
+What changes once app mode is active:
+
+* The daemon and every child process independently mint an installation token and set `GH_TOKEN` / `GITHUB_TOKEN` in
+  their own process environment, so every `gh` subprocess acts as the bot. **The installation token takes precedence
+  over your `gh auth login` / `GH_TOKEN`.** Tokens are refreshed before expiry, never logged, never written to disk.
+* Each worktree gets the bot's `user.name` / `user.email` written with `git config --worktree`, plus
+  `commit.gpgsign=false` — local commits are unsigned because the *published* commit is created and signed by GitHub.
+* The branch, its commits, and the PR are created through the GitHub API instead of `git push` + `gh pr create`, so the
+  daemon host never needs push credentials. Follow-up rounds (PR feedback, CI fixes) publish one signed API commit each.
+
+`gh` is still required in app mode: Minesweeper resolves the repo with `gh repo view` **before** it mints the first
+token, and all issue/label/comment traffic runs through `gh` subprocesses afterwards. Keep `gh` installed and
+authenticated even when a bot does the writing.
+
+### Checking which mode you're in
+
+Every `minesweeper run` logs the identity it resolved as its first `GitHub auth:` line — ambient mode says
+
+```
+GitHub auth: ambient gh credentials (gh auth login / GH_TOKEN); no GitHub App configured
+```
+
+and app mode names the App, the bot, and where the installation id came from:
+
+```
+GitHub auth: GitHub App #123456 acting as minesweeper-ai[bot] (installation resolved from repo, owner/repo);
+installation token primed; commits will be created via API (server-side signed, Verified)
+```
+
+App-mode credential problems fail fast at startup (bad key, wrong app id, App not installed on the repo) rather than
+half-way through an issue. The `config loaded` record on the same startup shows where each `githubApp*` value was
+resolved from; secret-looking fields are redacted in that record.
 
 ## Labelling issues for autofix
 
