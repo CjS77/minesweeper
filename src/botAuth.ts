@@ -6,9 +6,8 @@
  * `GITHUB_TOKEN` in the environment so that **every** `gh` subprocess (which
  * inherits `process.env` via execa) acts as the App's bot user, and so do the
  * issue/PR comments, labels, reactions and PR creation that flow through them.
- * It also exposes a {@link PushAuth} for the branch push (which needs the token
- * in argv, not the env) and the bot's commit identity for the worktree git
- * config.
+ * It also exposes a {@link CommitPublisher} that creates and pushes commits via
+ * the GitHub API (server-side signed, Verified) instead of via `git push`.
  *
  * Activation is called once per process at the CLI entry points — `runDaemon`
  * (`src/cli.ts`) and the child handler (`src/child/handler.ts`). Each process
@@ -16,6 +15,10 @@
  * can outlive a single token, so they must never rely on an inherited
  * `GH_TOKEN`. When no App is configured, `activateBotAuth` returns `null` and
  * the operator's ambient `gh`/git identity is used unchanged.
+ *
+ * In app mode, the branch is published via the API (not `git push`). The local
+ * worktree is still used by the executor subagent for editing and local commits;
+ * only the publish step changes.
  *
  * Secrets discipline: the token is never logged. The refresh timer is
  * `unref()`-ed so it never keeps a finished child process alive.
@@ -31,11 +34,9 @@ import {
   type RepoRef,
   type TokenManager,
 } from "./github/appAuth.js";
+import { createCommitPublisher, type CommitPublisher } from "./github/commit.js";
 import { getRepoNameWithOwner } from "./github/index.js";
 import { event } from "./logging.js";
-
-/** Base used for the tokenized https push URL — see {@link PushAuth}. */
-export const GITHUB_HTTPS_BASE = "https://github.com/";
 
 /**
  * Liveness check interval for the token refresh. Kept comfortably below the
@@ -45,21 +46,11 @@ export const GITHUB_HTTPS_BASE = "https://github.com/";
  */
 const REFRESH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
-/** What `execution.ts` needs to push the branch as the bot over https. */
-export interface PushAuth {
-  /** Explicit https remote to push to (avoids an ssh `origin` bypassing the token). */
-  remoteUrl: string;
-  /**
-   * The value for `git -c http.https://github.com/.extraheader=<value>` built
-   * from a *fresh* token at call time: `AUTHORIZATION: basic <base64>`.
-   */
-  extraHeaderValue(): Promise<string>;
-}
-
 export interface BotAuthHandle {
   getToken(): Promise<string>;
   getBotIdentity(): Promise<BotIdentity>;
-  pushAuth: PushAuth;
+  /** Publisher that creates branch refs and commits via the GitHub API (server-side signed). */
+  commitPublisher: CommitPublisher;
   /** Stop the refresh timer. Idempotent. */
   stop(): void;
 }
@@ -115,7 +106,8 @@ export async function activateBotAuth(config: Config, deps: BotAuthDeps = {}): P
     "INFO",
     null,
     `GitHub auth: GitHub App #${config.githubAppId} acting as ${identity.login} ` +
-      `(installation ${installSource}, ${repo.owner}/${repo.name}); installation token primed`,
+      `(installation ${installSource}, ${repo.owner}/${repo.name}); installation token primed; ` +
+      `commits will be created via API (server-side signed, Verified)`,
   );
 
   const handle = setIntervalFn(() => {
@@ -124,19 +116,16 @@ export async function activateBotAuth(config: Config, deps: BotAuthDeps = {}): P
   handle.unref?.();
 
   let stopped = false;
-  const pushAuth: PushAuth = {
-    remoteUrl: `${GITHUB_HTTPS_BASE}${repo.owner}/${repo.name}.git`,
-    async extraHeaderValue() {
-      const token = await manager.getToken();
-      const basic = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
-      return `AUTHORIZATION: basic ${basic}`;
-    },
-  };
+  const commitPublisher = createCommitPublisher({
+    owner: repo.owner,
+    name: repo.name,
+    getToken: () => manager.getToken(),
+  });
 
   return {
     getToken: () => manager.getToken(),
     getBotIdentity: () => manager.getBotIdentity(),
-    pushAuth,
+    commitPublisher,
     stop() {
       if (stopped) return;
       stopped = true;

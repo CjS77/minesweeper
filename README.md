@@ -292,13 +292,13 @@ Once a Minesweeper PR is open, the daemon keeps watching it. On every poll tick,
   comment from that login becomes actionable **only** once an authorised reviewer adds a `+1` reaction to it. The `+1`
   is the trigger — the code owner curates exactly which of the bot's suggestions to apply. A directly authored comment
   from an authorised reviewer still needs no reaction. Manage the allowlist with `minesweeper reviewers add|remove|list`.
-* The executor's new commits are pushed with an **incremental `git push`** (no force, no re-squash) so the PR history
-  stays readable and never overwrites a reviewer's own pushed commits. GitHub's squash-merge button still produces a
-  single commit at merge time.
+* The executor's new commits are published incrementally (no force, no re-squash) so the PR history stays readable and
+  never overwrites a reviewer's own pushed commits. In app mode each feedback round is one signed API commit; in ambient
+  mode commits are pushed with `git push`. GitHub's squash-merge button still produces a single commit at merge time.
 * Two watermarks on `state.json` prevent reprocessing: `prFeedbackProcessedAt` tracks the newest review/authored-comment
   timestamp acted on, and `prReactionsProcessedAt` separately tracks the newest authorising `+1` — reactions live on
   their own clock because a thumbs-up can land long after the comment it approves.
-* If a reviewer force-pushes to the PR branch, the incremental push will fail and Minesweeper bails out — the issue is
+* If a reviewer force-pushes to the PR branch, the incremental publish will fail and Minesweeper bails out — the issue is
   labelled with `$MINESWEEPER_FAILED_LABEL` and the worktree is preserved for a human to inspect.
 * The feedback loop ends naturally when the issue is closed (e.g. PR merged); the closed-issue sweep then archives and
   removes the worktree as usual.
@@ -311,7 +311,7 @@ Once a Minesweeper PR is open, the daemon also watches its check runs. On every 
 * If all checks are terminal and at least one has `conclusion ∈ {failure, timed_out, action_required}`, the daemon renders the failing check names, conclusions, and output summaries to `.minesweeper/ci_check_failures.md`, flips state to `mode = AddressingCIFailure, status = InProgress`, and re-runs the executor.
 * A SHA watermark (`ciChecksProcessedAt` on `state.json`) records the HEAD commit the daemon has acted on, so the same failing commit is never processed twice.
 * A lifetime counter (`ciFixIterations`) caps total CI-fix dispatches at `MINESWEEPER_MAX_REVIEW_ROUNDS`. When the cap is reached the daemon emits a WARN and stops dispatching; the PR stays open for a human to inspect.
-* The executor pushes incremental commits (no squash, no force-push). CI re-runs on the new commit; if it passes, no further dispatch occurs.
+* The executor publishes incremental commits (no squash, no force-push). CI re-runs on the new commit; if it passes, no further dispatch occurs.
 
 CI checks respond to the same `MINESWEEPER_CI_CHECKS_ELIGIBLE` flag (default `true`). Set it to `false` to disable CI-failure response entirely — useful on repos where CI is slow or flaky and you prefer to handle failures manually.
 
@@ -362,8 +362,8 @@ copy-pasteable template.
 By default Minesweeper acts as whoever `gh` is authenticated as, so PRs and commits are attributed to the operator. To
 have PRs **opened by** a dedicated bot and commits **authored by** it, register a GitHub App and point Minesweeper at it.
 When configured, Minesweeper mints a short-lived **installation access token** and uses it for every `gh` call (issue
-comments, labels, reactions, PR creation), the branch push, and sets the worktree's git identity — so the whole flow is
-attributed to the App's bot user (`<app-slug>[bot]`). Leaving the App unset keeps the ambient `gh`/git identity.
+comments, labels, reactions), the API commit publish and PR creation, and sets the worktree's git identity — so the whole
+flow is attributed to the App's bot user (`<app-slug>[bot]`). Leaving the App unset keeps the ambient `gh`/git identity.
 
 Setup:
 
@@ -374,7 +374,7 @@ Setup:
    | --- | --- |
    | Issues: Read & write | issue comments and labels |
    | Pull requests: Read & write | PR creation, review comments and reactions |
-   | Contents: Read & write | branch push |
+   | Contents: Read & write | API commit publishing |
    | Metadata: Read | mandatory |
    | Checks: Read | the CI-feedback loop |
    | Code scanning alerts: Read | only if `MINESWEEPER_ALERTS_ELIGIBLE` is true |
@@ -385,8 +385,9 @@ Setup:
    automatically; set `MINESWEEPER_GITHUB_APP_INSTALLATION_ID` to pin it. The installation token takes precedence over
    `GH_TOKEN` / `gh auth login`.
 
-The token is refreshed automatically before it expires and is never written to disk or logged. One caveat: commits made
-via the git CLI show as **"Unverified"** — GitHub only auto-verifies App commits created through its Contents API.
+The token is refreshed automatically before it expires and is never written to disk or logged. In app mode Minesweeper
+publishes commits through the GitHub Contents API rather than via `git push` — GitHub signs these server-side with its
+web-flow key, so they show as **Verified** on the PR and satisfy repos with a "Require signed commits" ruleset.
 
 ## Labelling issues for autofix
 

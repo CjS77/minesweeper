@@ -176,7 +176,7 @@ describe("handleChild", () => {
     expect(persisted.status).toBe("Complete");
   });
 
-  it("activates bot auth, stamps the worktree identity before modes, threads pushAuth, and stops on exit", async () => {
+  it("activates bot auth, stamps the worktree identity before modes, threads commitPublisher, and stops on exit", async () => {
     await initState(tmp, "Execution", {
       issueNumber: 7,
       branchName: "minesweeper-issue0007",
@@ -184,7 +184,12 @@ describe("handleChild", () => {
     });
 
     const calls: string[] = [];
-    const pushAuth = { remoteUrl: "https://github.com/acme/widgets.git", extraHeaderValue: vi.fn() };
+    const commitPublisher = {
+      getRef: vi.fn(),
+      createBranchRef: vi.fn(),
+      createCommitOnBranch: vi.fn(),
+      createPullRequest: vi.fn(),
+    };
     const stop = vi.fn(() => calls.push("stop"));
     const botHandle = {
       getToken: vi.fn(),
@@ -192,7 +197,7 @@ describe("handleChild", () => {
         login: "minesweeper-ai-bot[bot]",
         email: "5+minesweeper-ai-bot[bot]@users.noreply.github.com",
       })),
-      pushAuth,
+      commitPublisher,
       stop,
     };
     const activateBotAuth = vi.fn(async () => botHandle);
@@ -200,12 +205,14 @@ describe("handleChild", () => {
       calls.push("set-identity");
     });
 
-    let seenPushAuth: unknown;
-    const runExecution = vi.fn(async (deps: { state: State; cwd: string; pushAuth?: unknown }): Promise<State> => {
-      calls.push("execution");
-      seenPushAuth = deps.pushAuth;
-      return writeState(deps.cwd, { ...deps.state, status: "Complete" });
-    });
+    let seenCommitPublisher: unknown;
+    const runExecution = vi.fn(
+      async (deps: { state: State; cwd: string; commitPublisher?: unknown }): Promise<State> => {
+        calls.push("execution");
+        seenCommitPublisher = deps.commitPublisher;
+        return writeState(deps.cwd, { ...deps.state, status: "Complete" });
+      },
+    );
 
     await handleChild({
       issueNumber: 7,
@@ -224,7 +231,7 @@ describe("handleChild", () => {
     });
     // Identity stamped before the first mode runs; timer stopped after the loop.
     expect(calls).toEqual(["set-identity", "execution", "stop"]);
-    expect(seenPushAuth).toBe(pushAuth);
+    expect(seenCommitPublisher).toBe(commitPublisher);
   });
 
   it("stops the bot-auth timer even when a mode handler throws", async () => {
@@ -233,7 +240,12 @@ describe("handleChild", () => {
     const botHandle = {
       getToken: vi.fn(),
       getBotIdentity: vi.fn(async () => ({ login: "minesweeper-ai-bot[bot]", email: "x@y" })),
-      pushAuth: { remoteUrl: "u", extraHeaderValue: vi.fn() },
+      commitPublisher: {
+        getRef: vi.fn(),
+        createBranchRef: vi.fn(),
+        createCommitOnBranch: vi.fn(),
+        createPullRequest: vi.fn(),
+      },
       stop,
     };
 
