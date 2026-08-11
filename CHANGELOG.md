@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-11
+
+### Changed
+- When a GitHub App is configured, commits are created through the GitHub API (GraphQL `createCommitOnBranch`) instead
+  of `git commit` + `git push`. GitHub signs those commits with its web-flow key, so they land as Verified under the
+  App's bot user regardless of the operator's local signing configuration, and are accepted by repos that require
+  signed commits. Execution creates the branch ref and publishes one signed commit over `mergeBase..HEAD` before
+  opening the PR; feedback and CI-feedback rounds each publish as a single incremental signed commit. Ambient (no-App)
+  mode keeps the `git commit` / `git push` path unchanged. Fixes #77.
+- Worktrees are configured with `commit.gpgsign=false` so intermediate local commits don't fail on the operator's
+  signing key.
+
+### Dependency updates
+- @hono/node-server: 1.19.14 => 2.1.0
+- @typescript-eslint/parser: 8.59.4 => 8.62.0
+- body-parser: 2.2.2 => 2.3.0
+- brace-expansion: 1.1.14 => 1.1.16
+- commander: 14.0.3 => 15.0.0
+- fast-uri: 3.1.2 => 3.1.5
+- hono: 4.12.25 => 4.13.1
+- ip-address: 10.2.0 => 10.5.0
+- js-yaml: 4.2.0 => 4.3.1
+- postcss: 8.5.15 => 8.5.26
+- prettier: 3.8.3 => 3.8.4
+
 ## [0.10.1] — 2026-06-22
 
 ### Added
@@ -258,7 +283,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/CjS77/minesweeper/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/CjS77/minesweeper/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/CjS77/minesweeper/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/CjS77/minesweeper/compare/v0.8.0...v0.9.0
