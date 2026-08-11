@@ -4,7 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execa } from "execa";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { addWorktree, archiveWorktreeState, listOrphans, removeWorktree, sanitiseBranchName } from "../worktree.js";
+import {
+  addWorktree,
+  archiveWorktreeState,
+  listOrphans,
+  removeWorktree,
+  sanitiseBranchName,
+  setWorktreeGitIdentity,
+} from "../worktree.js";
 import { initState, statePath } from "../child/state.js";
 
 let scratch: string;
@@ -300,5 +307,29 @@ describe("listOrphans", () => {
     await fs.writeFile(statePath(wt), "{not json");
     const orphans = await listOrphans(worktreesRoot);
     expect(orphans).toEqual([]);
+  });
+});
+
+describe("setWorktreeGitIdentity", () => {
+  it("stamps user.name, user.email, and sets commit.gpgsign=false in the worktree config", async () => {
+    const { path: wtPath } = await addWorktree({
+      repoRoot,
+      worktreesRoot,
+      branchName: "identity-test",
+    });
+
+    await setWorktreeGitIdentity(wtPath, {
+      name: "minesweeper-ai-bot[bot]",
+      email: "5+minesweeper-ai-bot[bot]@users.noreply.github.com",
+    });
+
+    const name = await execa("git", ["config", "--worktree", "user.name"], { cwd: wtPath });
+    expect(name.stdout.trim()).toBe("minesweeper-ai-bot[bot]");
+
+    const email = await execa("git", ["config", "--worktree", "user.email"], { cwd: wtPath });
+    expect(email.stdout.trim()).toBe("5+minesweeper-ai-bot[bot]@users.noreply.github.com");
+
+    const gpgsign = await execa("git", ["config", "--worktree", "commit.gpgsign"], { cwd: wtPath });
+    expect(gpgsign.stdout.trim()).toBe("false");
   });
 });

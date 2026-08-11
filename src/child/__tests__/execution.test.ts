@@ -10,12 +10,12 @@ vi.mock("execa", () => ({
 import { execa } from "execa";
 
 import type { Config } from "../../config.js";
+import type { CommitPublisher } from "../../github/commit.js";
 import type { Issue } from "../../github/index.js";
 import { initState, readState, type State } from "../state.js";
 import {
   FINAL_PLAN_FILE,
   REVIEW_COMMENTS_FILE,
-  createGit,
   defaultGit,
   isNonFastForwardRejection,
   normalisePrBody,
@@ -179,6 +179,13 @@ function makeStubGit(initial: { headSha: string; mergeBaseSha: string }): StubGi
     resetSoft: recorder("resetSoft", async (_cwd: string, _ref: string) => undefined),
     commit: recorder("commit", async (_cwd: string, _msg: string) => undefined),
     pushBranch: recorder("pushBranch", async (_cwd: string, _branch: string) => undefined),
+    diffNameStatus: recorder("diffNameStatus", async (_cwd: string, _from: string, _to: string) =>
+      head === mergeBaseSha ? "" : "A\tsrc/util.ts\n",
+    ),
+    readBlob: recorder("readBlob", async (_cwd: string, _ref: string, _path: string) => "aGVsbG8="),
+    subjects: recorder("subjects", async (_cwd: string, _from: string) =>
+      head === mergeBaseSha ? "" : "executor commit\n",
+    ),
     advanceHead(sha: string) {
       head = sha;
     },
@@ -208,10 +215,23 @@ afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
+function makeFakePublisher(prNumber = 101): CommitPublisher {
+  return {
+    getRef: vi.fn(async () => "REMOTE_HEAD"),
+    createBranchRef: vi.fn(async () => undefined),
+    createCommitOnBranch: vi.fn(async () => "COMMIT_OID"),
+    createPullRequest: vi.fn(async () => ({
+      number: prNumber,
+      url: `https://github.com/example/repo/pull/${prNumber}`,
+    })),
+  };
+}
+
 interface RunArgs {
   responses: readonly Script[];
   state?: Partial<Pick<State, "iterations" | "maxIterations" | "status">>;
   prCreate?: ReturnType<typeof vi.fn>;
+  commitPublisher?: CommitPublisher;
 }
 
 async function run(args: RunArgs): Promise<{
@@ -244,6 +264,7 @@ async function run(args: RunArgs): Promise<{
     github: { getIssue, createPr },
     runSubagent,
     git,
+    commitPublisher: args.commitPublisher,
     runCheckHook,
     emit,
   });
@@ -659,70 +680,47 @@ describe("defaultGit.pushBranch", () => {
   });
 });
 
-describe("createGit", () => {
-  it("returns the ambient defaultGit when no pushAuth is given", () => {
-    expect(createGit()).toBe(defaultGit);
-  });
-});
+describe("runExecution — app-mode publish via CommitPublisher", () => {
+  it("creates branch ref, commits via API, opens PR via API; skips resetSoft/commit/pushBranch/gh.createPr", async () => {
+    const publisher = makeFakePublisher(202);
+    const { result, git, createPr } = await run({
+      responses: [
+        { role: "executor", text: "# Execution summary\n\ndone\n", newHeadSha: "AFTER_SHA" },
+        { role: "reviewer", text: "Verdict: Approved\n" },
+        DEFAULT_PRWRITER_RESPONSE,
+      ],
+      commitPublisher: publisher,
+    });
 
-describe("createGit(pushAuth).pushBranch (bot mode)", () => {
-  const pushAuth = {
-    remoteUrl: "https://github.com/acme/widgets.git",
-    extraHeaderValue: vi.fn(async () => "AUTHORIZATION: basic c2VjcmV0"),
-  };
+    expect(result.prNumber).toBe(202);
+    expect(result.status).toBe("Complete");
 
-  beforeEach(() => {
-    mockExeca.mockReset();
-    pushAuth.extraHeaderValue.mockClear();
-  });
+    // API publish path: createBranchRef → createCommitOnBranch → createPullRequest
+    expect(vi.mocked(publisher.createBranchRef)).toHaveBeenCalledOnce();
+    const [branchArg, shaArg] = vi.mocked(publisher.createBranchRef).mock.calls[0] as [string, string];
+    expect(branchArg).toBe("minesweeper-issue0042");
+    // expectedHeadOid == mergeBaseSha (which equals "BASE_SHA" per the stub)
+    expect(shaArg).toBe("BASE_SHA");
 
-  function pushFailure(stderr: string): Error & { stderr: string } {
-    return Object.assign(new Error("Command failed with exit code 1"), { stderr, stdout: "", exitCode: 1 });
-  }
+    expect(vi.mocked(publisher.createCommitOnBranch)).toHaveBeenCalledOnce();
+    const commitInput = vi.mocked(publisher.createCommitOnBranch).mock.calls[0]?.[0];
+    expect(commitInput?.branchName).toBe("minesweeper-issue0042");
+    expect(commitInput?.expectedHeadOid).toBe("BASE_SHA");
+    expect(commitInput?.headline).toBe("feat: add greet function");
 
-  it("pushes to the explicit https URL with the token injected via GIT_CONFIG env, never argv", async () => {
-    mockExeca.mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+    expect(vi.mocked(publisher.createPullRequest)).toHaveBeenCalledOnce();
+    const prInput = vi.mocked(publisher.createPullRequest).mock.calls[0]?.[0];
+    expect(prInput?.base).toBe("main");
+    expect(prInput?.head).toBe("minesweeper-issue0042");
 
-    await createGit(pushAuth).pushBranch("/repo", "feat");
+    // Ambient git operations must NOT be called
+    const methods = git.invocations.map((i) => i.method);
+    expect(methods).not.toContain("resetSoft");
+    expect(methods).not.toContain("commit");
+    expect(methods).not.toContain("pushBranch");
 
-    expect(mockExeca).toHaveBeenCalledTimes(1);
-    const [bin, args, opts] = mockExeca.mock.calls[0] as unknown as [
-      string,
-      string[],
-      { cwd: string; env: Record<string, string> },
-    ];
-    expect(bin).toBe("git");
-    expect(args).toEqual(["push", "-u", "https://github.com/acme/widgets.git", "feat:feat"]);
-    // The token-bearing header is in the env, not the command line.
-    expect(args.join(" ")).not.toContain("AUTHORIZATION");
-    expect(opts.env.GIT_CONFIG_KEY_0).toBe("http.https://github.com/.extraheader");
-    expect(opts.env.GIT_CONFIG_VALUE_0).toBe("AUTHORIZATION: basic c2VjcmV0");
-    expect(opts.env.GIT_CONFIG_COUNT).toBe("1");
-  });
-
-  it("rebases and retries on a non-fast-forward rejection, re-minting the header each push", async () => {
-    mockExeca
-      .mockRejectedValueOnce(pushFailure("! [rejected] feat -> feat (non-fast-forward)\n"))
-      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never)
-      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
-
-    await createGit(pushAuth).pushBranch("/repo", "feat");
-
-    expect(mockExeca).toHaveBeenCalledTimes(3);
-    expect(mockExeca.mock.calls[1]?.[1]).toEqual(["pull", "--rebase", "https://github.com/acme/widgets.git", "feat"]);
-    // A fresh header is requested for each of the three git invocations.
-    expect(pushAuth.extraHeaderValue).toHaveBeenCalledTimes(3);
-  });
-
-  it("aborts the rebase on conflict and propagates the error", async () => {
-    const rebaseErr = pushFailure("CONFLICT (content): Merge conflict in README.md\n");
-    mockExeca
-      .mockRejectedValueOnce(pushFailure("! [rejected] feat -> feat (fetch first)\n"))
-      .mockRejectedValueOnce(rebaseErr)
-      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
-
-    await expect(createGit(pushAuth).pushBranch("/repo", "feat")).rejects.toBe(rebaseErr);
-    expect(mockExeca).toHaveBeenNthCalledWith(3, "git", ["rebase", "--abort"], { cwd: "/repo", reject: false });
+    // gh.createPr must NOT be called
+    expect(createPr).not.toHaveBeenCalled();
   });
 });
 

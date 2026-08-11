@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,12 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Config } from "../../config.js";
 import { type CommitPublisher } from "../../github/commit.js";
 import { initState, readState } from "../state.js";
-import {
-  PR_REVIEW_COMMENT_ACKS_FILE,
-  PR_REVIEW_COMMENTS_FILE,
-  runAddressingPrFeedback,
-  writePrReviewCommentAcks,
-} from "../modes/feedback.js";
+import { CI_CHECK_FAILURES_FILE, runAddressingCIFailure } from "../modes/ci_feedback.js";
 import { FINAL_PLAN_FILE, type GitOps, type RunSubagentFn } from "../modes/execution.js";
 import type { SubagentResult } from "../../claude/index.js";
 
@@ -71,7 +66,7 @@ function makeStubGit(initialHead: string): StubGit {
     pushBranch: recorder("pushBranch", async () => undefined),
     diffNameStatus: recorder("diffNameStatus", async () => "M\tsrc/util.ts\n"),
     readBlob: recorder("readBlob", async () => "aGVsbG8="),
-    subjects: recorder("subjects", async () => "fix feedback"),
+    subjects: recorder("subjects", async () => "fix ci failure"),
     advanceHead(sha) {
       head = sha;
     },
@@ -104,10 +99,10 @@ function makeFakePublisher(): CommitPublisher & { invocations: Array<{ method: s
 let tmp: string;
 
 beforeEach(async () => {
-  tmp = await mkdtemp(join(tmpdir(), "minesweeper-feedback-"));
-  await initState(tmp, "AddressingPRFeedback", {
-    issueNumber: 42,
-    branchName: "minesweeper-issue0042",
+  tmp = await mkdtemp(join(tmpdir(), "minesweeper-ci-feedback-"));
+  await initState(tmp, "AddressingCIFailure", {
+    issueNumber: 99,
+    branchName: "minesweeper-issue0099",
     maxIterations: 3,
   });
   await mkdir(join(tmp, ".minesweeper"), { recursive: true });
@@ -118,9 +113,9 @@ afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
 });
 
-describe("runAddressingPrFeedback", () => {
+describe("runAddressingCIFailure", () => {
   it("runs the executor, pushes the branch, and ends in Complete", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Review by @owner\n\nPlease add a test.\n", "utf8");
+    await writeFile(join(tmp, CI_CHECK_FAILURES_FILE), "## CI failure\n\nTest timed out.\n", "utf8");
 
     const git = makeStubGit("BEFORE");
     const promptSeen: string[] = [];
@@ -132,7 +127,7 @@ describe("runAddressingPrFeedback", () => {
     const emit = vi.fn();
 
     const state = await readState(tmp);
-    const result = await runAddressingPrFeedback({
+    const result = await runAddressingCIFailure({
       config: FAKE_CONFIG,
       cwd: tmp,
       state,
@@ -142,23 +137,23 @@ describe("runAddressingPrFeedback", () => {
     });
 
     expect(runSubagent).toHaveBeenCalledTimes(1);
-    expect(promptSeen[0]).toContain("# Review Comments");
-    expect(promptSeen[0]).toContain("Please add a test.");
+    expect(promptSeen[0]).toContain("# CI Failures");
+    expect(promptSeen[0]).toContain("Test timed out.");
 
     expect(git.invocations.some((i) => i.method === "pushBranch")).toBe(true);
-    expect(result.mode).toBe("AddressingPRFeedback");
+    expect(result.mode).toBe("AddressingCIFailure");
     expect(result.status).toBe("Complete");
   });
 
   it("logs a WARN and skips pushing when HEAD did not move", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Review by @owner\n\nMissing test.\n", "utf8");
+    await writeFile(join(tmp, CI_CHECK_FAILURES_FILE), "## CI failure\n\nBuild error.\n", "utf8");
 
     const git = makeStubGit("STILL_HERE");
     const runSubagent: RunSubagentFn = vi.fn(async () => fakeResult("no edits"));
     const emit = vi.fn();
 
     const state = await readState(tmp);
-    const result = await runAddressingPrFeedback({
+    const result = await runAddressingCIFailure({
       config: FAKE_CONFIG,
       cwd: tmp,
       state,
@@ -173,124 +168,14 @@ describe("runAddressingPrFeedback", () => {
     expect(result.status).toBe("Complete");
   });
 
-  it("posts a +1 reaction on every comment id in the acks sidecar after a successful push, then deletes the sidecar", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Thread comment\n\nAdd JSDoc.\n", "utf8");
-    await writePrReviewCommentAcks(tmp, [5001, 5002]);
-
-    const git = makeStubGit("BEFORE");
-    const runSubagent: RunSubagentFn = vi.fn(async () => {
-      git.advanceHead("AFTER");
-      return fakeResult("done");
-    });
-    const addReactionToReviewComment = vi.fn(async () => undefined);
-
-    const state = await readState(tmp);
-    await runAddressingPrFeedback({
-      config: FAKE_CONFIG,
-      cwd: tmp,
-      state,
-      runSubagent,
-      git,
-      github: { addReactionToReviewComment },
-      emit: vi.fn(),
-    });
-
-    expect(addReactionToReviewComment).toHaveBeenCalledTimes(2);
-    expect(addReactionToReviewComment).toHaveBeenNthCalledWith(1, 5001, "+1", { cwd: tmp });
-    expect(addReactionToReviewComment).toHaveBeenNthCalledWith(2, 5002, "+1", { cwd: tmp });
-
-    // Sidecar must be removed after acking so we don't re-react on the next feedback round.
-    await expect(access(join(tmp, PR_REVIEW_COMMENT_ACKS_FILE))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("does not post reactions when HEAD did not move (no commit, nothing to ack)", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Thread comment\n\nAdd JSDoc.\n", "utf8");
-    await writePrReviewCommentAcks(tmp, [5001]);
-
-    const git = makeStubGit("STILL_HERE");
-    const runSubagent: RunSubagentFn = vi.fn(async () => fakeResult("no edits"));
-    const addReactionToReviewComment = vi.fn(async () => undefined);
-
-    const state = await readState(tmp);
-    await runAddressingPrFeedback({
-      config: FAKE_CONFIG,
-      cwd: tmp,
-      state,
-      runSubagent,
-      git,
-      github: { addReactionToReviewComment },
-      emit: vi.fn(),
-    });
-
-    expect(addReactionToReviewComment).not.toHaveBeenCalled();
-    // Sidecar stays in place — the next dispatch will overwrite it.
-    await expect(access(join(tmp, PR_REVIEW_COMMENT_ACKS_FILE))).resolves.toBeUndefined();
-  });
-
-  it("WARNs but does not throw when a reaction call fails, and still deletes the sidecar afterwards", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Thread comment\n\nAdd JSDoc.\n", "utf8");
-    await writePrReviewCommentAcks(tmp, [5001, 5002]);
-
-    const git = makeStubGit("BEFORE");
-    const runSubagent: RunSubagentFn = vi.fn(async () => {
-      git.advanceHead("AFTER");
-      return fakeResult("done");
-    });
-    const addReactionToReviewComment = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("API limit"))
-      .mockResolvedValueOnce(undefined);
-    const emit = vi.fn();
-
-    const state = await readState(tmp);
-    await runAddressingPrFeedback({
-      config: FAKE_CONFIG,
-      cwd: tmp,
-      state,
-      runSubagent,
-      git,
-      github: { addReactionToReviewComment },
-      emit,
-    });
-
-    expect(addReactionToReviewComment).toHaveBeenCalledTimes(2);
-    const warnings = emit.mock.calls.filter((c) => c[1] === "WARN").map((c) => String(c[3]));
-    expect(warnings.some((m) => m.includes("failed to react +1 on review comment 5001"))).toBe(true);
-    await expect(access(join(tmp, PR_REVIEW_COMMENT_ACKS_FILE))).rejects.toMatchObject({ code: "ENOENT" });
-  });
-
-  it("skips the reaction step cleanly when the acks sidecar is missing", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Review\n\nfix it.\n", "utf8");
-
-    const git = makeStubGit("BEFORE");
-    const runSubagent: RunSubagentFn = vi.fn(async () => {
-      git.advanceHead("AFTER");
-      return fakeResult("done");
-    });
-    const addReactionToReviewComment = vi.fn(async () => undefined);
-
-    const state = await readState(tmp);
-    await runAddressingPrFeedback({
-      config: FAKE_CONFIG,
-      cwd: tmp,
-      state,
-      runSubagent,
-      git,
-      github: { addReactionToReviewComment },
-      emit: vi.fn(),
-    });
-
-    expect(addReactionToReviewComment).not.toHaveBeenCalled();
-  });
-
-  it("throws if pr_review_comments.md is missing", async () => {
-    // Only final_plan.md exists; pr_review_comments.md is intentionally absent.
+  it("throws if ci_check_failures.md is missing", async () => {
+    // Only final_plan.md exists; ci_check_failures.md is intentionally absent.
     const git = makeStubGit("X");
     const runSubagent: RunSubagentFn = vi.fn(async () => fakeResult(""));
 
     const state = await readState(tmp);
     await expect(
-      runAddressingPrFeedback({
+      runAddressingCIFailure({
         config: FAKE_CONFIG,
         cwd: tmp,
         state,
@@ -298,12 +183,35 @@ describe("runAddressingPrFeedback", () => {
         git,
         emit: vi.fn(),
       }),
-    ).rejects.toThrow(/pr_review_comments\.md not found/);
+    ).rejects.toThrow(/ci_check_failures\.md not found/);
+    expect(runSubagent).not.toHaveBeenCalled();
+  });
+
+  it("throws if final_plan.md is missing", async () => {
+    // Remove final_plan.md (written in beforeEach) and add ci_check_failures.md.
+    const { unlink } = await import("node:fs/promises");
+    await unlink(join(tmp, FINAL_PLAN_FILE));
+    await writeFile(join(tmp, CI_CHECK_FAILURES_FILE), "## CI failure\n\nFailed.\n", "utf8");
+
+    const git = makeStubGit("X");
+    const runSubagent: RunSubagentFn = vi.fn(async () => fakeResult(""));
+
+    const state = await readState(tmp);
+    await expect(
+      runAddressingCIFailure({
+        config: FAKE_CONFIG,
+        cwd: tmp,
+        state,
+        runSubagent,
+        git,
+        emit: vi.fn(),
+      }),
+    ).rejects.toThrow(/final_plan\.md not found/);
     expect(runSubagent).not.toHaveBeenCalled();
   });
 
   it("app mode: uses publishIncrementalCommit (getRef + createCommitOnBranch), not pushBranch", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Review\n\nAdd a test.\n", "utf8");
+    await writeFile(join(tmp, CI_CHECK_FAILURES_FILE), "## CI failure\n\nLint error.\n", "utf8");
 
     const git = makeStubGit("BEFORE");
     const runSubagent: RunSubagentFn = vi.fn(async () => {
@@ -313,7 +221,7 @@ describe("runAddressingPrFeedback", () => {
     const publisher = makeFakePublisher();
 
     const state = await readState(tmp);
-    const result = await runAddressingPrFeedback({
+    const result = await runAddressingCIFailure({
       config: FAKE_CONFIG,
       cwd: tmp,
       state,
@@ -328,24 +236,23 @@ describe("runAddressingPrFeedback", () => {
     expect(publisher.invocations.some((i) => i.method === "getRef")).toBe(true);
     expect(publisher.invocations.some((i) => i.method === "createCommitOnBranch")).toBe(true);
 
-    // from == headBefore (the sha before the executor ran)
     const commitCall = vi.mocked(publisher.createCommitOnBranch).mock.calls[0]?.[0];
-    expect(commitCall?.branchName).toBe("minesweeper-issue0042");
+    expect(commitCall?.branchName).toBe("minesweeper-issue0099");
     expect(commitCall?.expectedHeadOid).toBe("REMOTE_HEAD");
-    expect(commitCall?.headline).toBe("Address PR review feedback");
+    expect(commitCall?.headline).toBe("Fix CI failures");
 
     expect(result.status).toBe("Complete");
   });
 
   it("app mode: no-op (HEAD unchanged) skips both publishIncrementalCommit and pushBranch", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Review\n\nFix it.\n", "utf8");
+    await writeFile(join(tmp, CI_CHECK_FAILURES_FILE), "## CI failure\n\nBuild broken.\n", "utf8");
 
     const git = makeStubGit("STILL_HERE");
     const runSubagent: RunSubagentFn = vi.fn(async () => fakeResult("no edits"));
     const publisher = makeFakePublisher();
 
     const state = await readState(tmp);
-    await runAddressingPrFeedback({
+    await runAddressingCIFailure({
       config: FAKE_CONFIG,
       cwd: tmp,
       state,
@@ -359,36 +266,8 @@ describe("runAddressingPrFeedback", () => {
     expect(publisher.invocations).toHaveLength(0);
   });
 
-  it("app mode: still acks review comments after publishIncrementalCommit", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Review\n\nThing.\n", "utf8");
-    await writePrReviewCommentAcks(tmp, [7001]);
-
-    const git = makeStubGit("BEFORE");
-    const runSubagent: RunSubagentFn = vi.fn(async () => {
-      git.advanceHead("AFTER");
-      return fakeResult("done");
-    });
-    const publisher = makeFakePublisher();
-    const addReactionToReviewComment = vi.fn(async () => undefined);
-
-    const state = await readState(tmp);
-    await runAddressingPrFeedback({
-      config: FAKE_CONFIG,
-      cwd: tmp,
-      state,
-      runSubagent,
-      git,
-      commitPublisher: publisher,
-      github: { addReactionToReviewComment },
-      emit: vi.fn(),
-    });
-
-    expect(publisher.invocations.some((i) => i.method === "createCommitOnBranch")).toBe(true);
-    expect(addReactionToReviewComment).toHaveBeenCalledWith(7001, "+1", { cwd: tmp });
-  });
-
   it("ambient mode (no publisher): still calls pushBranch on HEAD move", async () => {
-    await writeFile(join(tmp, PR_REVIEW_COMMENTS_FILE), "## Review\n\nFix.\n", "utf8");
+    await writeFile(join(tmp, CI_CHECK_FAILURES_FILE), "## CI failure\n\nTypecheck failed.\n", "utf8");
 
     const git = makeStubGit("BEFORE");
     const runSubagent: RunSubagentFn = vi.fn(async () => {
@@ -397,7 +276,7 @@ describe("runAddressingPrFeedback", () => {
     });
 
     const state = await readState(tmp);
-    await runAddressingPrFeedback({
+    await runAddressingCIFailure({
       config: FAKE_CONFIG,
       cwd: tmp,
       state,

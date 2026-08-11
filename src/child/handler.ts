@@ -44,7 +44,8 @@ import { runRefine as defaultRunRefine, type RefineDeps } from "./modes/refine.j
 import { runAddressingPrFeedback as defaultRunAddressingPrFeedback, type FeedbackDeps } from "./modes/feedback.js";
 import { runAddressingCIFailure as defaultRunAddressingCIFailure, type CIFeedbackDeps } from "./modes/ci_feedback.js";
 import { isApiLimitError, resumeTimeFromError } from "../claude/index.js";
-import { activateBotAuth as defaultActivateBotAuth, type PushAuth } from "../botAuth.js";
+import { activateBotAuth as defaultActivateBotAuth } from "../botAuth.js";
+import { type CommitPublisher } from "../github/commit.js";
 import { setWorktreeGitIdentity as defaultSetWorktreeGitIdentity } from "../worktree.js";
 
 /** Test seam: the planning mode runner. Default delegates to `runPlanning`. */
@@ -165,7 +166,7 @@ export async function handleChild(opts: HandleChildOptions): Promise<State> {
       runRefine,
       runAddressingPrFeedback,
       runAddressingCIFailure,
-      pushAuth: botAuth?.pushAuth,
+      commitPublisher: botAuth?.commitPublisher,
     });
   } finally {
     botAuth?.stop();
@@ -184,7 +185,7 @@ interface RunModeLoopDeps {
   runRefine: RunRefineFn;
   runAddressingPrFeedback: RunAddressingPrFeedbackFn;
   runAddressingCIFailure: RunAddressingCIFailureFn;
-  pushAuth?: PushAuth;
+  commitPublisher?: CommitPublisher;
 }
 
 async function runModeLoop(deps: RunModeLoopDeps): Promise<State> {
@@ -211,7 +212,7 @@ async function runModeLoop(deps: RunModeLoopDeps): Promise<State> {
         runRefine: deps.runRefine,
         runAddressingPrFeedback: deps.runAddressingPrFeedback,
         runAddressingCIFailure: deps.runAddressingCIFailure,
-        pushAuth: deps.pushAuth,
+        commitPublisher: deps.commitPublisher,
       });
     } catch (err) {
       if (!isApiLimitError(err)) throw err;
@@ -261,7 +262,7 @@ interface DispatchDeps {
   runRefine: RunRefineFn;
   runAddressingPrFeedback: RunAddressingPrFeedbackFn;
   runAddressingCIFailure: RunAddressingCIFailureFn;
-  pushAuth?: PushAuth;
+  commitPublisher?: CommitPublisher;
 }
 
 async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
@@ -271,7 +272,12 @@ async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
     case "Assess":
       return deps.runAssess({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "Execution":
-      return deps.runExecution({ config: deps.config, cwd: deps.cwd, state: deps.state, pushAuth: deps.pushAuth });
+      return deps.runExecution({
+        config: deps.config,
+        cwd: deps.cwd,
+        state: deps.state,
+        commitPublisher: deps.commitPublisher,
+      });
     case "Refine":
       return deps.runRefine({ config: deps.config, cwd: deps.cwd, state: deps.state });
     case "AddressingPRFeedback":
@@ -279,14 +285,14 @@ async function dispatch(mode: Mode, deps: DispatchDeps): Promise<State> {
         config: deps.config,
         cwd: deps.cwd,
         state: deps.state,
-        pushAuth: deps.pushAuth,
+        commitPublisher: deps.commitPublisher,
       });
     case "AddressingCIFailure":
       return deps.runAddressingCIFailure({
         config: deps.config,
         cwd: deps.cwd,
         state: deps.state,
-        pushAuth: deps.pushAuth,
+        commitPublisher: deps.commitPublisher,
       });
     case "Delegated":
       throw new Error(

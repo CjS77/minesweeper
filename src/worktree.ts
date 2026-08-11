@@ -159,6 +159,10 @@ export async function setWorktreeGitIdentity(
   await execa("git", ["config", "extensions.worktreeConfig", "true"], { cwd: worktreePath });
   await execa("git", ["config", "--worktree", "user.name", identity.name], { cwd: worktreePath });
   await execa("git", ["config", "--worktree", "user.email", identity.email], { cwd: worktreePath });
+  // Disable local signing: the commit is published via the GitHub API which
+  // signs server-side. Without this, the operator's ambient commit.gpgsign=true
+  // would make the executor's git commit call fail.
+  await execa("git", ["config", "--worktree", "commit.gpgsign", "false"], { cwd: worktreePath });
 }
 
 /**

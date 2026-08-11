@@ -88,18 +88,18 @@ describe("activateBotAuth", () => {
     expect(sched.clear).toHaveBeenCalledOnce();
   });
 
-  it("builds a tokenized https push URL and basic-auth extra header", async () => {
+  it("exposes a commitPublisher wired to the repo and the token manager", async () => {
     const sched = fakeScheduler();
     const handle = await activateBotAuth(appConfig(), {
-      createManager: () => fakeManager("ghs_push"),
+      createManager: () => fakeManager("ghs_tok"),
       getRepo: async () => ({ owner: "acme", name: "widgets" }),
       ...sched.deps,
     });
-    expect(handle!.pushAuth.remoteUrl).toBe("https://github.com/acme/widgets.git");
-    const header = await handle!.pushAuth.extraHeaderValue();
-    const expected = Buffer.from("x-access-token:ghs_push", "utf8").toString("base64");
-    expect(header).toBe(`AUTHORIZATION: basic ${expected}`);
-    expect(header).not.toContain("ghs_push");
+    expect(handle!.commitPublisher).toBeDefined();
+    expect(typeof handle!.commitPublisher.getRef).toBe("function");
+    expect(typeof handle!.commitPublisher.createBranchRef).toBe("function");
+    expect(typeof handle!.commitPublisher.createCommitOnBranch).toBe("function");
+    expect(typeof handle!.commitPublisher.createPullRequest).toBe("function");
   });
 
   it("propagates a failed initial mint (fail fast)", async () => {

@@ -35,12 +35,13 @@ import { promises as fs } from "node:fs";
 import { join } from "node:path";
 
 import type { Config } from "../../config.js";
+import { type CommitPublisher } from "../../github/commit.js";
 import { event as defaultEvent, type Logger } from "../../logging.js";
 import { runSubagent as defaultRunSubagent } from "../../claude/index.js";
 import * as defaultState from "../state.js";
 import type { State } from "../state.js";
-import { createGit, FINAL_PLAN_FILE, type GitOps, type RunSubagentFn } from "./execution.js";
-import { type PushAuth } from "../../botAuth.js";
+import { defaultGit, FINAL_PLAN_FILE, type GitOps, type RunSubagentFn } from "./execution.js";
+import { publishIncrementalCommit } from "./publish.js";
 
 /** Path (worktree-relative) the daemon writes failing check details to. */
 export const CI_CHECK_FAILURES_FILE = join(".minesweeper", "ci_check_failures.md");
@@ -58,8 +59,8 @@ export interface CIFeedbackDeps {
   writeState?: typeof defaultState.writeState;
   /** Override the git wrapper (tests). */
   git?: GitOps;
-  /** When set (app mode), the branch push authenticates as the GitHub App bot. */
-  pushAuth?: PushAuth;
+  /** When set (app mode), the incremental commit is published via the GitHub API (server-side signed). */
+  commitPublisher?: CommitPublisher;
   /** Override the logger event sink (tests, or to suppress logging). */
   emit?: Logger["event"];
 }
@@ -79,7 +80,8 @@ export async function runAddressingCIFailure(deps: CIFeedbackDeps): Promise<Stat
   const emit = deps.emit ?? defaultEvent;
   const runSubagent = deps.runSubagent ?? defaultRunSubagent;
   const writeState = deps.writeState ?? defaultState.writeState;
-  const git = deps.git ?? createGit(deps.pushAuth);
+  const git = deps.git ?? defaultGit;
+  const publisher = deps.commitPublisher;
 
   const state = deps.state;
   const issueNumber = state.issueNumber;
@@ -108,7 +110,19 @@ export async function runAddressingCIFailure(deps: CIFeedbackDeps): Promise<Stat
       "executor finished without producing a new commit while addressing CI failures",
     );
   } else {
-    await git.pushBranch(cwd, branch);
+    if (publisher) {
+      await publishIncrementalCommit({
+        publisher,
+        git,
+        cwd,
+        branch,
+        from: headBefore,
+        to: headAfter,
+        headline: "Fix CI failures",
+      });
+    } else {
+      await git.pushBranch(cwd, branch);
+    }
   }
 
   return writeState(cwd, { ...state, status: "Complete" });

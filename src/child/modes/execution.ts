@@ -56,8 +56,8 @@ import { dirname, join } from "node:path";
 
 import { execa } from "execa";
 
-import { GITHUB_HTTPS_BASE, type PushAuth } from "../../botAuth.js";
 import type { Config } from "../../config.js";
+import { type CommitPublisher } from "../../github/commit.js";
 import * as defaultGithub from "../../github/index.js";
 import { event as defaultEvent, type Logger } from "../../logging.js";
 import { runSubagent as defaultRunSubagent } from "../../claude/index.js";
@@ -73,6 +73,7 @@ import {
   workItemUrl,
   type WorkItem,
 } from "../../workitem.js";
+import { computeFileChanges } from "./publish.js";
 
 /** Path (worktree-relative) the planning mode wrote the approved plan to. */
 export const FINAL_PLAN_FILE = join(".minesweeper", "final_plan.md");
@@ -146,6 +147,12 @@ export interface GitOps {
    * is aborted and the error propagates so the caller can bail.
    */
   pushBranch(cwd: string, branch: string): Promise<void>;
+  /** `git diff --name-status --find-renames from..to`. Stdout returned verbatim. */
+  diffNameStatus(cwd: string, from: string, to: string): Promise<string>;
+  /** Read a file at `ref:path` and return its content as a base64 string. */
+  readBlob(cwd: string, ref: string, path: string): Promise<string>;
+  /** `git log --format=%s from..HEAD`. One subject line per commit, returned verbatim. */
+  subjects(cwd: string, from: string): Promise<string>;
 }
 
 /**
@@ -214,62 +221,20 @@ export const defaultGit: GitOps = {
     }
     await execa("git", ["push", "-u", "origin", branch], { cwd });
   },
+  async diffNameStatus(cwd, from, to) {
+    const r = await execa("git", ["diff", "--name-status", "--find-renames", `${from}..${to}`], { cwd });
+    return r.stdout;
+  },
+  async readBlob(cwd, ref, path) {
+    // encoding: "buffer" preserves binary file content for accurate base64 encoding
+    const r = await execa("git", ["show", `${ref}:${path}`], { cwd, encoding: "buffer" });
+    return Buffer.from(r.stdout as unknown as Uint8Array).toString("base64");
+  },
+  async subjects(cwd, from) {
+    const r = await execa("git", ["log", "--format=%s", `${from}..HEAD`], { cwd });
+    return r.stdout;
+  },
 };
-
-/**
- * `GitOps` that pushes as the GitHub App bot. Identical to {@link defaultGit}
- * except `pushBranch` authenticates over https with an installation token.
- *
- * The token is injected via `GIT_CONFIG_*` env vars (an `http.<base>.extraheader`
- * setting), never on the command line — so it cannot leak through execa's
- * error messages (which echo argv) or into the worktree's `.git/config`. The
- * push targets an explicit https URL rather than `origin` so an ssh `origin`
- * cannot silently bypass the token and push under the operator's key.
- */
-function createBotGit(pushAuth: PushAuth): GitOps {
-  return { ...defaultGit, pushBranch: (cwd, branch) => botPushBranch(cwd, branch, pushAuth) };
-}
-
-/**
- * Select the git implementation: the bot-authenticated push when `pushAuth` is
- * present (app mode), otherwise the ambient {@link defaultGit}.
- */
-export function createGit(pushAuth?: PushAuth): GitOps {
-  return pushAuth ? createBotGit(pushAuth) : defaultGit;
-}
-
-async function botPushBranch(cwd: string, branch: string, pushAuth: PushAuth): Promise<void> {
-  // A fresh token (and thus env) per git invocation, so a refresh mid-retry is
-  // picked up. `refspec` is explicit because we push to a URL, not a remote.
-  const refspec = `${branch}:${branch}`;
-  const gitWithToken = async (args: string[]): Promise<void> => {
-    const header = await pushAuth.extraHeaderValue();
-    await execa("git", args, {
-      cwd,
-      env: {
-        ...process.env,
-        GIT_CONFIG_COUNT: "1",
-        GIT_CONFIG_KEY_0: `http.${GITHUB_HTTPS_BASE}.extraheader`,
-        GIT_CONFIG_VALUE_0: header,
-      },
-    });
-  };
-
-  try {
-    await gitWithToken(["push", "-u", pushAuth.remoteUrl, refspec]);
-    return;
-  } catch (err) {
-    const stderr = (err as { stderr?: string }).stderr ?? "";
-    if (!isNonFastForwardRejection(stderr)) throw err;
-  }
-  try {
-    await gitWithToken(["pull", "--rebase", pushAuth.remoteUrl, branch]);
-  } catch (rebaseErr) {
-    await execa("git", ["rebase", "--abort"], { cwd, reject: false });
-    throw rebaseErr;
-  }
-  await gitWithToken(["push", "-u", pushAuth.remoteUrl, refspec]);
-}
 
 /** Hook fired after approval, before the squash. Best-effort by contract. */
 export type RunCheckHookFn = (cwd: string) => Promise<void>;
@@ -290,10 +255,11 @@ export interface ExecutionDeps {
   /** Override the git wrapper (tests). */
   git?: GitOps;
   /**
-   * When set (app mode), the branch push authenticates as the GitHub App bot.
-   * Ignored when `git` is overridden directly. See {@link createGit}.
+   * When set (app mode), commits and the PR are published via the GitHub API
+   * (server-side signed, Verified). When absent, falls back to `git push` +
+   * `gh pr create`. Ignored when `git` is overridden directly.
    */
-  pushAuth?: PushAuth;
+  commitPublisher?: CommitPublisher;
   /** Override the optional `npm run check` hook (tests use a no-op). */
   runCheckHook?: RunCheckHookFn;
   /** Override the logger event sink (tests, or to suppress logging). */
@@ -316,7 +282,8 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
   const gh = deps.github ?? defaultGithub;
   const runSubagent = deps.runSubagent ?? defaultRunSubagent;
   const writeState = deps.writeState ?? defaultState.writeState;
-  const git = deps.git ?? createGit(deps.pushAuth);
+  const git = deps.git ?? defaultGit;
+  const publisher = deps.commitPublisher;
   const runCheckHook = deps.runCheckHook ?? defaultRunCheckHook;
 
   let state = deps.state;
@@ -433,11 +400,29 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
     iteration: state.iterations + 1,
   });
   const title = workItemTitle(item).trim();
-  await git.resetSoft(cwd, mergeBaseSha);
-  await git.commit(cwd, buildCommitMessage(title, prBody));
-  await git.pushBranch(cwd, branch);
 
-  const pr = await gh.createPr({ base: baseBranch, head: branch, title, body: prBody, cwd });
+  let pr: { number: number; url: string };
+  if (publisher) {
+    // App mode: publish via the GitHub API — the commit is server-side signed
+    // and attributed to the App's bot identity, showing as Verified on the PR.
+    const fileChanges = await computeFileChanges(git, cwd, mergeBaseSha, "HEAD");
+    await publisher.createBranchRef(branch, mergeBaseSha);
+    await publisher.createCommitOnBranch({
+      branchName: branch,
+      expectedHeadOid: mergeBaseSha,
+      headline: title,
+      body: prBody,
+      fileChanges,
+    });
+    pr = await publisher.createPullRequest({ base: baseBranch, head: branch, title, body: prBody });
+  } else {
+    // Ambient mode: squash into one local commit and push via git.
+    await git.resetSoft(cwd, mergeBaseSha);
+    await git.commit(cwd, buildCommitMessage(title, prBody));
+    await git.pushBranch(cwd, branch);
+    pr = await gh.createPr({ base: baseBranch, head: branch, title, body: prBody, cwd });
+  }
+
   emit("daemon", "SHIP", issueNumber, `opened PR #${pr.number}: ${pr.url}`);
 
   return writeState(cwd, { ...state, status: "Complete", prNumber: pr.number });
