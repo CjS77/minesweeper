@@ -13,6 +13,7 @@ const mockedExecaNode = vi.mocked(execaNode);
 afterEach(() => {
   mockedExecaNode.mockReset();
   delete process.env["MINESWEEPER_REPO_CONFIG_FILE"];
+  delete process.env["GH_TOKEN"];
 });
 
 function stubExeca(): void {
@@ -45,6 +46,20 @@ describe("defaultSpawnChild", () => {
 
     const [, , options] = mockedExecaNode.mock.calls[0]!;
     expect(options?.env?.["MINESWEEPER_REPO_CONFIG_FILE"]).toBe("/opt/shared/minesweeper.json");
+  });
+
+  it("re-reads process.env on every spawn so a refreshed GH_TOKEN reaches the child", () => {
+    stubExeca();
+    process.env["GH_TOKEN"] = "ghs_first";
+    const spawn = defaultSpawnChild({ childScript: "/cli.js", repoRoot: "/repo" });
+    spawn({ issueNumber: 1, worktreePath: "/wt/one" });
+
+    // The daemon's token manager re-primes GH_TOKEN roughly hourly.
+    process.env["GH_TOKEN"] = "ghs_refreshed";
+    spawn({ issueNumber: 2, worktreePath: "/wt/two" });
+
+    const envs = mockedExecaNode.mock.calls.map(([, , options]) => options?.env?.["GH_TOKEN"]);
+    expect(envs).toEqual(["ghs_first", "ghs_refreshed"]);
   });
 
   it("sets cwd to the worktree and forms the legacy issue-number argv for kind=issue", () => {

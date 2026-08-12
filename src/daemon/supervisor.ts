@@ -238,13 +238,6 @@ export interface DefaultSpawnChildOptions {
  * between the success and failure paths.
  */
 export function defaultSpawnChild(opts: DefaultSpawnChildOptions): SpawnChild {
-  // Default repo-config pointer: spread `process.env` *after* it so a value
-  // already set on the parent (e.g. operator `MINESWEEPER_REPO_CONFIG_FILE=…`)
-  // wins; the daemon-derived path is only the fallback.
-  const childEnv: NodeJS.ProcessEnv = {
-    MINESWEEPER_REPO_CONFIG_FILE: join(opts.repoRoot, ".minesweeper", "config.json"),
-    ...process.env,
-  };
   return ({ issueNumber, worktreePath, kind = "issue" }: SpawnChildOptions): ChildHandle => {
     const arg = kind === "issue" ? String(issueNumber) : `${kind}/${issueNumber}`;
     const sub = execaNode(opts.childScript, ["handle", arg], {
@@ -252,7 +245,7 @@ export function defaultSpawnChild(opts: DefaultSpawnChildOptions): SpawnChild {
       stdio: "inherit",
       detached: false,
       reject: false,
-      env: childEnv,
+      env: childEnv(opts.repoRoot),
     });
     const exit = sub.then(
       (r) => r.exitCode ?? FAILED_EXIT_CODE,
@@ -264,6 +257,24 @@ export function defaultSpawnChild(opts: DefaultSpawnChildOptions): SpawnChild {
         sub.kill(signal);
       },
     };
+  };
+}
+
+/**
+ * Build the child's environment. Read `process.env` **per spawn**, never once
+ * at factory time: in app mode `activateBotAuth` re-primes `GH_TOKEN` in the
+ * daemon's own env as the ~1h installation token rolls over, and a snapshot
+ * taken at daemon startup would hand every later child a long-expired token —
+ * whose first `gh` call (`gh repo view`, before the child mints its own token)
+ * dies with `HTTP 401: Bad credentials`.
+ *
+ * The repo-config pointer is a default only: `process.env` is spread *after* it
+ * so an explicit `MINESWEEPER_REPO_CONFIG_FILE` on the parent wins.
+ */
+function childEnv(repoRoot: string): NodeJS.ProcessEnv {
+  return {
+    MINESWEEPER_REPO_CONFIG_FILE: join(repoRoot, ".minesweeper", "config.json"),
+    ...process.env,
   };
 }
 
