@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-12
+
+### Fixed
+- The child spawner builds its environment per spawn instead of snapshotting `process.env` when the factory runs. In
+  app mode the daemon re-mints `GH_TOKEN` as the ~1h installation token rolls over; every child spawned after the first
+  hour used to inherit the expired token and die on its first `gh repo view` with `HTTP 401: Bad credentials` while the
+  daemon's own polling kept working. The `MINESWEEPER_REPO_CONFIG_FILE` default and parent-wins precedence are
+  unchanged.
+
 ## [0.12.0] — 2026-08-12
 
 ### Fixed
@@ -305,7 +314,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/CjS77/minesweeper/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/CjS77/minesweeper/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/CjS77/minesweeper/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/CjS77/minesweeper/compare/v0.10.0...v0.10.1
