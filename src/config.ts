@@ -89,6 +89,15 @@ export const ConfigSchema = z.object({
   pollCooldownMs: z.number().int().min(0),
   maxConcurrency: z.number().int().min(1),
   /**
+   * How long a worktree may sit in a working status (`InProgress`, `Writing`,
+   * `Reviewing`, `FixingReviewComments`) with no `state.json` write and no child
+   * running before the daemon re-dispatches it. Covers the gap left by the
+   * `Paused` resume path: a child killed mid-run (OOM, SIGKILL, daemon restart)
+   * leaves a worktree nothing else re-drives, since the sweep only reaps *closed*
+   * work and `dispatch` skips work that already has a worktree.
+   */
+  staleWorktreeMinutes: z.number().int().min(1),
+  /**
    * Absolute path to a directory of override role prompts. When unset the
    * SDK wrapper falls back to the bundled prompts shipped inside the npm
    * package (see `BUNDLED_PROMPTS_ROOT` in `src/claude/roles.ts`). Populated
@@ -546,6 +555,14 @@ export function loadConfig(
       120,
     ),
     maxConcurrency: readInt(env, "MINESWEEPER_MAX_CONCURRENCY", 1, repoFile.maxConcurrency, file.maxConcurrency, 1),
+    staleWorktreeMinutes: readInt(
+      env,
+      "MINESWEEPER_STALE_WORKTREE_MINUTES",
+      1,
+      repoFile.staleWorktreeMinutes,
+      file.staleWorktreeMinutes,
+      60,
+    ),
     customPromptsPath: readOptionalString(
       env,
       "MINESWEEPER_CUSTOM_PROMPTS_PATH",

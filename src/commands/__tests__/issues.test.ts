@@ -58,9 +58,18 @@ function makeIssue(overrides: Partial<Issue> & Pick<Issue, "number" | "title">):
   };
 }
 
-function fakeGithub(issues: Issue[]): { listIssues: ReturnType<typeof vi.fn> } {
-  return { listIssues: vi.fn().mockResolvedValue(issues) };
+function fakeGithub(issues: Issue[]): {
+  listIssues: ReturnType<typeof vi.fn>;
+  getRepoNameWithOwner: ReturnType<typeof vi.fn>;
+} {
+  return {
+    listIssues: vi.fn().mockResolvedValue(issues),
+    getRepoNameWithOwner: vi.fn().mockResolvedValue({ owner: "acme", name: "repo", nameWithOwner: "acme/repo" }),
+  };
 }
+
+/** `gh repo view --json nameWithOwner` — the second gh call the command makes. */
+const repoViewJson = ok(JSON.stringify({ nameWithOwner: "acme/repo" }));
 
 function fakeWorktree(orphans: OrphanedWorktree[]): { listOrphans: ReturnType<typeof vi.fn> } {
   return { listOrphans: vi.fn().mockResolvedValue(orphans) };
@@ -85,7 +94,7 @@ afterEach(async () => {
 
 describe("runIssueListCommand — gh argument shape (Strategy A: execa boundary)", () => {
   it("invokes gh with --state open --limit 1000 to beat the silent default of 30", async () => {
-    mockExeca.mockResolvedValueOnce(ok("[]") as never);
+    mockExeca.mockResolvedValueOnce(ok("[]") as never).mockResolvedValueOnce(repoViewJson as never);
 
     await runIssueListCommand({
       config: loadConfig({ MINESWEEPER_WORKTREE_PATH: tmp }, { configFile: null }),
@@ -93,14 +102,16 @@ describe("runIssueListCommand — gh argument shape (Strategy A: execa boundary)
       stdout: makeStdout().stream,
     });
 
-    expect(mockExeca).toHaveBeenCalledTimes(1);
+    // Two gh calls: the issue list, then `repo view` to resolve the repo-scoped
+    // worktree root.
+    expect(mockExeca).toHaveBeenCalledTimes(2);
     const args = mockExeca.mock.calls[0]?.[1] as readonly string[];
     expect(args.slice(0, 6)).toEqual(["issue", "list", "--state", "open", "--limit", "1000"]);
     expect(args).toContain("--json");
   });
 
   it("forwards cwd to gh", async () => {
-    mockExeca.mockResolvedValueOnce(ok("[]") as never);
+    mockExeca.mockResolvedValueOnce(ok("[]") as never).mockResolvedValueOnce(repoViewJson as never);
 
     await runIssueListCommand({
       config: loadConfig({ MINESWEEPER_WORKTREE_PATH: tmp }, { configFile: null }),
@@ -248,8 +259,10 @@ describe("runIssueListCommand — eligibility tagging (Strategy B: module overri
       stdout: makeStdout().stream,
     });
     expect(wt.listOrphans).toHaveBeenCalledTimes(1);
-    // The override gets the resolved <worktreePath>/worktrees path.
-    expect(wt.listOrphans.mock.calls[0]?.[0]).toBe("/definitely/does/not/exist/worktrees");
+    // The override gets the repo-scoped <worktreePath>/worktrees/<owner>/<name> path
+    // and this repo's identity, so another repo's worktrees are never listed.
+    expect(wt.listOrphans.mock.calls[0]?.[0]).toBe("/definitely/does/not/exist/worktrees/acme/repo");
+    expect(wt.listOrphans.mock.calls[0]?.[1]).toBe("acme/repo");
   });
 });
 

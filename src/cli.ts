@@ -18,7 +18,8 @@ import { runLogViewCommand } from "./commands/log.js";
 import { runModelsCommand } from "./commands/models.js";
 import { runReviewersCommand } from "./commands/reviewers.js";
 import { PACKAGE_VERSION } from "./version.js";
-import { listOrphans } from "./worktree.js";
+import { listOrphans, repoIdentity, repoScopedRoots } from "./worktree.js";
+import { getRepoNameWithOwner } from "./github/index.js";
 
 const program = new Command();
 
@@ -268,19 +269,25 @@ async function runDaemon(): Promise<void> {
     );
   }
 
-  const worktreesRoot = resolve(config.worktreePath, "worktrees");
-  const archiveRoot = resolve(config.worktreePath, "archive");
+  // Roots are namespaced per repo so two daemons sharing one worktreePath never
+  // see each other's worktrees — see `repoScopedRoots`.
+  const repoRef = await getRepoNameWithOwner({ cwd: repoRoot });
+  const repo = repoIdentity(repoRef);
+  const { worktreesRoot, archiveRoot } = repoScopedRoots(config.worktreePath, repoRef);
   const childScript = fileURLToPath(import.meta.url);
+
+  await warnAboutLegacyRoot(config.worktreePath, worktreesRoot);
 
   const supervisor = createSupervisor({
     config,
     repoRoot,
+    repo,
     worktreesRoot,
     archiveRoot,
     spawnChild: defaultSpawnChild({ childScript, repoRoot }),
   });
 
-  await recoverOrphans(supervisor, worktreesRoot);
+  await recoverOrphans(supervisor, worktreesRoot, repo);
 
   const schedules: Schedule[] =
     config.schedule.length > 0
@@ -297,7 +304,7 @@ async function runDaemon(): Promise<void> {
       // or pr_feedback runs.
       await supervisor.reapClosedInFlight(openKeys);
       await supervisor.sweepClosedIssues();
-      await supervisor.resumePausedWorktrees();
+      await supervisor.resumeStalledWorktrees();
       await supervisor.pollPrFeedback();
       await supervisor.pollCIFeedback();
     },
@@ -321,8 +328,29 @@ async function runDaemon(): Promise<void> {
   await getActiveLogger()?.flush();
 }
 
-async function recoverOrphans(supervisor: Supervisor, worktreesRoot: string): Promise<void> {
-  const orphans = await listOrphans(worktreesRoot);
+/**
+ * Worktrees created before roots were namespaced per repo sit directly under
+ * `{worktreePath}/worktrees/` and are no longer read by any daemon. Say so once
+ * at startup rather than leaving them to rot invisibly — they still hold git
+ * worktrees and branches in whichever repo created them.
+ */
+async function warnAboutLegacyRoot(worktreePath: string, worktreesRoot: string): Promise<void> {
+  const legacyRoot = resolve(worktreePath, "worktrees");
+  if (legacyRoot === worktreesRoot) return;
+  const legacy = await listOrphans(legacyRoot);
+  if (legacy.length === 0) return;
+  event(
+    "daemon",
+    "WARN",
+    null,
+    `${legacy.length} worktree(s) found under the pre-repo-scoping root ${legacyRoot}; ` +
+      `they are no longer managed. Inspect them, then clear each with ` +
+      `\`git worktree remove --force <path>\` and \`git branch -D <branch>\` in its own repo.`,
+  );
+}
+
+async function recoverOrphans(supervisor: Supervisor, worktreesRoot: string, repo: string): Promise<void> {
+  const orphans = await listOrphans(worktreesRoot, repo);
   for (const orphan of orphans) {
     if (!orphan.state) continue;
     if (orphan.state.status === "Failed") {

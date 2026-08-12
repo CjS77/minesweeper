@@ -9,6 +9,8 @@ import {
   archiveWorktreeState,
   listOrphans,
   removeWorktree,
+  repoIdentity,
+  repoScopedRoots,
   sanitiseBranchName,
   setWorktreeGitIdentity,
 } from "../worktree.js";
@@ -286,7 +288,8 @@ describe("listOrphans", () => {
     const orphans = await listOrphans(worktreesRoot);
     expect(orphans).toHaveLength(1);
     expect(orphans[0]?.state?.issueNumber).toBe(77);
-    expect(orphans[0]?.state?.version).toBe(7);
+    expect(orphans[0]?.state?.version).toBe(8);
+    expect(orphans[0]?.state?.repo).toBeNull();
     expect(orphans[0]?.state?.kind).toBe("issue");
     expect(orphans[0]?.state?.prNumber).toBeNull();
     expect(orphans[0]?.state?.prFeedbackProcessedAt).toBeNull();
@@ -307,6 +310,59 @@ describe("listOrphans", () => {
     await fs.writeFile(statePath(wt), "{not json");
     const orphans = await listOrphans(worktreesRoot);
     expect(orphans).toEqual([]);
+  });
+
+  it("drops worktrees belonging to another repo when expectedRepo is given", async () => {
+    const { path: mine } = await addWorktree({ repoRoot, worktreesRoot, branchName: "mine" });
+    await initState(mine, "Execution", {
+      repo: "acme/mine",
+      issueNumber: 11,
+      branchName: "mine",
+      maxIterations: 3,
+    });
+
+    const { path: theirs } = await addWorktree({ repoRoot, worktreesRoot, branchName: "theirs" });
+    await initState(theirs, "Execution", {
+      repo: "other/theirs",
+      issueNumber: 11,
+      branchName: "theirs",
+      maxIterations: 3,
+    });
+
+    const orphans = await listOrphans(worktreesRoot, "acme/mine");
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]?.path).toBe(mine);
+  });
+
+  it("keeps unattributable (pre-v8, repo: null) worktrees when expectedRepo is given", async () => {
+    const { path: wt } = await addWorktree({ repoRoot, worktreesRoot, branchName: "legacy" });
+    await initState(wt, "Execution", { issueNumber: 12, branchName: "legacy", maxIterations: 3 });
+
+    const orphans = await listOrphans(worktreesRoot, "acme/mine");
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0]?.state?.repo).toBeNull();
+  });
+});
+
+describe("repoScopedRoots / repoIdentity", () => {
+  it("namespaces both roots by owner/name so two repos never share a directory", () => {
+    const a = repoScopedRoots("/tmp/minesweeper", { owner: "acme", name: "api" });
+    const b = repoScopedRoots("/tmp/minesweeper", { owner: "globex", name: "api" });
+
+    expect(a.worktreesRoot).toBe("/tmp/minesweeper/worktrees/acme/api");
+    expect(a.archiveRoot).toBe("/tmp/minesweeper/archive/acme/api");
+    // Same basename, different owner — the collision the old basename-only path had.
+    expect(b.worktreesRoot).not.toBe(a.worktreesRoot);
+    expect(b.archiveRoot).not.toBe(a.archiveRoot);
+  });
+
+  it("sanitises each segment into a single safe path component", () => {
+    const roots = repoScopedRoots("/tmp/ms", { owner: "Acme Corp", name: "My.Repo" });
+    expect(roots.worktreesRoot).toBe("/tmp/ms/worktrees/acme-corp/my.repo");
+  });
+
+  it("lowercases the identity so GitHub's case-insensitive names compare equal", () => {
+    expect(repoIdentity({ owner: "Grease-XMR", name: "Grease" })).toBe("grease-xmr/grease");
   });
 });
 

@@ -26,7 +26,7 @@
 
 import { readFileSync, writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import chalk from "chalk";
 import { execa } from "execa";
@@ -39,6 +39,7 @@ import * as defaultLabelsCommand from "./labels.js";
 import { isEligible } from "../daemon/eligibility.js";
 import { event } from "../logging.js";
 import * as defaultWorktree from "../worktree.js";
+import { repoIdentity, repoScopedRoots, type RepoScope } from "../worktree.js";
 import type { Mode, Status } from "../child/state.js";
 import { asIssueWorkItem } from "../workitem.js";
 
@@ -66,7 +67,7 @@ export interface RunIssueListCommandOptions {
   /** Stream for human-readable output. Default: `process.stdout`. */
   stdout?: NodeJS.WritableStream;
   /** Override the GitHub wrapper (tests). */
-  github?: Pick<typeof defaultGithub, "listIssues">;
+  github?: Pick<typeof defaultGithub, "listIssues" | "getRepoNameWithOwner">;
   /** Override the worktree wrapper (tests). */
   worktree?: Pick<typeof defaultWorktree, "listOrphans">;
 }
@@ -92,7 +93,8 @@ export async function runIssueListCommand(opts: RunIssueListCommandOptions): Pro
     limit: MAX_ISSUES,
   });
 
-  const stateMap = await loadInProgressMap(opts.config, wt);
+  const repoRef = await gh.getRepoNameWithOwner({ cwd: opts.cwd, bin: opts.bin });
+  const stateMap = await loadInProgressMap(opts.config, wt, repoRef);
   const rows = issues.map((issue) => buildRow(issue, opts.config, stateMap));
 
   if (rows.length === 0) {
@@ -110,9 +112,10 @@ export async function runIssueListCommand(opts: RunIssueListCommandOptions): Pro
 async function loadInProgressMap(
   config: Config,
   wt: Pick<typeof defaultWorktree, "listOrphans">,
+  repoRef: RepoScope,
 ): Promise<Map<number, { mode: Mode; status: Status }>> {
-  const worktreesRoot = resolve(config.worktreePath, "worktrees");
-  const orphans = await wt.listOrphans(worktreesRoot);
+  const { worktreesRoot } = repoScopedRoots(config.worktreePath, repoRef);
+  const orphans = await wt.listOrphans(worktreesRoot, repoIdentity(repoRef));
   const map = new Map<number, { mode: Mode; status: Status }>();
   for (const orphan of orphans) {
     // `OrphanedWorktree.state` is typed as optional even though `listOrphans`

@@ -102,6 +102,7 @@ function makeDeps(overrides: Partial<PrFeedbackDeps> = {}): {
     config,
     repoRoot: scratch,
     worktreesRoot,
+    repo: "acme/repo",
     isInFlight: () => false,
     resume,
     github: {

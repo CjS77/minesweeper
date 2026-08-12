@@ -47,7 +47,8 @@ describe("initState", () => {
     expect(state.ciChecksProcessedAt).toBeNull();
     expect(state.ciFixIterations).toBeNull();
     expect(state.prReactionsProcessedAt).toBeNull();
-    expect(state.version).toBe(7);
+    expect(state.repo).toBeNull();
+    expect(state.version).toBe(8);
 
     const onDisk = JSON.parse(await readFile(statePath(tmp), "utf8"));
     expect(onDisk).toEqual(state);
@@ -144,7 +145,7 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v1));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(7);
+    expect(loaded.version).toBe(8);
     expect(loaded.prReactionsProcessedAt).toBeNull();
     expect(loaded.assessmentReason).toBeNull();
     expect(loaded.prNumber).toBeNull();
@@ -176,7 +177,7 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v2));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(7);
+    expect(loaded.version).toBe(8);
     expect(loaded.prReactionsProcessedAt).toBeNull();
     expect(loaded.prNumber).toBeNull();
     expect(loaded.prFeedbackProcessedAt).toBeNull();
@@ -210,7 +211,7 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v3));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(7);
+    expect(loaded.version).toBe(8);
     expect(loaded.prReactionsProcessedAt).toBeNull();
     expect(loaded.kind).toBe("issue");
     expect(loaded.prNumber).toBe(42);
@@ -242,7 +243,7 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v4));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(7);
+    expect(loaded.version).toBe(8);
     expect(loaded.prReactionsProcessedAt).toBeNull();
     expect(loaded.canResumeAt).toBeNull();
     expect(loaded.pausedFromStatus).toBeNull();
@@ -268,7 +269,7 @@ describe("readState / writeState", () => {
       updatedAt: "2026-05-01T00:00:00.000Z",
     };
     const migrated = migrateIfNeeded(v1) as Record<string, unknown>;
-    expect(migrated["version"]).toBe(7);
+    expect(migrated["version"]).toBe(8);
     expect(migrated["prReactionsProcessedAt"]).toBeNull();
     expect(migrated["assessmentReason"]).toBeNull();
     expect(migrated["prNumber"]).toBeNull();
@@ -281,7 +282,7 @@ describe("readState / writeState", () => {
 
     const v2 = { ...v1, version: 2, assessmentReason: null };
     const migrated2 = migrateIfNeeded(v2) as Record<string, unknown>;
-    expect(migrated2["version"]).toBe(7);
+    expect(migrated2["version"]).toBe(8);
     expect(migrated2["prNumber"]).toBeNull();
     expect(migrated2["kind"]).toBe("issue");
     expect(migrated2["canResumeAt"]).toBeNull();
@@ -316,11 +317,55 @@ describe("readState / writeState", () => {
     await writeFile(statePath(tmp), JSON.stringify(v6));
 
     const loaded = await readState(tmp);
-    expect(loaded.version).toBe(7);
+    expect(loaded.version).toBe(8);
     expect(loaded.prReactionsProcessedAt).toBeNull();
     expect(loaded.prNumber).toBe(88);
     expect(loaded.prFeedbackProcessedAt).toBe("2026-05-03T00:00:00.000Z");
     expect(loaded.mode).toBe("AddressingPRFeedback");
+  });
+
+  it("migrates v7 state on read with repo defaulted to null (unattributable, not dropped)", async () => {
+    const v7 = {
+      version: 7,
+      kind: "codeScanningAlert",
+      issueNumber: 3,
+      branchName: "repo-codescanningalert0003",
+      mode: "Execution",
+      status: "Writing",
+      iterations: 0,
+      maxIterations: 2,
+      assessment: "Execute",
+      assessmentReason: null,
+      prNumber: null,
+      prFeedbackProcessedAt: null,
+      prReactionsProcessedAt: null,
+      ciChecksProcessedAt: null,
+      ciFixIterations: null,
+      canResumeAt: null,
+      pausedFromStatus: null,
+      startedAt: "2026-05-01T00:00:00.000Z",
+      updatedAt: "2026-05-03T00:00:00.000Z",
+    };
+    await fs.mkdir(join(tmp, ".minesweeper"), { recursive: true });
+    await writeFile(statePath(tmp), JSON.stringify(v7));
+
+    const loaded = await readState(tmp);
+    expect(loaded.version).toBe(8);
+    expect(loaded.repo).toBeNull();
+    expect(loaded.kind).toBe("codeScanningAlert");
+    expect(loaded.issueNumber).toBe(3);
+  });
+
+  it("records the owning repo when initState is given one", async () => {
+    const state = await initState(tmp, "Planning", {
+      kind: "codeScanningAlert",
+      repo: "grease-xmr/grease",
+      issueNumber: 3,
+      branchName: "grease-codescanningalert0003",
+      maxIterations: 2,
+    });
+    expect(state.repo).toBe("grease-xmr/grease");
+    expect((await readState(tmp)).repo).toBe("grease-xmr/grease");
   });
 
   it("round-trips a Paused state with canResumeAt and pausedFromStatus", async () => {
@@ -393,7 +438,7 @@ describe("atomic writes", () => {
       // Each snapshot must be parseable JSON matching the schema, with no
       // torn payload. JSON.parse would throw on a partial write.
       const parsed = JSON.parse(raw);
-      expect(parsed.version).toBe(7);
+      expect(parsed.version).toBe(8);
       expect(parsed.issueNumber).toBe(99);
       expect(typeof parsed.branchName).toBe("string");
       const branch = parsed.branchName as string;

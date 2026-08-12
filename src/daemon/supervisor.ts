@@ -39,6 +39,13 @@
  *     an exited child whose issue is still open — orphan recovery handles
  *     in-progress orphans via `resume`, the sweep handles closed-issue ones).
  *
+ * Repo scoping: every worktree this supervisor touches must belong to
+ * `deps.repo`. `deps.worktreesRoot`/`archiveRoot` are already namespaced per
+ * repo by `repoScopedRoots`, and `listOwnOrphans` additionally filters on the
+ * `repo` field each `state.json` carries. Both matter: a worktree adopted from
+ * another repo gets a child spawned against it and is then reaped as "closed
+ * externally", because its issue/alert number does not resolve in our repo.
+ *
  * `drain` is the shutdown handle: it stops accepting new work, drops the
  * queue, and resolves once every in-flight child has exited.
  */
@@ -58,6 +65,7 @@ import { loadCodeownerLogins as defaultLoadCodeownerLogins } from "../codeowners
 import { pollPrFeedback as defaultPollPrFeedback } from "./pr_feedback.js";
 import { pollCIFeedback as defaultPollCIFeedback } from "./ci_feedback.js";
 import { branchSegmentForKind, workItemKey, workItemNumber, type WorkItem } from "../workitem.js";
+import { sanitiseBranchName } from "../worktree.js";
 
 const ISSUE_NUMBER_PAD = 4;
 const FAILED_EXIT_CODE = -1;
@@ -92,9 +100,19 @@ export interface SupervisorDeps {
   config: Config;
   /** Absolute path of the parent repo. Used as the slug source and worktree owner. */
   repoRoot: string;
-  /** Where new worktrees are created (one subdir per branch). */
+  /**
+   * Lowercased `owner/name` of the repo this supervisor speaks for (see
+   * `repoIdentity` in `src/worktree.ts`). Stamped into every `state.json` and
+   * used to ignore worktrees belonging to another repo.
+   */
+  repo: string;
+  /**
+   * Where new worktrees are created (one subdir per branch). Must be repo-scoped
+   * (`repoScopedRoots`) — a root shared with another repo's daemon means each
+   * adopts and then reaps the other's worktrees.
+   */
   worktreesRoot: string;
-  /** Where archived `.minesweeper/` directories land when an issue is closed. */
+  /** Where archived `.minesweeper/` directories land when an issue is closed. Repo-scoped. */
   archiveRoot: string;
   /** Test/dev seam: how to spawn the per-issue child. Defaults to {@link defaultSpawnChild}. */
   spawnChild?: SpawnChild;
@@ -173,12 +191,15 @@ export interface Supervisor {
    */
   pollCIFeedback(): Promise<void>;
   /**
-   * Per-poll-cycle sweep — re-queues `Paused` orphans whose `canResumeAt`
-   * has elapsed (or is `null`, meaning retry next cycle). Skips orphans
-   * already in-flight. Runs after `sweepClosedIssues` so a paused worktree
-   * whose issue was closed gets reaped rather than resumed.
+   * Per-poll-cycle sweep — re-queues orphans that should be running but are
+   * not. Two cases: `Paused` orphans whose `canResumeAt` has elapsed (or is
+   * `null`, meaning retry next cycle), and orphans stuck in a working status
+   * whose `updatedAt` is older than `config.staleWorktreeMinutes` (their child
+   * died without writing a terminal status). Skips orphans already in-flight.
+   * Runs after `sweepClosedIssues` so a worktree whose issue was closed gets
+   * reaped rather than resumed.
    */
-  resumePausedWorktrees(): Promise<void>;
+  resumeStalledWorktrees(): Promise<void>;
   /**
    * Identifiers of currently in-flight children. Strings of the form
    * `${kind}:${number}` so issue #N and alert #N are distinguishable.
@@ -252,15 +273,24 @@ export function defaultSpawnChild(opts: DefaultSpawnChildOptions): SpawnChild {
  * keyspace inside their respective sources) cannot collide on disk:
  *
  *   - issue:               `{slug}-issue{NNNN}`
- *   - codeScanningAlert:   `{slug}-codeScanningAlert{NNNN}`
- *   - secretScanningAlert: `{slug}-secretScanningAlert{NNNN}`
+ *   - codeScanningAlert:   `{slug}-codescanningalert{NNNN}`
+ *   - secretScanningAlert: `{slug}-secretscanningalert{NNNN}`
  *
  * Slug is the basename of the repo root; numbers are zero-padded to four
  * digits (1 → "0001", 99 → "0099", 12345 → "12345" — pad does not truncate).
+ *
+ * The result is passed through `sanitiseBranchName` — the same normalisation
+ * `addWorktree` applies — so this returns the branch and directory name that
+ * will actually exist on disk (all lowercase). Skipping it silently breaks
+ * `dispatch`'s worktree-exists guard for the camelCase alert kinds: the guard
+ * stats `…/repo-codeScanningAlert0003` while git created
+ * `…/repo-codescanningalert0003`, so every poll re-dispatches work that already
+ * has a live worktree and fails on `git worktree add -b`.
  */
 export function branchNameFor(repoRoot: string, issueNumber: number, kind: WorkItemKind = "issue"): string {
   const slug = basename(repoRoot);
-  return `${slug}-${branchSegmentForKind(kind)}${String(issueNumber).padStart(ISSUE_NUMBER_PAD, "0")}`;
+  const padded = String(issueNumber).padStart(ISSUE_NUMBER_PAD, "0");
+  return sanitiseBranchName(`${slug}-${branchSegmentForKind(kind)}${padded}`);
 }
 
 interface QueueEntry {
@@ -380,8 +410,12 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     }
   };
 
+  /** Worktrees under our root that belong to this repo. Never another daemon's. */
+  const listOwnOrphans = (): Promise<defaultWorktree.OrphanedWorktree[]> =>
+    wt.listOrphans(deps.worktreesRoot, deps.repo);
+
   const sweepClosedIssues = async (): Promise<void> => {
-    const orphans = await wt.listOrphans(deps.worktreesRoot);
+    const orphans = await listOwnOrphans();
     for (const orphan of orphans) {
       if (!orphan.state) continue;
       const { issueNumber, kind } = orphan.state;
@@ -421,25 +455,43 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     }
   };
 
-  const resumePausedWorktrees = async (): Promise<void> => {
-    const orphans = await wt.listOrphans(deps.worktreesRoot);
+  const resumeStalledWorktrees = async (): Promise<void> => {
+    const orphans = await listOwnOrphans();
     const now = Date.now();
+    const staleAfterMs = deps.config.staleWorktreeMinutes * 60 * 1000;
     for (const orphan of orphans) {
       const st = orphan.state;
-      if (!st || st.status !== "Paused") continue;
+      if (!st) continue;
       if (inflight.has(workItemKey(st.kind, st.issueNumber))) continue;
-      if (st.canResumeAt && Date.parse(st.canResumeAt) > now) {
-        emit(
-          "daemon",
-          "INFO",
-          st.issueNumber,
-          `paused worktree not yet resumable (canResumeAt=${st.canResumeAt}); skipping`,
-          {
-            kind: st.kind,
-          },
-        );
+
+      if (st.status === "Paused") {
+        if (st.canResumeAt && Date.parse(st.canResumeAt) > now) {
+          emit(
+            "daemon",
+            "INFO",
+            st.issueNumber,
+            `paused worktree not yet resumable (canResumeAt=${st.canResumeAt}); skipping`,
+            {
+              kind: st.kind,
+            },
+          );
+          continue;
+        }
+        await resume({ path: orphan.path, state: st });
         continue;
       }
+
+      if (!isWorkingStatus(st.status)) continue;
+      const idleMs = now - Date.parse(st.updatedAt);
+      if (idleMs < staleAfterMs) continue;
+      const idleMinutes = Math.round(idleMs / 60_000);
+      emit(
+        "daemon",
+        "WARN",
+        st.issueNumber,
+        `worktree stalled in ${st.mode}/${st.status} for ${idleMinutes}m with no child; re-dispatching`,
+        { kind: st.kind },
+      );
       await resume({ path: orphan.path, state: st });
     }
   };
@@ -449,6 +501,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       config: deps.config,
       repoRoot: deps.repoRoot,
       worktreesRoot: deps.worktreesRoot,
+      repo: deps.repo,
       // pr_feedback today only re-dispatches issue-backed worktrees (state.prNumber
       // is only ever set by the executor for kind="issue"). Check the issue key
       // explicitly so the type stays narrow.
@@ -467,6 +520,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       config: deps.config,
       repoRoot: deps.repoRoot,
       worktreesRoot: deps.worktreesRoot,
+      repo: deps.repo,
       isInFlight: (n) => inflight.has(workItemKey("issue", n)),
       resume,
       github: gh,
@@ -499,6 +553,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
         worktreePath = added.path;
         await initState(worktreePath, "Planning", {
           kind: entry.kind,
+          repo: deps.repo,
           issueNumber: entry.issueNumber,
           branchName: added.branch,
           maxIterations: deps.config.maxPlanningIterations,
@@ -573,7 +628,7 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
     resume,
     sweepClosedIssues,
     reapClosedInFlight,
-    resumePausedWorktrees,
+    resumeStalledWorktrees,
     pollPrFeedback,
     pollCIFeedback,
     inFlight: () => [...inflight.keys()],
@@ -605,6 +660,16 @@ function requiredChildScript(): string {
   throw new Error(
     "createSupervisor: pass deps.spawnChild (e.g. defaultSpawnChild({ childScript })) — no default child script available",
   );
+}
+
+/**
+ * Statuses that mean "a child should be driving this worktree right now". A
+ * worktree sitting in one of these with no child running has lost its child;
+ * `Complete` / `Failed` are terminal (the sweep owns them) and `Paused` has its
+ * own `canResumeAt` schedule.
+ */
+function isWorkingStatus(status: State["status"]): boolean {
+  return status === "InProgress" || status === "Writing" || status === "Reviewing" || status === "FixingReviewComments";
 }
 
 /**

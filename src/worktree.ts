@@ -9,6 +9,8 @@
  *
  * `sanitiseBranchName` is exported for reuse — plan 07 derives the per-issue branch name from
  * the issue title and feeds it through the same sanitiser.
+ *
+ * Every root handed to these helpers must be repo-scoped — see {@link repoScopedRoots}.
  */
 
 import { promises as fs, type Dirent } from "node:fs";
@@ -45,6 +47,51 @@ export interface ArchiveWorktreeStateOptions {
    * never collide on disk.
    */
   kind?: WorkItemKind;
+}
+
+/** Minimal `owner`/`name` pair used to namespace the on-disk roots. */
+export interface RepoScope {
+  owner: string;
+  name: string;
+}
+
+export interface ScopedRoots {
+  /** Where this repo's worktrees are created (one subdir per branch). */
+  worktreesRoot: string;
+  /** Where this repo's archived `.minesweeper/` directories land. */
+  archiveRoot: string;
+}
+
+/**
+ * Derive this repository's private worktree and archive roots under the operator's
+ * `worktreePath`.
+ *
+ * The `owner/name` namespace is a safety requirement, not tidiness. `listOrphans`
+ * enumerates whatever sits under `worktreesRoot`, so two daemons pointed at the same
+ * `worktreePath` each see the other's worktrees as their own: they adopt them at startup,
+ * spawn children against them, and then reap them as "closed externally" when the issue
+ * or alert number does not resolve in their own repo. Namespacing by repo makes that
+ * cross-talk impossible by construction.
+ *
+ * The repo basename alone is not enough — two clones of different repos can share one
+ * (`foo/api` and `bar/api`) — so the full owner/name pair is used, each segment passed
+ * through {@link sanitiseBranchName} so it is a safe single path segment.
+ */
+export function repoScopedRoots(worktreePath: string, repo: RepoScope): ScopedRoots {
+  const scope = join(sanitiseBranchName(repo.owner), sanitiseBranchName(repo.name));
+  return {
+    worktreesRoot: resolve(worktreePath, "worktrees", scope),
+    archiveRoot: resolve(worktreePath, "archive", scope),
+  };
+}
+
+/**
+ * Canonical `owner/name` string recorded in `state.json` (see `repo` in
+ * `src/child/state.ts`) and compared by {@link listOrphans}. Lowercased because GitHub
+ * treats repository names case-insensitively while a string compare would not.
+ */
+export function repoIdentity(repo: RepoScope): string {
+  return `${repo.owner}/${repo.name}`.toLowerCase();
 }
 
 export interface OrphanedWorktree {
@@ -251,8 +298,15 @@ async function deleteBranchIfPresent(mainRepo: string, branch: string): Promise<
  * Anything else (no state file, malformed JSON, schema mismatch) is silently filtered — those
  * directories are not Minesweeper-managed (or are too corrupt to recover) and the caller should
  * not act on them. A missing `worktreesRoot` returns `[]` rather than throwing.
+ *
+ * `expectedRepo` (an {@link repoIdentity} string) drops any worktree whose `state.repo`
+ * names a different repository. {@link repoScopedRoots} already keeps repos in separate
+ * roots; this is the second line of defence for operators who point two daemons at one
+ * root by hand, because adopting a foreign worktree ends in it being reaped. States
+ * predating the `repo` field (`repo: null`) cannot be attributed and are kept — they only
+ * exist under a legacy shared root, which the daemon no longer reads.
  */
-export async function listOrphans(worktreesRoot: string): Promise<OrphanedWorktree[]> {
+export async function listOrphans(worktreesRoot: string, expectedRepo?: string): Promise<OrphanedWorktree[]> {
   const entries = await readDirOrEmpty(worktreesRoot);
   const orphans = await Promise.all(
     entries
@@ -262,6 +316,7 @@ export async function listOrphans(worktreesRoot: string): Promise<OrphanedWorktr
         const stateFile = join(path, STATE_DIR, STATE_FILE);
         const state = await readStateOrNull(stateFile);
         if (state === null) return null;
+        if (expectedRepo !== undefined && state.repo !== null && state.repo !== expectedRepo) return null;
         return { path, state };
       }),
   );

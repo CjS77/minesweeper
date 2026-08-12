@@ -94,6 +94,7 @@ describe("loadConfig", () => {
       pollCooldownSeconds: 120,
       pollCooldownMs: 120_000,
       maxConcurrency: 1,
+      staleWorktreeMinutes: 60,
     });
     // `sources` is asserted in detail in the dedicated describe block below.
     expect(cfg.sources).toBeDefined();
@@ -457,6 +458,7 @@ const EXPECTED_SUMMARY_KEYS = [
   "schedule",
   "pollCooldownSeconds",
   "maxConcurrency",
+  "staleWorktreeMinutes",
   "customPromptsPath",
   "githubAppId",
   "githubAppInstallationId",

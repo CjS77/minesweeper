@@ -4,6 +4,7 @@ import { loadConfig } from "../../config.js";
 import type * as ghModule from "../../github/index.js";
 import type { CodeScanningAlert, Issue, SecretScanningAlert } from "../../github/index.js";
 import type * as worktreeModule from "../../worktree.js";
+import { sanitiseBranchName } from "../../worktree.js";
 import type * as stateModule from "../../child/state.js";
 import { branchNameFor, createSupervisor, type ChildHandle, type SupervisorDeps } from "../supervisor.js";
 import type { State, WorkItemKind } from "../../child/state.js";
@@ -74,11 +75,13 @@ function makeOrphanState(
   status: State["status"] = "InProgress",
   kind: WorkItemKind = "issue",
   canResumeAt: string | null = null,
+  updatedAt = "2026-01-01T00:00:00Z",
 ): State {
   const branchPrefix = kind === "issue" ? "minesweeper-issue" : `minesweeper-${kind}`;
   return {
     version: 5,
     kind,
+    repo: "acme/minesweeper",
     issueNumber,
     branchName: `${branchPrefix}${String(issueNumber).padStart(4, "0")}`,
     mode: "Planning",
@@ -92,7 +95,7 @@ function makeOrphanState(
     canResumeAt,
     pausedFromStatus: status === "Paused" ? "InProgress" : null,
     startedAt: "2026-01-01T00:00:00Z",
-    updatedAt: "2026-01-01T00:00:00Z",
+    updatedAt,
   };
 }
 
@@ -146,6 +149,7 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   const deps: SupervisorDeps = {
     config: loadConfig({}, { configFile: null }),
     repoRoot: "/tmp/repos/minesweeper",
+    repo: "acme/minesweeper",
     worktreesRoot: "/tmp/wt",
     archiveRoot: "/tmp/archive",
     spawnChild: spawnChildMock,
@@ -200,10 +204,18 @@ describe("branchNameFor", () => {
   });
 
   it("namespaces alert kinds with their own branch prefix", () => {
-    expect(branchNameFor("/tmp/repos/minesweeper", 7, "codeScanningAlert")).toBe("minesweeper-codeScanningAlert0007");
+    expect(branchNameFor("/tmp/repos/minesweeper", 7, "codeScanningAlert")).toBe("minesweeper-codescanningalert0007");
     expect(branchNameFor("/tmp/repos/minesweeper", 7, "secretScanningAlert")).toBe(
-      "minesweeper-secretScanningAlert0007",
+      "minesweeper-secretscanningalert0007",
     );
+  });
+
+  it("returns the name git will actually create, so dispatch's exists-check can match it", () => {
+    // `addWorktree` lowercases via sanitiseBranchName. When branchNameFor did not,
+    // the worktree-exists guard stat'd a camelCase path that never existed and every
+    // poll re-dispatched an alert that already had a live worktree.
+    const name = branchNameFor("/tmp/repos/minesweeper", 3, "codeScanningAlert");
+    expect(name).toBe(sanitiseBranchName(name));
   });
 });
 
@@ -225,6 +237,7 @@ describe("createSupervisor.dispatch", () => {
     expect(ctx.initStateMock).toHaveBeenCalledTimes(1);
     expect(ctx.initStateMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-issue0007", "Planning", {
       kind: "issue",
+      repo: "acme/minesweeper",
       issueNumber: 7,
       branchName: "minesweeper-issue0007",
       maxIterations: ctx.deps.config.maxPlanningIterations,
@@ -249,12 +262,12 @@ describe("createSupervisor.dispatch", () => {
     expect(ctx.addWorktreeMock).toHaveBeenCalledWith({
       repoRoot: "/tmp/repos/minesweeper",
       worktreesRoot: "/tmp/wt",
-      branchName: "minesweeper-codeScanningAlert0042",
+      branchName: "minesweeper-codescanningalert0042",
     });
     expect(ctx.spawnChildMock).toHaveBeenCalledWith({
       kind: "codeScanningAlert",
       issueNumber: 42,
-      worktreePath: "/tmp/wt/minesweeper-codeScanningAlert0042",
+      worktreePath: "/tmp/wt/minesweeper-codescanningalert0042",
     });
     expect(sup.inFlight()).toEqual(["codeScanningAlert:42"]);
   });
@@ -286,7 +299,7 @@ describe("createSupervisor.dispatch", () => {
     expect(ctx.addWorktreeMock).toHaveBeenCalledWith({
       repoRoot: "/tmp/repos/minesweeper",
       worktreesRoot: "/tmp/wt",
-      branchName: "minesweeper-secretScanningAlert0013",
+      branchName: "minesweeper-secretscanningalert0013",
     });
     expect(sup.inFlight()).toEqual(["secretScanningAlert:13"]);
   });
@@ -435,7 +448,7 @@ describe("createSupervisor.resume", () => {
     const sup = createSupervisor(ctx.deps);
 
     const accepted = await sup.resume({
-      path: "/tmp/wt/minesweeper-codeScanningAlert0042",
+      path: "/tmp/wt/minesweeper-codescanningalert0042",
       state: makeOrphanState(42, "InProgress", "codeScanningAlert"),
     });
     expect(accepted).toBe(true);
@@ -444,7 +457,7 @@ describe("createSupervisor.resume", () => {
     expect(ctx.spawnChildMock).toHaveBeenCalledWith({
       kind: "codeScanningAlert",
       issueNumber: 42,
-      worktreePath: "/tmp/wt/minesweeper-codeScanningAlert0042",
+      worktreePath: "/tmp/wt/minesweeper-codescanningalert0042",
     });
 
     ctx.childrenSpawned[0]!.resolve(0);
@@ -499,11 +512,11 @@ describe("createSupervisor.sweepClosedIssues", () => {
     const ctx = makeDeps();
     ctx.listOrphansMock.mockResolvedValueOnce([
       {
-        path: "/tmp/wt/minesweeper-codeScanningAlert0042",
+        path: "/tmp/wt/minesweeper-codescanningalert0042",
         state: makeOrphanState(42, "Complete", "codeScanningAlert"),
       },
       {
-        path: "/tmp/wt/minesweeper-secretScanningAlert0013",
+        path: "/tmp/wt/minesweeper-secretscanningalert0013",
         state: makeOrphanState(13, "Complete", "secretScanningAlert"),
       },
     ]);
@@ -668,7 +681,7 @@ describe("createSupervisor.reapClosedInFlight", () => {
 
     expect(ctx.addLabelMock).not.toHaveBeenCalled();
     expect(ctx.archiveMock).toHaveBeenCalledWith(expect.objectContaining({ kind: "codeScanningAlert" }));
-    expect(ctx.removeMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-codeScanningAlert0042");
+    expect(ctx.removeMock).toHaveBeenCalledWith("/tmp/wt/minesweeper-codescanningalert0042");
   });
 });
 
@@ -704,7 +717,7 @@ describe("createSupervisor.pollPrFeedback", () => {
   });
 });
 
-describe("createSupervisor.resumePausedWorktrees", () => {
+describe("createSupervisor.resumeStalledWorktrees", () => {
   it("re-queues a Paused orphan with canResumeAt: null immediately", async () => {
     const ctx = makeDeps();
     ctx.listOrphansMock.mockResolvedValue([
@@ -712,7 +725,7 @@ describe("createSupervisor.resumePausedWorktrees", () => {
     ]);
 
     const sup = createSupervisor(ctx.deps);
-    await sup.resumePausedWorktrees();
+    await sup.resumeStalledWorktrees();
     await flush();
 
     expect(ctx.spawnChildMock).toHaveBeenCalledTimes(1);
@@ -734,7 +747,7 @@ describe("createSupervisor.resumePausedWorktrees", () => {
     ]);
 
     const sup = createSupervisor(ctx.deps);
-    await sup.resumePausedWorktrees();
+    await sup.resumeStalledWorktrees();
     await flush();
 
     expect(ctx.spawnChildMock).toHaveBeenCalledTimes(1);
@@ -751,7 +764,7 @@ describe("createSupervisor.resumePausedWorktrees", () => {
     ]);
 
     const sup = createSupervisor(ctx.deps);
-    await sup.resumePausedWorktrees();
+    await sup.resumeStalledWorktrees();
     await flush();
 
     expect(ctx.spawnChildMock).not.toHaveBeenCalled();
@@ -760,19 +773,77 @@ describe("createSupervisor.resumePausedWorktrees", () => {
     ).toBe(true);
   });
 
-  it("ignores non-Paused orphans", async () => {
+  it("ignores terminal orphans and working ones that are still fresh", async () => {
+    const fresh = new Date().toISOString();
     const ctx = makeDeps();
     ctx.listOrphansMock.mockResolvedValue([
-      { path: "/tmp/wt/minesweeper-issue0001", state: makeOrphanState(1, "InProgress") },
+      { path: "/tmp/wt/minesweeper-issue0001", state: makeOrphanState(1, "InProgress", "issue", null, fresh) },
       { path: "/tmp/wt/minesweeper-issue0002", state: makeOrphanState(2, "Complete") },
       { path: "/tmp/wt/minesweeper-issue0003", state: makeOrphanState(3, "Failed") },
     ]);
 
     const sup = createSupervisor(ctx.deps);
-    await sup.resumePausedWorktrees();
+    await sup.resumeStalledWorktrees();
     await flush();
 
     expect(ctx.spawnChildMock).not.toHaveBeenCalled();
+  });
+
+  it("re-dispatches a worktree stuck in a working status past staleWorktreeMinutes", async () => {
+    // Its child died without writing a terminal status: the sweep only reaps closed
+    // work and dispatch skips work that already has a worktree, so nothing else
+    // re-drives it until the daemon restarts.
+    const stale = new Date(Date.now() - 90 * 60_000).toISOString();
+    const ctx = makeDeps();
+    ctx.listOrphansMock.mockResolvedValue([
+      {
+        path: "/tmp/wt/minesweeper-codescanningalert0003",
+        state: makeOrphanState(3, "Writing", "codeScanningAlert", null, stale),
+      },
+    ]);
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.resumeStalledWorktrees();
+    await flush();
+
+    expect(ctx.spawnChildMock).toHaveBeenCalledWith({
+      kind: "codeScanningAlert",
+      issueNumber: 3,
+      worktreePath: "/tmp/wt/minesweeper-codescanningalert0003",
+    });
+    expect(ctx.emitMock.mock.calls.some((c) => c[1] === "WARN" && c[2] === 3 && String(c[3]).includes("stalled"))).toBe(
+      true,
+    );
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+  });
+
+  it("honours a custom staleWorktreeMinutes", async () => {
+    const idle = new Date(Date.now() - 10 * 60_000).toISOString();
+    const ctx = makeDeps({
+      config: loadConfig({ MINESWEEPER_STALE_WORKTREE_MINUTES: "5" }, { configFile: null }),
+    });
+    ctx.listOrphansMock.mockResolvedValue([
+      { path: "/tmp/wt/minesweeper-issue0009", state: makeOrphanState(9, "Reviewing", "issue", null, idle) },
+    ]);
+
+    const sup = createSupervisor(ctx.deps);
+    await sup.resumeStalledWorktrees();
+    await flush();
+
+    expect(ctx.spawnChildMock).toHaveBeenCalledTimes(1);
+
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+  });
+
+  it("asks listOrphans for this repo's worktrees only", async () => {
+    const ctx = makeDeps();
+    const sup = createSupervisor(ctx.deps);
+    await sup.resumeStalledWorktrees();
+
+    expect(ctx.listOrphansMock).toHaveBeenCalledWith("/tmp/wt", "acme/minesweeper");
   });
 
   it("skips a Paused orphan that is already in-flight", async () => {
@@ -787,7 +858,7 @@ describe("createSupervisor.resumePausedWorktrees", () => {
       { path: "/tmp/wt/minesweeper-issue0042", state: makeOrphanState(42, "Paused") },
     ]);
 
-    await sup.resumePausedWorktrees();
+    await sup.resumeStalledWorktrees();
     await flush();
 
     // Only 1 spawn from the original dispatch, not a second for the paused orphan

@@ -67,8 +67,10 @@ export interface CIFeedbackDeps {
   config: Config;
   /** Absolute path of the parent repo (used for `gh` cwd). */
   repoRoot: string;
-  /** Where new worktrees live; one subdir per branch. */
+  /** Where this repo's worktrees live; one subdir per branch. Repo-scoped. */
   worktreesRoot: string;
+  /** Lowercased `owner/name`; worktrees belonging to another repo are ignored. */
+  repo: string;
   /** Predicate the supervisor exposes for "this issue has a running child". */
   isInFlight: (issueNumber: number) => boolean;
   /** Supervisor's `resume` — the dispatch path for re-running on a worktree. */
@@ -92,7 +94,7 @@ export async function pollCIFeedback(deps: CIFeedbackDeps): Promise<void> {
   const emit = deps.emit ?? defaultEvent;
   const writeState = deps.writeState ?? defaultState.writeState;
 
-  const orphans = await wt.listOrphans(deps.worktreesRoot);
+  const orphans = await wt.listOrphans(deps.worktreesRoot, deps.repo);
   const candidates = orphans.filter(
     (o): o is { path: string; state: State } =>
       o.state !== undefined &&

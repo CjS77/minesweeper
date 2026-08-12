@@ -42,9 +42,17 @@
  *     long after the comment it approves), so folding them into the
  *     feedback watermark would skip unrelated reviews/comments. Legacy
  *     v6 files are migrated with the field `null`.
+ *   - v8 (cross-repo isolation): adds `repo: string | null` — the
+ *     lowercased `owner/name` of the repository the work item belongs to.
+ *     Without it a worktree carries no record of where it came from, so a
+ *     daemon enumerating a shared worktree root cannot tell another repo's
+ *     worktrees from its own and reaps them once the numbers miss. Legacy
+ *     v7 files are migrated with `null` ("unattributable"), which
+ *     `listOrphans` treats as a match so an in-flight upgrade does not
+ *     strand live work.
  *
- * Migrations run on read; v1 through v6 state files are upgraded
- * transparently. The migration chain is v1 → v2 → v3 → v4 → v5 → v6 → v7.
+ * Migrations run on read; v1 through v7 state files are upgraded
+ * transparently. The migration chain is v1 → v2 → … → v7 → v8.
  */
 
 import { promises as fs } from "node:fs";
@@ -86,11 +94,17 @@ export type Assessment = z.infer<typeof Assessment>;
 export const WorkItemKind = z.enum(["issue", "codeScanningAlert", "secretScanningAlert"]);
 export type WorkItemKind = z.infer<typeof WorkItemKind>;
 
-export const STATE_SCHEMA_VERSION = 7;
+export const STATE_SCHEMA_VERSION = 8;
 
 export const StateSchema = z.object({
   version: z.literal(STATE_SCHEMA_VERSION),
   kind: WorkItemKind,
+  /**
+   * Lowercased `owner/name` of the owning repository, or `null` for states
+   * migrated from v7 and earlier. Written once at `initState` and never
+   * updated — a worktree cannot change repositories.
+   */
+  repo: z.string().min(1).nullable(),
   issueNumber: z.number().int().positive(),
   branchName: z.string().min(1),
   mode: Mode,
@@ -213,8 +227,8 @@ const StateV5Schema = z.object({
 });
 
 /**
- * v6 schema, kept around purely for migration. Identical to the current
- * `StateSchema` minus the v7 `prReactionsProcessedAt` field.
+ * v6 schema, kept around purely for migration. Identical to the v7 schema
+ * minus the v7 `prReactionsProcessedAt` field.
  */
 const StateV6Schema = z.object({
   version: z.literal(6),
@@ -237,6 +251,32 @@ const StateV6Schema = z.object({
   updatedAt: z.iso.datetime(),
 });
 
+/**
+ * v7 schema, kept around purely for migration. Identical to the current
+ * `StateSchema` minus the v8 `repo` field.
+ */
+const StateV7Schema = z.object({
+  version: z.literal(7),
+  kind: WorkItemKind,
+  issueNumber: z.number().int().positive(),
+  branchName: z.string().min(1),
+  mode: Mode,
+  status: Status,
+  iterations: z.number().int().min(0),
+  maxIterations: z.number().int().min(1),
+  assessment: Assessment.nullable(),
+  assessmentReason: z.string().nullable(),
+  prNumber: z.number().int().positive().nullable(),
+  prFeedbackProcessedAt: z.iso.datetime().nullable(),
+  prReactionsProcessedAt: z.iso.datetime().nullable(),
+  ciChecksProcessedAt: z.string().nullable(),
+  ciFixIterations: z.number().int().min(0).nullable(),
+  canResumeAt: z.iso.datetime().nullable(),
+  pausedFromStatus: Status.nullable(),
+  startedAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
 export const STATE_DIR = ".minesweeper";
 export const STATE_FILE = "state.json";
 
@@ -251,6 +291,12 @@ export function statePath(cwd: string): string {
 export interface InitStateOptions {
   /** Defaults to `"issue"` for callers (and tests) that pre-date alert support. */
   kind?: WorkItemKind;
+  /**
+   * Lowercased `owner/name` of the owning repo (see `repoIdentity` in
+   * `src/worktree.ts`). Defaults to `null` for callers (and tests) that pre-date
+   * repo scoping; the daemon always supplies it.
+   */
+  repo?: string;
   issueNumber: number;
   branchName: string;
   maxIterations: number;
@@ -271,6 +317,7 @@ export async function initState(cwd: string, mode: Mode, opts: InitStateOptions)
   const candidate: State = StateSchema.parse({
     version: STATE_SCHEMA_VERSION,
     kind: opts.kind ?? "issue",
+    repo: opts.repo ?? null,
     issueNumber: opts.issueNumber,
     branchName: opts.branchName,
     mode,
@@ -315,12 +362,13 @@ export async function readState(cwd: string): Promise<State> {
  * parse — otherwise a v1/v2 file on disk would fail the v3 literal
  * check and silently disappear from `listOrphans`.
  *
- * The chain is v1 → v2 → v3 → v4 → v5 → v6 → v7. Each step is additive:
- * v1 → v2 adds `assessmentReason: null`; v2 → v3 adds `prNumber: null`
- * and `prFeedbackProcessedAt: null`; v3 → v4 adds `kind: "issue"`;
- * v4 → v5 adds `canResumeAt: null` and `pausedFromStatus: null`;
- * v5 → v6 adds `ciChecksProcessedAt: null` and `ciFixIterations: null`;
- * v6 → v7 adds `prReactionsProcessedAt: null`.
+ * The chain is v1 → v2 → v3 → v4 → v5 → v6 → v7 → v8. Each step is
+ * additive: v1 → v2 adds `assessmentReason: null`; v2 → v3 adds
+ * `prNumber: null` and `prFeedbackProcessedAt: null`; v3 → v4 adds
+ * `kind: "issue"`; v4 → v5 adds `canResumeAt: null` and
+ * `pausedFromStatus: null`; v5 → v6 adds `ciChecksProcessedAt: null` and
+ * `ciFixIterations: null`; v6 → v7 adds `prReactionsProcessedAt: null`;
+ * v7 → v8 adds `repo: null`.
  */
 export function migrateIfNeeded(raw: unknown): unknown {
   if (typeof raw !== "object" || raw === null) return raw;
@@ -355,6 +403,11 @@ export function migrateIfNeeded(raw: unknown): unknown {
   if (afterV5.version === 6) {
     const v6 = StateV6Schema.parse(current);
     current = { ...v6, version: 7, prReactionsProcessedAt: null };
+  }
+  const afterV6 = current as { version?: unknown };
+  if (afterV6.version === 7) {
+    const v7 = StateV7Schema.parse(current);
+    current = { ...v7, version: 8, repo: null };
   }
   return current;
 }

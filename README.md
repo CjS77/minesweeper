@@ -48,8 +48,13 @@ Minesweeper acts on the GitHub repo of whatever directory you launch it from. Co
   working directory's git remotes -- `cd` into a checkout of the repo you want serviced, then run `minesweeper run`.
 * Daemon logs are written under `<cwd>/.minesweeper/logs/`. Per-issue worktrees and their archives live under
   `$MINESWEEPER_WORKTREE_PATH` (default `/tmp/minesweeper`), not inside the repo checkout.
-* Branches are namespaced per-project, so for example `/tmp/minesweeper/projectA-issue0001` and  `/tmp/minesweeper/projectB-issue0015` 
-  represent worktrees for issue #1 of Project A and #15 of Project B respectively.
+* Worktrees and archives are namespaced by repository `owner/name`, so a daemon only ever sees its own:
+  `/tmp/minesweeper/worktrees/acme/projectA/projecta-issue0001` and
+  `/tmp/minesweeper/worktrees/globex/projectB/projectb-issue0015` represent worktrees for issue #1 of
+  `acme/projectA` and #15 of `globex/projectB` respectively. Running several daemons against one
+  `$MINESWEEPER_WORKTREE_PATH` is therefore safe. Each `state.json` also records its `repo`, and worktrees
+  belonging to another one are ignored — without both, a daemon adopts a foreign worktree at startup and then
+  reaps it as "closed externally" when the issue or alert number does not resolve in its own repo.
 * The **per-repo config file** is read from `<cwd>/.minesweeper/config.json` (see *Configuration* below).
 
 The typical operator workflow is therefore:
@@ -108,9 +113,6 @@ exception: it is **JSON-only** because cron lists contain commas that can't roun
 
 # Architecture
 
-The detailed architecture and decision log live in `~/.claude/plans/i-need-an-application-snazzy-axolotl.md`. The
-implementation is sequenced as numbered plans in [`plans/`](./plans/00_index.md).
-
 In brief, Minesweeper is structured as **one long-running daemon plus one short-lived child process per in-flight
 issue**:
 
@@ -120,12 +122,18 @@ issue**:
 * **Child (`minesweeper handle <issue#>`)** — spawned by the supervisor with `cwd` set to a freshly created
   `git worktree`. The child drives the role agents (planner ↔ critic, then executor ↔ reviewer) via the Claude Agent
   SDK. State is persisted to `.minesweeper/state.json` inside the worktree so a crashed child can be resumed.
-* **Worktree lifecycle** — the daemon creates the worktree under `$MINESWEEPER_WORKTREE_PATH/<branch>`. The worktree
+* **Worktree lifecycle** — the daemon creates the worktree under
+  `$MINESWEEPER_WORKTREE_PATH/worktrees/<owner>/<repo>/<branch>`. The worktree
   stays on disk for the entire life of the issue: on a clean exit (`code === 0`) the daemon leaves it alone so the
   reviewer of the open PR can inspect `.minesweeper/`; on a non-zero exit it labels the issue with
   `$MINESWEEPER_FAILED_LABEL` and again leaves the worktree in place for post-mortem. Each poll tick the daemon then
   runs a closed-issue sweep — for every worktree whose issue is now `CLOSED` (PR merged, manually closed, or "not
   planned"), it archives `.minesweeper/` under `archive/<issue>-<timestamp>/` and removes the worktree.
+* **Stalled worktrees** — the same tick re-dispatches any worktree left in a working status (`InProgress`, `Writing`,
+  `Reviewing`, `FixingReviewComments`) with no child running and no `state.json` write for
+  `$MINESWEEPER_STALE_WORKTREE_MINUTES` (default 60). Without it, a child killed without writing a terminal status
+  (OOM, `SIGKILL`, daemon restart) strands its worktree until the next daemon start: the sweep only reaps *closed*
+  work, and a fresh dispatch is refused because the worktree already exists.
 
 ## Issue eligibility
 
@@ -179,7 +187,7 @@ In planning mode, the per-issue child process:
 
 * Loads the issue in context.
 * Sets `mode` to `Planning`, `status` to `InProgress`, `iterations` to 0.
-* Reads its working directory — the worktree under `${MINESWEEPER_WORKTREE_PATH}/{branchname}` — which the **parent
+* Reads its working directory — the worktree under `${MINESWEEPER_WORKTREE_PATH}/worktrees/{owner}/{repo}/{branchname}` — which the **parent
   daemon** has already created. All further work for the issue happens inside this worktree; the main checkout is
   never touched.
 * Persists `.minesweeper/state.json` recording the state of the issue.
@@ -346,6 +354,7 @@ copy-pasteable template.
 | `MINESWEEPER_CONFIG_FILE`              | Path to the **global** JSON config file (cross-repo defaults)        | `~/.minesweeper/config.json` |
 | `MINESWEEPER_REPO_CONFIG_FILE`         | Path to the **per-repo** JSON config file (overrides the global one) | `<cwd>/.minesweeper/config.json` |
 | `MINESWEEPER_MAX_CONCURRENCY`          | Maximum issue children running in parallel (v0 is single-threaded)   | `1`                   |
+| `MINESWEEPER_STALE_WORKTREE_MINUTES`   | Idle minutes before a worktree stuck mid-run is re-dispatched        | `60`                  |
 | `MINESWEEPER_GITHUB_APP_ID`            | GitHub App id. **Setting this switches on [app mode](#github-identity-ambient-mode-vs-app-mode)** | _unset_ (ambient mode) |
 | `MINESWEEPER_GITHUB_APP_PRIVATE_KEY_PATH` | Path to the App's `.pem` private key (app mode; preferred form)   | _unset_               |
 | `MINESWEEPER_GITHUB_APP_PRIVATE_KEY`   | The App private key inline, as PEM (alternative to the path form)    | _unset_               |
@@ -566,13 +575,13 @@ minesweeper log view executor-01 --max-lines 0
 * **Successful runs** — when a child exits 0 the daemon leaves the worktree on disk and only logs `child exited 0;
   worktree at … kept until issue is closed`. The PR reviewer can poke at `<worktree>/.minesweeper/` while the PR is
   open. Once the issue is closed (typically by the PR being merged), the next poll tick's sweep archives
-  `.minesweeper/` under `$MINESWEEPER_WORKTREE_PATH/archive/<issue>-<timestamp>/` and removes the worktree.
-* **Failed runs** — the worktree is **left in place** at `$MINESWEEPER_WORKTREE_PATH/<branch>` and the issue is
+  `.minesweeper/` under `$MINESWEEPER_WORKTREE_PATH/archive/<owner>/<repo>/<issue>-<timestamp>/` and removes the worktree.
+* **Failed runs** — the worktree is **left in place** at `$MINESWEEPER_WORKTREE_PATH/worktrees/<owner>/<repo>/<branch>` and the issue is
   tagged with `$MINESWEEPER_FAILED_LABEL`. Inspect the run with:
 
   ```sh
-  cat $MINESWEEPER_WORKTREE_PATH/<branch>/.minesweeper/state.json
-  ls $MINESWEEPER_WORKTREE_PATH/<branch>/.minesweeper/
+  cat $MINESWEEPER_WORKTREE_PATH/worktrees/<owner>/<repo>/<branch>/.minesweeper/state.json
+  ls $MINESWEEPER_WORKTREE_PATH/worktrees/<owner>/<repo>/<branch>/.minesweeper/
   ```
 
   When you're done, close the issue (e.g. as "not planned") — the next sweep tick will archive and remove the
