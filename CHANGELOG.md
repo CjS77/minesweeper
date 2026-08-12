@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-12
+
+### Fixed
+- Worktree and archive roots are namespaced by `owner/name`, so two daemons sharing one
+  `MINESWEEPER_WORKTREE_PATH` no longer adopt each other's worktrees at startup and reap them as "closed externally".
+  `state.json` (schema v8) records the originating repo and `listOrphans` drops foreign entries; v7 files migrate to
+  `repo: null` and are kept so an upgrade mid-flight doesn't strand live worktrees. The daemon warns at startup about
+  worktrees left under the pre-scoping root.
+- `branchNameFor` returns the sanitised branch name `addWorktree` actually creates. The mismatch (e.g.
+  `repo-codeScanningAlert0003` vs `repo-codescanningalert0003`) made the dispatch guard miss existing worktrees, so
+  every poll re-dispatched the same alert and failed on `git worktree add -b`.
+- Stalled worktrees are re-dispatched, not just paused ones (`resumePausedWorktrees` is now
+  `resumeStalledWorktrees`): work left in a working status with no child and no state write for
+  `MINESWEEPER_STALE_WORKTREE_MINUTES` (default 60) is picked up again. Previously a child killed before writing a
+  terminal status was only recovered by restarting the daemon.
+
+### Documentation
+- The GitHub App section of the README is now a choose-one-of-two guide covering both identities the daemon can run
+  under, with a comparison table (acting user, API auth, commit author, branch publish, PR creation, signing, extra
+  credentials), setup steps for each, the `commit.gpgsign=true` trap in ambient mode, and a note that `gh` is still
+  required in app mode. The four `MINESWEEPER_GITHUB_APP_*` keys are added to the env var table.
+
 ## [0.11.0] — 2026-08-11
 
 ### Changed
@@ -283,7 +305,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/CjS77/minesweeper/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/CjS77/minesweeper/compare/v0.10.1...v0.11.0
 [0.10.1]: https://github.com/CjS77/minesweeper/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/CjS77/minesweeper/compare/v0.9.0...v0.10.0
