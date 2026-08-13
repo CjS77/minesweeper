@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-13
+
+### Added
+- Execution rebases the work branch onto `origin/<base>` before publishing. The branch is cut from the *local* base,
+  which may hold unpushed commits, and the API publish path anchors its commit on a sha the remote already knows — a
+  stale local base was a hard 422 at `createBranchRef`. The check hook, squash, push, merge-base, log and diff stat all
+  now run against the remote-tracking ref.
+- A `rebaser` subagent (`prompts/rebaser.md`) resolves rebase conflicts in place; the orchestrator stages and runs
+  `git rebase --continue` for each conflicting commit, up to 10 rounds. A `Verdict: Unresolvable` answer, or a series
+  still conflicting after the cap, aborts the rebase and fails the issue rather than publishing mid-replay.
+- A `Publishing` status checkpoints the whole finalise path. Re-entering execution at that status skips the
+  executor/reviewer loop, and the prwriter's output is cached to `.minesweeper/pr_body.md` so a resumed publish doesn't
+  pay for a second prwriter run — the cache is read only when resuming, so a fresh run can't pick up a body written
+  against a since-changed diff. `Publishing` counts as a working status for the daemon's stalled-worktree sweep, so a
+  child killed mid-publish is re-dispatched.
+
+### Changed
+- Subagent `settingSources` and `mcpServers` are pinned by config instead of inherited from the host's filesystem
+  settings layers. `settingSources` (`MINESWEEPER_SETTING_SOURCES`, comma-separated, or either config file) defaults to
+  `["project"]`; an empty value selects full isolation. `mcpServers` is file-only and defaults to `{}`. Previously a
+  prwriter run declaring four tools initialised its session with 56 — 51 of them MCP tools from the operator's personal
+  config — plus 35 slash commands and 18 subagent definitions, re-established from cold on every one of 359 runs.
+
+### Fixed
+- Subagent results carrying `is_error` now throw `SubagentResultError` instead of being read as empty output. The Agent
+  SDK reports a rate limit as a `result` message with `subtype: "success"`, `is_error: true` and
+  `api_error_status: 429`, so a 429 came back as a completed turn with no text: the reviewer counted a fix round, the
+  executor saw no commit, and the child retried straight back into the limit while the pause path — which keys off a
+  thrown error — never engaged. `api_error_status` is carried as `status` so `isApiLimitError` routes 429/529 onto the
+  existing pause-and-resume path. On issue #81, 121 of 359 subagent runs were 429s swallowed this way.
+- Rejected git-data requests surface GitHub's own `message`/`errors` fields on `CommitPublisherError`. A 422 from an
+  unknown anchor sha was previously indistinguishable from "Reference already exists" and only showed up as a confusing
+  failure later at `createCommitOnBranch`. Only those two fields are read, so the request — and the token it carries —
+  is never echoed into the error.
+
 ## [0.13.0] — 2026-08-12
 
 ### Fixed
@@ -314,7 +349,8 @@ a per-issue git worktree, and opens a pull request.
   re-entry.
 - Several CI configuration issues from the initial workflow rollout.
 
-[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/CjS77/minesweeper/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/CjS77/minesweeper/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/CjS77/minesweeper/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/CjS77/minesweeper/compare/v0.10.1...v0.11.0
