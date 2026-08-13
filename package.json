@@ -1,6 +1,6 @@
 {
   "name": "cc-minesweeper",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "An agentic bughunter that drives Claude Code to triage and fix GitHub issues.",
   "type": "module",
   "private": false,

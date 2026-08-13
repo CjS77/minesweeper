@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] — 2026-08-13
+
+### Added
+- A claim guard stops Minesweeper opening duplicate PRs or starting duplicate work on an issue someone else is already
+  addressing. The daemon skips dispatch when an open PR already resolves the work item, and the child re-checks before
+  creating its own: a closed issue ends the run as `Complete` with no PR, a competing PR moves it to `Paused` to wait
+  and see. A PR on our own branch is not a competitor. Both checks fail soft — a transient `gh` error logs a warning
+  and proceeds rather than stalling the pipeline.
+- `findPullRequestsForIssue` and the exported `bodyClosesIssue` helper, which matches `Fixes`/`Closes`/`Resolves #N`
+  trailers with a `\b(keyword)[:\s]+#N` regex so `#7` never matches `#70` or a passing mention in prose.
+
+### Fixed
+- Blobs read for API-created commits keep their trailing newline. `readBlob` shells out to `git show` through execa,
+  whose `stripFinalNewline` defaults to true and drops the final byte even under `encoding: "buffer"`, so every file
+  published through the git-data path lost its trailing newline: text files landed unformatted and failed CI's
+  `format:check`, and binary blobs were silently truncated by a byte.
+
 ## [0.14.0] — 2026-08-13
 
 ### Added
@@ -350,6 +367,7 @@ a per-issue git worktree, and opens a pull request.
 - Several CI configuration issues from the initial workflow rollout.
 
 [Unreleased]: https://github.com/CjS77/minesweeper/compare/v0.14.0...HEAD
+[0.14.1]: https://github.com/CjS77/minesweeper/compare/v0.14.0...v0.14.1
 [0.14.0]: https://github.com/CjS77/minesweeper/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/CjS77/minesweeper/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/CjS77/minesweeper/compare/v0.11.0...v0.12.0
