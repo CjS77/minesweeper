@@ -128,6 +128,7 @@ export interface SupervisorDeps {
     | "getReviewCommentReactions"
     | "getRepoOwner"
     | "getCheckRuns"
+    | "findPullRequestsForIssue"
   >;
   /** Override worktree helpers (tests). */
   worktree?: Pick<typeof defaultWorktree, "addWorktree" | "archiveWorktreeState" | "removeWorktree" | "listOrphans">;
@@ -360,6 +361,35 @@ export function createSupervisor(deps: SupervisorDeps): Supervisor {
       emit("daemon", "WARN", number, `worktree already exists at ${worktreePath}; skipping dispatch`, {
         kind: item.kind,
       });
+      return false;
+    }
+
+    // Guard: skip dispatch if an open PR on GitHub already addresses this work item.
+    // The worktree-exists check above covers local state; this covers the remote.
+    let addressingPrs: defaultGithub.PullRequest[] = [];
+    try {
+      addressingPrs = await gh.findPullRequestsForIssue({
+        issueNumber: number,
+        branchName,
+        kind: item.kind,
+        cwd: deps.repoRoot,
+      });
+    } catch (err) {
+      emit("daemon", "WARN", number, `claim check failed; proceeding with dispatch`, {
+        kind: item.kind,
+        error: String(err),
+      });
+    }
+    if (addressingPrs.length > 0) {
+      emit(
+        "daemon",
+        "INFO",
+        number,
+        `open PR #${addressingPrs[0]!.number} already addresses this item; skipping dispatch`,
+        {
+          kind: item.kind,
+        },
+      );
       return false;
     }
 
