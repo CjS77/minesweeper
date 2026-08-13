@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("execa", () => ({
   execaNode: vi.fn(),
@@ -9,6 +9,11 @@ import { execaNode } from "execa";
 import { defaultSpawnChild } from "../supervisor.js";
 
 const mockedExecaNode = vi.mocked(execaNode);
+
+beforeEach(() => {
+  delete process.env["MINESWEEPER_REPO_CONFIG_FILE"];
+  delete process.env["GH_TOKEN"];
+});
 
 afterEach(() => {
   mockedExecaNode.mockReset();
