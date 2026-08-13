@@ -32,6 +32,8 @@ const FAKE_CONFIG: Config = {
   issueWriterAgent: "sonnet-issue-writer",
   worktreePath: "/tmp/wt",
   prBaseBranch: "main",
+  settingSources: ["project"],
+  mcpServers: {},
   pollIntervalSeconds: 60,
   pollIntervalMs: 60_000,
   schedule: [],
@@ -142,6 +144,50 @@ describe("runSubagent", () => {
     expect(result.finalText).toBe("done");
     expect(result.stopReason).toBe("end_turn");
     expect(result.events).toBe(1);
+  });
+
+  it("pins settingSources and mcpServers rather than letting the SDK load everything", async () => {
+    mockedQuery.mockReturnValue(makeStream([resultMessage("done")]) as never);
+
+    await runSubagent({
+      role: "prwriter",
+      config: FAKE_CONFIG,
+      userPrompt: "write the PR body",
+      issueNumber: 42,
+      cwd: tempCwd,
+      promptRoot,
+      emit: vi.fn(),
+    });
+
+    // Both must be present: omitting them makes the SDK load every filesystem
+    // source, which pulls the host's MCP servers into a role declaring four
+    // tools. `project` carries CLAUDE.md; `user` is the layer that bloats.
+    const [params] = mockedQuery.mock.calls[0]!;
+    expect(params.options?.settingSources).toEqual(["project"]);
+    expect(params.options?.mcpServers).toEqual({});
+  });
+
+  it("passes configured settingSources and mcpServers through to query()", async () => {
+    mockedQuery.mockReturnValue(makeStream([resultMessage("done")]) as never);
+    const config: Config = {
+      ...FAKE_CONFIG,
+      settingSources: ["user", "local"],
+      mcpServers: { docs: { command: "node", args: ["./docs.js"] } },
+    };
+
+    await runSubagent({
+      role: "reviewer",
+      config,
+      userPrompt: "review",
+      issueNumber: 42,
+      cwd: tempCwd,
+      promptRoot,
+      emit: vi.fn(),
+    });
+
+    const [params] = mockedQuery.mock.calls[0]!;
+    expect(params.options?.settingSources).toEqual(["user", "local"]);
+    expect(params.options?.mcpServers).toEqual({ docs: { command: "node", args: ["./docs.js"] } });
   });
 
   it("uses the executor's model and acceptEdits permission mode when role=executor", async () => {

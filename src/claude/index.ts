@@ -99,6 +99,12 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
     permissionMode: role.permissionMode,
     allowedTools: [...role.allowedTools],
     tools: [...role.allowedTools],
+    // `tools` bounds the built-in tools only — MCP tools arrive via filesystem
+    // settings, which the SDK loads in full when `settingSources` is omitted.
+    // Both are pinned here so a role's tool surface is what its definition says
+    // it is, not whatever the host machine happens to have configured.
+    settingSources: [...opts.config.settingSources],
+    mcpServers: { ...opts.config.mcpServers },
     systemPrompt: { type: "preset", preset: "claude_code", append: systemPrompt },
   };
   if (opts.abortController) sdkOptions.abortController = opts.abortController;

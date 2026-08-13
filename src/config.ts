@@ -51,6 +51,42 @@ export type ConfigFieldSource = z.infer<typeof ConfigFieldSourceSchema>;
  */
 export type ConfigSources = Record<string, ConfigFieldSource>;
 
+/**
+ * Filesystem settings layers the Agent SDK can load. Mirrors the SDK's
+ * `SettingSource` union.
+ */
+const SettingSourceSchema = z.enum(["user", "project", "local"]);
+
+export type SettingSource = z.infer<typeof SettingSourceSchema>;
+
+/**
+ * One MCP server entry in `mcpServers`. Mirrors the Agent SDK's
+ * `McpServerConfig` minus the in-process `sdk` variant, which cannot be
+ * expressed in a JSON config file. `stdio` is the implied default when `type`
+ * is omitted, matching the SDK, so the `url` variants are matched first.
+ */
+const McpServerSchema = z.union([
+  z.object({
+    type: z.literal("sse"),
+    url: z.url(),
+    headers: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    type: z.literal("http"),
+    url: z.url(),
+    headers: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    type: z.literal("stdio").optional(),
+    command: z.string().min(1),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string(), z.string()).optional(),
+  }),
+]);
+
+/** A single `mcpServers` entry, as accepted by the Agent SDK. */
+export type McpServer = z.infer<typeof McpServerSchema>;
+
 export const ConfigSchema = z.object({
   defaultEligible: z.boolean(),
   /**
@@ -90,7 +126,7 @@ export const ConfigSchema = z.object({
   maxConcurrency: z.number().int().min(1),
   /**
    * How long a worktree may sit in a working status (`InProgress`, `Writing`,
-   * `Reviewing`, `FixingReviewComments`) with no `state.json` write and no child
+   * `Reviewing`, `FixingReviewComments`, `Publishing`) with no `state.json` write and no child
    * running before the daemon re-dispatches it. Covers the gap left by the
    * `Paused` resume path: a child killed mid-run (OOM, SIGKILL, daemon restart)
    * leaves a worktree nothing else re-drives, since the sweep only reaps *closed*
@@ -107,6 +143,34 @@ export const ConfigSchema = z.object({
    * (worktree cwd) transition.
    */
   customPromptsPath: z.string().min(1).optional(),
+  /**
+   * Which filesystem settings sources the Agent SDK loads for each subagent
+   * (`user` = `~/.claude/settings.json`, `project` = `.claude/settings.json`,
+   * `local` = `.claude/settings.local.json`).
+   *
+   * Defaults to `["project"]`: the repo's `CLAUDE.md` and
+   * `.claude/settings.json` are loaded, the `user` and `local` layers are not.
+   * Roles write code and reviews against this repo, so its conventions belong
+   * in their context; the operator's personal machine config does not.
+   *
+   * The SDK's own default when the option is omitted is "load everything",
+   * which pulls the operator's MCP servers, skills, and slash commands into
+   * every role: measured on issue #81, a `prwriter` run declaring four tools
+   * initialised a session with 56, 51 of them MCP tools it can never use.
+   * That catalog is re-established from cold on every run, since each
+   * `runSubagent` is a fresh session.
+   *
+   * Set `[]` for full isolation, or add `"user"` to opt the host layer back
+   * in deliberately.
+   */
+  settingSources: z.array(SettingSourceSchema).default(["project"]),
+  /**
+   * MCP servers to expose to subagents, keyed by server name. Declared
+   * explicitly rather than inherited, so a role's tool surface is a property
+   * of Minesweeper's config and not of whoever's machine the daemon runs on.
+   * Empty by default — no role in the pipeline needs an MCP server today.
+   */
+  mcpServers: z.record(z.string().min(1), McpServerSchema).default({}),
   /**
    * GitHub App identity (all optional; "app mode" is active when `githubAppId`
    * is set together with exactly one of the two private-key fields). When
@@ -296,6 +360,50 @@ function readSchedule(
   if (repoVal !== undefined) return { value: [...repoVal], source: "repo-config" };
   if (fileVal !== undefined) return { value: [...fileVal], source: "config-file" };
   return { value: [], source: "default" };
+}
+
+const SETTING_SOURCES = new Set<SettingSource>(["user", "project", "local"]);
+
+/**
+ * `settingSources` accepts a comma-separated env var (`user,project`) as well
+ * as the file layers. An explicit empty string is meaningful — it selects full
+ * isolation, overriding the `["project"]` default — so it is accepted rather
+ * than rejected the way `readString` rejects an empty value.
+ */
+function readSettingSources(
+  env: Env,
+  name: string,
+  repoVal: readonly SettingSource[] | undefined,
+  fileVal: readonly SettingSource[] | undefined,
+): Resolved<SettingSource[]> {
+  const raw = env[name];
+  if (raw !== undefined) {
+    const parts = raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    const invalid = parts.filter((s) => !SETTING_SOURCES.has(s as SettingSource));
+    if (invalid.length > 0) {
+      throw new ConfigError(name, `expected a comma-separated list of user/project/local, got ${JSON.stringify(raw)}`);
+    }
+    return { value: parts as SettingSource[], source: "envar" };
+  }
+  if (repoVal !== undefined) return { value: [...repoVal], source: "repo-config" };
+  if (fileVal !== undefined) return { value: [...fileVal], source: "config-file" };
+  return { value: ["project"], source: "default" };
+}
+
+/**
+ * `mcpServers` is file-only — the entries are nested objects with commands,
+ * args, and headers, which do not survive a flat env var.
+ */
+function readMcpServers(
+  repoVal: Record<string, McpServer> | undefined,
+  fileVal: Record<string, McpServer> | undefined,
+): Resolved<Record<string, McpServer>> {
+  if (repoVal !== undefined) return { value: { ...repoVal }, source: "repo-config" };
+  if (fileVal !== undefined) return { value: { ...fileVal }, source: "config-file" };
+  return { value: {}, source: "default" };
 }
 
 /**
@@ -569,6 +677,13 @@ export function loadConfig(
       repoFile.customPromptsPath,
       file.customPromptsPath,
     ),
+    settingSources: readSettingSources(
+      env,
+      "MINESWEEPER_SETTING_SOURCES",
+      repoFile.settingSources,
+      file.settingSources,
+    ),
+    mcpServers: readMcpServers(repoFile.mcpServers, file.mcpServers),
     githubAppId: readOptionalString(env, "MINESWEEPER_GITHUB_APP_ID", repoFile.githubAppId, file.githubAppId),
     githubAppInstallationId: readOptionalInt(
       env,

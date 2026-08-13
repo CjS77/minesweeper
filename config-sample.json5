@@ -143,4 +143,24 @@
   // Maximum number of issue children the daemon will run in parallel.
   // v0 is single-threaded; concurrency lands in M3.
   maxConcurrency: 1,
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Subagent isolation
+  // ─────────────────────────────────────────────────────────────────────────
+
+  // Which filesystem settings layers the Agent SDK loads for each subagent.
+  // Defaults to ["project"] — the repo's CLAUDE.md and .claude/settings.json,
+  // without the user or local layers. The SDK loads every layer when the
+  // option is unset, which pulls the operator's own MCP servers, skills, and
+  // slash commands into every role. Use [] for full isolation.
+  settingSources: ["project"],
+
+  // MCP servers exposed to subagents, keyed by name. **File-only** — the
+  // entries are nested objects that don't round-trip through env vars.
+  // Declared explicitly rather than inherited, so a role's tool surface is a
+  // property of this config and not of the host machine. Empty by default.
+  mcpServers: {
+    // docs:   { command: "node", args: ["./docs-server.js"] },
+    // remote: { type: "http", url: "https://mcp.example.com/mcp" },
+  },
 }

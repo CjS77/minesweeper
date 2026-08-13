@@ -460,6 +460,8 @@ const EXPECTED_SUMMARY_KEYS = [
   "maxConcurrency",
   "staleWorktreeMinutes",
   "customPromptsPath",
+  "settingSources",
+  "mcpServers",
   "githubAppId",
   "githubAppInstallationId",
   "githubAppPrivateKeyPath",
@@ -659,5 +661,59 @@ describe("loadConfig + redactSecrets integration with the real logger", () => {
     expect(logged.alwaysFixLabel).toBe("from-env");
     expect(logged.sources["alwaysFixLabel"]).toEqual({ source: "envar", secret: false });
     expect(Object.keys(logged.sources).sort()).toEqual([...EXPECTED_SUMMARY_KEYS].sort());
+  });
+});
+
+describe("settingSources and mcpServers (subagent isolation)", () => {
+  it("defaults to the project layer only, and no MCP servers", () => {
+    const cfg = loadConfigIsolated();
+    // `project` carries CLAUDE.md; `user` is what pulls in the operator's own
+    // MCP servers and skills, so it stays out unless asked for.
+    expect(cfg.settingSources).toEqual(["project"]);
+    expect(cfg.mcpServers).toEqual({});
+  });
+
+  it("accepts the user layer when it is asked for explicitly", () => {
+    const cfg = loadConfigIsolated({ MINESWEEPER_SETTING_SOURCES: "user,project,local" });
+    expect(cfg.settingSources).toEqual(["user", "project", "local"]);
+  });
+
+  it("parses a comma-separated MINESWEEPER_SETTING_SOURCES", () => {
+    const cfg = loadConfigIsolated({ MINESWEEPER_SETTING_SOURCES: "project, local" });
+    expect(cfg.settingSources).toEqual(["project", "local"]);
+    expect(cfg.sources["settingSources"]?.source).toBe("envar");
+  });
+
+  it("treats an empty MINESWEEPER_SETTING_SOURCES as full isolation, overriding the default", () => {
+    const cfg = loadConfigIsolated({ MINESWEEPER_SETTING_SOURCES: "" });
+    expect(cfg.settingSources).toEqual([]);
+    expect(cfg.sources["settingSources"]?.source).toBe("envar");
+  });
+
+  it("rejects an unknown setting source", () => {
+    expect(() => loadConfigIsolated({ MINESWEEPER_SETTING_SOURCES: "project,everything" })).toThrow(ConfigError);
+  });
+
+  it("reads settingSources and mcpServers from the config file", () => {
+    const path = writeConfigFile({
+      settingSources: ["project"],
+      mcpServers: {
+        docs: { command: "node", args: ["./docs-server.js"] },
+        remote: { type: "http", url: "https://mcp.example.com/mcp" },
+      },
+    });
+    const cfg = loadConfigIsolated({}, { configFile: path });
+
+    expect(cfg.settingSources).toEqual(["project"]);
+    expect(cfg.mcpServers).toEqual({
+      docs: { command: "node", args: ["./docs-server.js"] },
+      remote: { type: "http", url: "https://mcp.example.com/mcp" },
+    });
+    expect(cfg.sources["mcpServers"]?.source).toBe("config-file");
+  });
+
+  it("rejects an MCP server entry that is neither a command nor a url", () => {
+    const path = writeConfigFile({ mcpServers: { broken: { args: ["--flag"] } } });
+    expect(() => loadConfigIsolated({}, { configFile: path })).toThrow(ConfigError);
   });
 });
