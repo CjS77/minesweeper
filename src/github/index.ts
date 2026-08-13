@@ -22,6 +22,7 @@ import {
 } from "./models.js";
 import { z } from "zod";
 import { runGh, type RunGhOptions } from "./process.js";
+import { type WorkItemKind } from "../child/state.js";
 
 const RepoLabelListSchema = z.array(LabelSchema);
 const PullRequestListSchema = z.array(PullRequestSchema);
@@ -78,6 +79,7 @@ const ISSUE_LIST_FIELDS = "number,title,body,labels,author,state,url,createdAt,u
 const ISSUE_VIEW_FIELDS = `${ISSUE_LIST_FIELDS},comments`;
 const PR_LIST_FIELDS = "number,headRefName,baseRefName,state,author,url";
 const PR_VIEW_FIELDS = `${PR_LIST_FIELDS},title,body,reviews,reviewDecision,comments`;
+const PR_ISSUE_MATCH_FIELDS = "number,title,headRefName,baseRefName,state,url,body";
 
 interface CwdOnly {
   cwd?: string;
@@ -505,6 +507,46 @@ export async function getCheckRuns(ref: string, opts: GhOverridable = {}): Promi
     json: true,
   });
   return CheckRunsResponseSchema.parse(raw).check_runs;
+}
+
+/**
+ * Returns true when a PR body contains a closing keyword for the given issue
+ * number. Matches GitHub's autoclose keywords (`fix`, `fixes`, `fixed`,
+ * `close`, `closes`, `closed`, `resolve`, `resolves`, `resolved`) followed by
+ * optional colon/whitespace then `#N` on the same line. A trailing-digit
+ * negative lookahead prevents `#7` from matching inside `#70`.
+ */
+export function bodyClosesIssue(body: string, issueNumber: number): boolean {
+  const re = new RegExp(
+    `\\b(fix|fixes|fixed|close|closes|closed|resolve|resolves|resolved)[:\\s]+#${issueNumber}(?!\\d)`,
+    "i",
+  );
+  return re.test(body);
+}
+
+export interface FindPullRequestsForIssueOptions extends GhOverridable {
+  issueNumber: number;
+  branchName: string;
+  kind: WorkItemKind;
+  /** Hard cap on rows returned. Defaults to 100. */
+  limit?: number;
+}
+
+/**
+ * Return all open PRs that address a given work item. A PR is considered
+ * addressing if its `headRefName` matches the deterministic branch name, OR
+ * (for issue-kind only) its body contains a GitHub autoclose trailer
+ * (`Fixes/Closes/Resolves #N`). Fails soft: the caller catches errors and
+ * proceeds as if no addressing PRs were found.
+ */
+export async function findPullRequestsForIssue(opts: FindPullRequestsForIssueOptions): Promise<PullRequest[]> {
+  const args = ["pr", "list", "--state", "open", "--limit", String(opts.limit ?? 100), "--json", PR_ISSUE_MATCH_FIELDS];
+  const raw = await runGh(args, { ...ghOpts(opts), json: true });
+  const prs = PullRequestListSchema.parse(raw);
+  return prs.filter(
+    (pr) =>
+      pr.headRefName === opts.branchName || (opts.kind === "issue" && bodyClosesIssue(pr.body ?? "", opts.issueNumber)),
+  );
 }
 
 const URL_RE = /https?:\/\/\S+/g;

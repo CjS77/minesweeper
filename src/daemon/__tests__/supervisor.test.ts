@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { loadConfig } from "../../config.js";
 import type * as ghModule from "../../github/index.js";
-import type { CodeScanningAlert, Issue, SecretScanningAlert } from "../../github/index.js";
+import type { CodeScanningAlert, Issue, PullRequest, SecretScanningAlert } from "../../github/index.js";
 import type * as worktreeModule from "../../worktree.js";
 import { sanitiseBranchName } from "../../worktree.js";
 import type * as stateModule from "../../child/state.js";
@@ -106,6 +106,7 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   getIssueMock: ReturnType<typeof vi.fn>;
   getCodeScanningAlertMock: ReturnType<typeof vi.fn>;
   getSecretScanningAlertMock: ReturnType<typeof vi.fn>;
+  findPrMock: ReturnType<typeof vi.fn>;
   addWorktreeMock: ReturnType<typeof vi.fn>;
   archiveMock: ReturnType<typeof vi.fn>;
   removeMock: ReturnType<typeof vi.fn>;
@@ -133,6 +134,7 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
   const getSecretScanningAlertMock = vi.fn(async (): Promise<SecretScanningAlert> => {
     throw new Error("getSecretScanningAlert not stubbed");
   });
+  const findPrMock = vi.fn(async (): Promise<PullRequest[]> => []);
   const addWorktreeMock = vi.fn(
     async ({ worktreesRoot, branchName }: { worktreesRoot: string; branchName: string }) => ({
       path: `${worktreesRoot}/${branchName}`,
@@ -158,6 +160,7 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
       getIssue: getIssueMock as unknown as typeof ghModule.getIssue,
       getCodeScanningAlert: getCodeScanningAlertMock as unknown as typeof ghModule.getCodeScanningAlert,
       getSecretScanningAlert: getSecretScanningAlertMock as unknown as typeof ghModule.getSecretScanningAlert,
+      findPullRequestsForIssue: findPrMock as unknown as typeof ghModule.findPullRequestsForIssue,
     },
     worktree: {
       addWorktree: addWorktreeMock as unknown as typeof worktreeModule.addWorktree,
@@ -178,6 +181,7 @@ function makeDeps(overrides: Partial<SupervisorDeps> = {}): {
     getIssueMock,
     getCodeScanningAlertMock,
     getSecretScanningAlertMock,
+    findPrMock,
     addWorktreeMock,
     archiveMock,
     removeMock,
@@ -416,6 +420,57 @@ describe("createSupervisor.dispatch", () => {
     ctx.childrenSpawned[0]!.resolve(0);
     ctx.childrenSpawned[1]!.resolve(0);
     await sup.drain();
+  });
+
+  it("skips dispatch (return false, no worktree) when an open PR already addresses the work item", async () => {
+    const ctx = makeDeps();
+    ctx.findPrMock.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: "Some other fix",
+        url: "https://github.com/example/repo/pull/77",
+        headRefName: "minesweeper-issue0007",
+      },
+    ]);
+    const sup = createSupervisor(ctx.deps);
+    const accepted = await sup.dispatch(makeIssueWorkItem(7));
+    expect(accepted).toBe(false);
+    expect(ctx.addWorktreeMock).not.toHaveBeenCalled();
+    expect(ctx.spawnChildMock).not.toHaveBeenCalled();
+    const infos = ctx.emitMock.mock.calls.filter((c) => c[1] === "INFO" && String(c[3]).includes("already addresses"));
+    expect(infos).toHaveLength(1);
+  });
+
+  it("proceeds when the claim check finds no addressing PRs", async () => {
+    const ctx = makeDeps();
+    // findPrMock already returns [] by default
+    const sup = createSupervisor(ctx.deps);
+    const accepted = await sup.dispatch(makeIssueWorkItem(7));
+    expect(accepted).toBe(true);
+    await flush();
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+  });
+
+  it("fails soft on a throwing findPullRequestsForIssue: logs WARN and proceeds", async () => {
+    const ctx = makeDeps();
+    ctx.findPrMock.mockRejectedValueOnce(new Error("gh is down"));
+    const sup = createSupervisor(ctx.deps);
+    const accepted = await sup.dispatch(makeIssueWorkItem(7));
+    expect(accepted).toBe(true);
+    const warns = ctx.emitMock.mock.calls.filter((c) => c[1] === "WARN" && String(c[3]).includes("claim check failed"));
+    expect(warns).toHaveLength(1);
+    await flush();
+    ctx.childrenSpawned[0]!.resolve(0);
+    await sup.drain();
+  });
+
+  it("does not reach the PR query when the worktree already exists (local state wins)", async () => {
+    const ctx = makeDeps();
+    ctx.pathExistsMock.mockResolvedValueOnce(true);
+    const sup = createSupervisor(ctx.deps);
+    await sup.dispatch(makeIssueWorkItem(7));
+    expect(ctx.findPrMock).not.toHaveBeenCalled();
   });
 });
 

@@ -129,6 +129,17 @@ issue**:
   `$MINESWEEPER_FAILED_LABEL` and again leaves the worktree in place for post-mortem. Each poll tick the daemon then
   runs a closed-issue sweep — for every worktree whose issue is now `CLOSED` (PR merged, manually closed, or "not
   planned"), it archives `.minesweeper/` under `archive/<issue>-<timestamp>/` and removes the worktree.
+* **Dispatch-time PR guard** — before queueing a fresh work item, the daemon checks whether any open PR on GitHub
+  already addresses it (branch-name match: `{slug}-issue{NNNN}`, or a `Fixes/Closes/Resolves #N` trailer in the PR
+  body for issues). If one is found, the dispatch is skipped and an `INFO` log records the competing PR number. The
+  local-worktree `exists()` check runs first so the PR query is skipped when the daemon already owns the work. The
+  guard fails soft: a `gh` error logs WARN and proceeds to dispatch, so a transient GitHub hiccup never stalls the
+  pipeline.
+* **`Paused` + `canResumeAt: null`** — when execution detects a foreign open PR just before opening its own (see
+  [Execution mode](#execution-mode)), the child writes this state and exits 0. `resumeStalledWorktrees` picks it up
+  on the next tick (because `canResumeAt` is null, it is treated as immediately re-dispatchable) and re-runs the
+  child, which re-checks before calling any subagent. This "wait and see" loop ends when the issue closes — at which
+  point the closed-issue sweep archives and removes the worktree.
 * **Stalled worktrees** — the same tick re-dispatches any worktree left in a working status (`InProgress`, `Writing`,
   `Reviewing`, `FixingReviewComments`, `Publishing`) with no child running and no `state.json` write for
   `$MINESWEEPER_STALE_WORKTREE_MINUTES` (default 60). Without it, a child killed without writing a terminal status
@@ -290,6 +301,19 @@ local `.claude/` settings, including default permissions.
 * Write the PR body with the `prwriter` sub-agent, caching it to `.minesweeper/pr_body.md` so a resumed publish does
   not pay for a second run.
 * Squash commits into a single commit message.
+* **Pre-PR claim re-check** — just before opening the PR, Minesweeper re-queries GitHub to confirm the work is still
+  needed. Two outcomes can short-circuit the PR open:
+  * **Issue closed** (merged or manually closed during the executor ↔ reviewer loop) → `state.status` is set to
+    `Complete` with no `prNumber`. The child exits 0; no `$MINESWEEPER_FAILED_LABEL` is applied. The next
+    closed-issue sweep archives the worktree normally.
+  * **Foreign open PR** (an open PR on a different branch that addresses this issue, e.g. a human-opened PR) →
+    `state.status` is set to `Paused` with `pausedFromStatus` recording where we left off and `canResumeAt: null`.
+    The child exits 0 and the worktree is left in place. On the next poll tick `resumeStalledWorktrees` re-dispatches
+    the child, which runs the check again before calling any subagent — a cheap "wait and see" loop that ends
+    naturally when the issue closes. The daemon does **not** abandon the worktree immediately, because the foreign PR
+    might yet be rejected; abandoning only when the issue itself closes satisfies "abandon only if merged and closed".
+  If the re-check call fails (transient `gh` error), Minesweeper logs WARN and proceeds to open the PR — the guard
+  fails soft, never blocking the pipeline on a network hiccup.
 * Push a new PR to GitHub against `$MINESWEEPER_PR_BASE_BRANCH`, referencing this issue.
 
 ### Addressing PR review feedback

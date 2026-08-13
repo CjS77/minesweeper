@@ -10,9 +10,11 @@ vi.mock("execa", () => ({
 import { execa } from "execa";
 import {
   addLabel,
+  bodyClosesIssue,
   comment,
   createIssue,
   createPr,
+  findPullRequestsForIssue,
   GhError,
   GhMissingError,
   GhNotARepoError,
@@ -487,6 +489,111 @@ describe("getSecretScanningAlert", () => {
     expect(alert.number).toBe(2);
     const { args } = lastCall();
     expect(args).toEqual(["api", "repos/{owner}/{repo}/secret-scanning/alerts/2"]);
+  });
+});
+
+describe("bodyClosesIssue", () => {
+  it("matches Fixes #N case-insensitively", () => {
+    expect(bodyClosesIssue("Fixes #7", 7)).toBe(true);
+    expect(bodyClosesIssue("fixes #7", 7)).toBe(true);
+    expect(bodyClosesIssue("FIXES #7", 7)).toBe(true);
+  });
+
+  it("matches closes and resolves keywords", () => {
+    expect(bodyClosesIssue("closes #7", 7)).toBe(true);
+    expect(bodyClosesIssue("Resolved #7", 7)).toBe(true);
+    expect(bodyClosesIssue("closed #7", 7)).toBe(true);
+    expect(bodyClosesIssue("fixed #7", 7)).toBe(true);
+  });
+
+  it("does not match #70 when looking for #7 (boundary check)", () => {
+    expect(bodyClosesIssue("Fixes #70", 7)).toBe(false);
+    expect(bodyClosesIssue("Fixes #700", 7)).toBe(false);
+  });
+
+  it("does not match a bare #N without a closing keyword", () => {
+    expect(bodyClosesIssue("See #7 for context", 7)).toBe(false);
+    expect(bodyClosesIssue("#7", 7)).toBe(false);
+  });
+
+  it("does not match when keyword and #N are far apart on the same line", () => {
+    expect(bodyClosesIssue("This PR fixes the parser. See #7 for context.", 7)).toBe(false);
+  });
+
+  it("matches with a colon after the keyword", () => {
+    expect(bodyClosesIssue("Fixes: #7", 7)).toBe(true);
+  });
+
+  it("matches across multi-line bodies", () => {
+    expect(bodyClosesIssue("Summary\n\nFixes #7\n", 7)).toBe(true);
+    expect(bodyClosesIssue("Summary\nMore detail.\n\nCloses #7", 7)).toBe(true);
+  });
+
+  it("returns false for empty or unrelated body", () => {
+    expect(bodyClosesIssue("", 7)).toBe(false);
+    expect(bodyClosesIssue("No PR trailer here.", 7)).toBe(false);
+  });
+});
+
+describe("findPullRequestsForIssue", () => {
+  function makePr(number: number, headRefName: string, body = ""): Record<string, unknown> {
+    return {
+      number,
+      title: `PR ${number}`,
+      headRefName,
+      baseRefName: "main",
+      state: "OPEN",
+      url: `https://github.com/example/repo/pull/${number}`,
+      body,
+      isDraft: false,
+    };
+  }
+
+  it("selects PRs whose headRefName matches the branchName", async () => {
+    mockExeca.mockResolvedValueOnce(
+      ok(JSON.stringify([makePr(10, "repo-issue0007"), makePr(11, "other-branch")])) as never,
+    );
+    const prs = await findPullRequestsForIssue({ issueNumber: 7, branchName: "repo-issue0007", kind: "issue" });
+    expect(prs).toHaveLength(1);
+    expect(prs[0]?.number).toBe(10);
+  });
+
+  it("selects PRs whose body has a Fixes trailer for kind=issue", async () => {
+    mockExeca.mockResolvedValueOnce(
+      ok(
+        JSON.stringify([makePr(20, "unrelated-branch", "Fixes #7\n"), makePr(21, "also-unrelated", "No trailer")]),
+      ) as never,
+    );
+    const prs = await findPullRequestsForIssue({ issueNumber: 7, branchName: "repo-issue0007", kind: "issue" });
+    expect(prs).toHaveLength(1);
+    expect(prs[0]?.number).toBe(20);
+  });
+
+  it("does not match body trailers for alert kinds (no shared keyspace)", async () => {
+    mockExeca.mockResolvedValueOnce(ok(JSON.stringify([makePr(30, "unrelated", "Fixes #7\n")])) as never);
+    const prs = await findPullRequestsForIssue({
+      issueNumber: 7,
+      branchName: "repo-csa0007",
+      kind: "codeScanningAlert",
+    });
+    expect(prs).toHaveLength(0);
+  });
+
+  it("passes --state open and the PR_ISSUE_MATCH_FIELDS to gh", async () => {
+    mockExeca.mockResolvedValueOnce(ok("[]") as never);
+    await findPullRequestsForIssue({ issueNumber: 5, branchName: "repo-issue0005", kind: "issue" });
+    const { args } = lastCall();
+    expect(args.slice(0, 4)).toEqual(["pr", "list", "--state", "open"]);
+    expect(args).toContain("--json");
+    const jsonFields = args.at(-1) as string;
+    expect(jsonFields).toContain("body");
+    expect(jsonFields).toContain("headRefName");
+  });
+
+  it("returns an empty array when no PRs match", async () => {
+    mockExeca.mockResolvedValueOnce(ok("[]") as never);
+    const prs = await findPullRequestsForIssue({ issueNumber: 7, branchName: "repo-issue0007", kind: "issue" });
+    expect(prs).toEqual([]);
   });
 });
 

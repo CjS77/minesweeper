@@ -11,7 +11,7 @@ import { execa } from "execa";
 
 import type { Config } from "../../config.js";
 import type { CommitPublisher } from "../../github/commit.js";
-import type { Issue } from "../../github/index.js";
+import type { Issue, PullRequest } from "../../github/index.js";
 import { initState, readState, type State } from "../state.js";
 import {
   FINAL_PLAN_FILE,
@@ -254,6 +254,10 @@ interface RunArgs {
   commitPublisher?: CommitPublisher;
   /** Conflicted paths per rebase step — see {@link makeStubGit}. */
   rebaseConflicts?: readonly string[][];
+  /** Override the getIssue stub (defaults to always returning an OPEN issue). */
+  getIssueFn?: ReturnType<typeof vi.fn>;
+  /** Override the findPullRequestsForIssue stub (defaults to always returning []). */
+  findPullRequestsForIssue?: ReturnType<typeof vi.fn>;
 }
 
 async function run(args: RunArgs): Promise<{
@@ -263,18 +267,20 @@ async function run(args: RunArgs): Promise<{
   git: StubGit;
   getIssue: ReturnType<typeof vi.fn>;
   createPr: ReturnType<typeof vi.fn>;
+  findPullRequestsForIssue: ReturnType<typeof vi.fn>;
   runCheckHook: ReturnType<typeof vi.fn>;
 }> {
   const persisted = await readState(tmp);
   const state: State = { ...persisted, ...args.state };
   const issue = makeIssue(state.issueNumber);
-  const getIssue = vi.fn(async () => issue);
+  const getIssue = args.getIssueFn ?? vi.fn(async () => issue);
   const createPr =
     args.prCreate ??
     vi.fn(async () => ({
       number: 101,
       url: "https://github.com/example/repo/pull/101",
     }));
+  const findPullRequestsForIssue = args.findPullRequestsForIssue ?? vi.fn(async (): Promise<PullRequest[]> => []);
   const git = makeStubGit({
     headSha: "BASE_SHA",
     mergeBaseSha: "BASE_SHA",
@@ -287,14 +293,20 @@ async function run(args: RunArgs): Promise<{
     config: FAKE_CONFIG,
     cwd: tmp,
     state,
-    github: { getIssue, createPr },
+    github: {
+      getIssue,
+      createPr,
+      findPullRequestsForIssue,
+      getCodeScanningAlert: vi.fn(),
+      getSecretScanningAlert: vi.fn(),
+    },
     runSubagent,
     git,
     commitPublisher: args.commitPublisher,
     runCheckHook,
     emit,
   });
-  return { result, calls, emit, git, getIssue, createPr, runCheckHook };
+  return { result, calls, emit, git, getIssue, createPr, findPullRequestsForIssue, runCheckHook };
 }
 
 describe("parseReviewerVerdict", () => {
@@ -531,7 +543,7 @@ describe("runExecution — resumption", () => {
       config: FAKE_CONFIG,
       cwd: tmp,
       state,
-      github: { getIssue, createPr },
+      github: { getIssue, createPr, findPullRequestsForIssue: vi.fn(async (): Promise<PullRequest[]> => []) },
       runSubagent,
       git,
       runCheckHook: vi.fn(async () => undefined),
@@ -995,5 +1007,103 @@ describe("normalisePrBody", () => {
     expect(out.match(/## Closes alert/g)).toHaveLength(1);
     expect(out).toContain("https://github.com/example/repo/security/code-scanning/7");
     expect(out).not.toContain("stale.example");
+  });
+});
+
+describe("runExecution — claim check", () => {
+  const APPROVED_SCRIPT: readonly Script[] = [
+    { role: "executor", text: "done", newHeadSha: "AFTER_SHA" },
+    { role: "reviewer", text: "Verdict: Approved\n" },
+    DEFAULT_PRWRITER_RESPONSE,
+  ];
+
+  it("golden path unchanged: clear claim check → one createPr, Complete, prNumber set", async () => {
+    const { result, createPr } = await run({ responses: APPROVED_SCRIPT });
+    expect(result.status).toBe("Complete");
+    expect(result.prNumber).toBe(101);
+    expect(createPr).toHaveBeenCalledTimes(1);
+  });
+
+  it("issue closed (top-of-function check) → Complete with null prNumber, no subagent calls", async () => {
+    const issue = makeIssue(42);
+    const getIssueFn = vi
+      .fn()
+      .mockResolvedValueOnce(issue)
+      .mockResolvedValueOnce({ ...issue, state: "CLOSED" });
+    const { result, calls, createPr } = await run({ responses: [], getIssueFn });
+    expect(result.status).toBe("Complete");
+    expect(result.prNumber).toBeNull();
+    expect(calls).toHaveLength(0);
+    expect(createPr).not.toHaveBeenCalled();
+  });
+
+  it("foreign PR (top-of-function check) → Paused with pausedFromStatus and canResumeAt=null, no subagent calls", async () => {
+    const foreignPr: PullRequest = {
+      number: 99,
+      title: "Competitor fix",
+      url: "https://github.com/example/repo/pull/99",
+      headRefName: "some-other-branch",
+    };
+    const findPullRequestsForIssue = vi.fn(async (): Promise<PullRequest[]> => [foreignPr]);
+    const { result, calls, createPr } = await run({ responses: [], findPullRequestsForIssue });
+    expect(result.status).toBe("Paused");
+    expect(result.pausedFromStatus).toBe("Writing");
+    expect(result.canResumeAt).toBeNull();
+    expect(calls).toHaveLength(0);
+    expect(createPr).not.toHaveBeenCalled();
+  });
+
+  it("PR on our own branch → not foreign → execution proceeds to completion", async () => {
+    const ownPr: PullRequest = {
+      number: 42,
+      title: "Our own PR",
+      url: "https://github.com/example/repo/pull/42",
+      headRefName: "minesweeper-issue0042",
+    };
+    const findPullRequestsForIssue = vi.fn(async (): Promise<PullRequest[]> => [ownPr]);
+    const { result, createPr } = await run({ responses: APPROVED_SCRIPT, findPullRequestsForIssue });
+    expect(result.status).toBe("Complete");
+    expect(createPr).toHaveBeenCalledTimes(1);
+  });
+
+  it("issue closed before PR creation (pre-PR check) → Complete with null prNumber, no PR opened", async () => {
+    // The issue is open for fetchWorkItem + first applyClaimCheck, then closes.
+    const issue = makeIssue(42);
+    const getIssueFn = vi
+      .fn()
+      .mockResolvedValueOnce(issue) // fetchWorkItem
+      .mockResolvedValueOnce(issue) // first applyClaimCheck
+      .mockResolvedValueOnce({ ...issue, state: "CLOSED" }); // pre-PR applyClaimCheck
+    const { result, calls, createPr } = await run({ responses: APPROVED_SCRIPT, getIssueFn });
+    expect(result.status).toBe("Complete");
+    expect(result.prNumber).toBeNull();
+    expect(calls.map((c) => c.role)).toEqual(["executor", "reviewer", "prwriter"]);
+    expect(createPr).not.toHaveBeenCalled();
+  });
+
+  it("fail-soft: throwing findPullRequestsForIssue still opens the PR", async () => {
+    const findPullRequestsForIssue = vi.fn(async (): Promise<PullRequest[]> => {
+      throw new Error("gh is down");
+    });
+    const { result, createPr, emit } = await run({ responses: APPROVED_SCRIPT, findPullRequestsForIssue });
+    expect(result.status).toBe("Complete");
+    expect(createPr).toHaveBeenCalledTimes(1);
+    const warns = emit.mock.calls.filter((c) => c[1] === "WARN" && String(c[3]).includes("claim check failed"));
+    expect(warns.length).toBeGreaterThan(0);
+  });
+
+  it("app mode: issue-closed pre-PR check short-circuits before publisher calls", async () => {
+    const publisher = makeFakePublisher(202);
+    const issue = makeIssue(42);
+    const getIssueFn = vi
+      .fn()
+      .mockResolvedValueOnce(issue) // fetchWorkItem
+      .mockResolvedValueOnce(issue) // first applyClaimCheck
+      .mockResolvedValueOnce({ ...issue, state: "CLOSED" }); // pre-PR applyClaimCheck
+    const { result } = await run({ responses: APPROVED_SCRIPT, commitPublisher: publisher, getIssueFn });
+    expect(result.status).toBe("Complete");
+    expect(result.prNumber).toBeNull();
+    expect(vi.mocked(publisher.createBranchRef)).not.toHaveBeenCalled();
+    expect(vi.mocked(publisher.createPullRequest)).not.toHaveBeenCalled();
   });
 });

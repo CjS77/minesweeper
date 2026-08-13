@@ -325,7 +325,10 @@ export interface ExecutionDeps {
   /** State as just read from disk by the handler. */
   state: State;
   /** Override the GitHub wrapper (tests). */
-  github?: Pick<typeof defaultGithub, "getIssue" | "getCodeScanningAlert" | "getSecretScanningAlert" | "createPr">;
+  github?: Pick<
+    typeof defaultGithub,
+    "getIssue" | "getCodeScanningAlert" | "getSecretScanningAlert" | "createPr" | "findPullRequestsForIssue"
+  >;
   /** Override the subagent runner (tests). */
   runSubagent?: RunSubagentFn;
   /** Override the state writer (tests can wrap to assert call sequence). */
@@ -378,6 +381,9 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
 
   const finalPlan = await readFinalPlan(join(cwd, FINAL_PLAN_FILE));
   const item = await fetchWorkItem(gh, state, cwd);
+
+  const haltedEarly = await applyClaimCheck(gh, state, cwd, issueNumber, emit, writeState);
+  if (haltedEarly) return haltedEarly;
 
   let approved = false;
   let lastVerdict: ReviewerVerdict | null = null;
@@ -503,6 +509,9 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
     }),
   );
   const title = workItemTitle(item).trim();
+
+  const haltedPrePr = await applyClaimCheck(gh, state, cwd, issueNumber, emit, writeState);
+  if (haltedPrePr) return haltedPrePr;
 
   let pr: { number: number; url: string };
   if (publisher) {
@@ -852,6 +861,64 @@ export function normalisePrBody(raw: string, item: WorkItem): string {
     .replace(/\n{3,}/g, "\n\n")
     .trimEnd();
   return `${cleaned}\n\n## Closes alert\n\n${url}\n`;
+}
+
+type ClaimCheck = { kind: "clear" } | { kind: "issueClosed" } | { kind: "foreignPr"; pr: defaultGithub.PullRequest };
+
+/**
+ * Check whether another PR has claimed this work item. Returns:
+ * - `issueClosed` if the issue is already closed (only for issue kind)
+ * - `foreignPr` if an open PR on a different branch addresses this item
+ * - `clear` if no competing PR exists
+ */
+async function checkIssueClaim(
+  gh: NonNullable<ExecutionDeps["github"]>,
+  state: State,
+  cwd: string,
+): Promise<ClaimCheck> {
+  if (state.kind === "issue") {
+    const issue = await gh.getIssue(state.issueNumber, { cwd });
+    if (issue.state !== "OPEN") return { kind: "issueClosed" };
+  }
+  const prs = await gh.findPullRequestsForIssue({
+    issueNumber: state.issueNumber,
+    branchName: state.branchName,
+    kind: state.kind,
+    cwd,
+  });
+  const foreign = prs.find((pr) => pr.headRefName !== state.branchName);
+  return foreign ? { kind: "foreignPr", pr: foreign } : { kind: "clear" };
+}
+
+/**
+ * Run the claim check and write a terminal state if the work is already claimed.
+ * Returns the written state on halt, or null if execution should continue.
+ * Fails soft: a `gh` error is logged as WARN and treated as clear.
+ */
+async function applyClaimCheck(
+  gh: NonNullable<ExecutionDeps["github"]>,
+  state: State,
+  cwd: string,
+  issueNumber: number,
+  emit: Logger["event"],
+  writeState: typeof defaultState.writeState,
+): Promise<State | null> {
+  let check: ClaimCheck;
+  try {
+    check = await checkIssueClaim(gh, state, cwd);
+  } catch (err) {
+    emit("executor", "WARN", issueNumber, `claim check failed; proceeding: ${(err as Error).message}`);
+    return null;
+  }
+  if (check.kind === "issueClosed") {
+    emit("executor", "INFO", issueNumber, "issue is closed before PR creation; abandoning");
+    return writeState(cwd, { ...state, status: "Complete" });
+  }
+  if (check.kind === "foreignPr") {
+    emit("executor", "INFO", issueNumber, `foreign PR #${check.pr.number} already addresses this item; pausing`);
+    return writeState(cwd, { ...state, status: "Paused", pausedFromStatus: state.status, canResumeAt: null });
+  }
+  return null;
 }
 
 /**
