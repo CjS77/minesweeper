@@ -13,6 +13,31 @@
 /** Numeric HTTP status codes that indicate a transient API capacity limit. */
 const LIMIT_STATUS_CODES = new Set([429, 529]);
 
+/**
+ * Thrown when a subagent's `result` message carries `is_error`. The SDK
+ * reports a rate limit as `subtype: "success"` with `is_error: true` and
+ * `api_error_status: 429` rather than rejecting the stream, so without this
+ * the run looks like a completed turn that produced no text — the reviewer
+ * reads that as "no verdict", the executor as "no commit", and the child
+ * retries into the limit instead of pausing for it.
+ *
+ * `status` is set from `api_error_status` so {@link isApiLimitError} routes
+ * limit responses onto the handler's pause path; anything else surfaces as a
+ * genuine failure.
+ */
+export class SubagentResultError extends Error {
+  readonly status: number | undefined;
+  readonly role: string;
+
+  constructor(role: string, status: number | undefined, detail: string) {
+    const statusPart = status === undefined ? "" : ` (HTTP ${status})`;
+    super(`subagent ${role} returned an error result${statusPart}: ${detail}`);
+    this.name = "SubagentResultError";
+    this.status = status;
+    this.role = role;
+  }
+}
+
 /** Matches error names that signal rate limiting or server overload. */
 const LIMIT_NAME_RE = /rate.?limit|overloaded/i;
 

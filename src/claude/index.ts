@@ -5,6 +5,7 @@ import { query as defaultQuery, type Options as SdkOptions, type SDKMessage } fr
 
 import type { Config } from "../config.js";
 import { event as defaultEvent, type Logger } from "../logging.js";
+import { SubagentResultError } from "./errors.js";
 import { BUNDLED_PROMPTS_ROOT, getRole, modelFor, type Role, type RoleName } from "./roles.js";
 import { openTranscript } from "./transcript.js";
 
@@ -25,7 +26,7 @@ export {
   type Transcript,
   type OpenTranscriptOptions,
 } from "./transcript.js";
-export { isApiLimitError, resumeTimeFromError } from "./errors.js";
+export { isApiLimitError, resumeTimeFromError, SubagentResultError } from "./errors.js";
 
 /** The bits of `query()` we depend on. Kept narrow so tests can mock it. */
 export type QueryFn = typeof defaultQuery;
@@ -118,6 +119,14 @@ export async function runSubagent(opts: RunSubagentOptions): Promise<SubagentRes
       if (message.type === "result") {
         stopReason = message.stop_reason ?? "unknown";
         if (message.subtype === "success") {
+          // `is_error` can be set on a `success` result — that is how the SDK
+          // reports a 429. Treating it as output would hand the caller an
+          // empty string and let the loop retry straight into the limit.
+          if (message.is_error) {
+            const status = message.api_error_status ?? undefined;
+            emit(opts.role, "ERROR", opts.issueNumber, `error result (status=${status ?? "none"})`);
+            throw new SubagentResultError(opts.role, status, message.result);
+          }
           finalText = message.result;
         }
       }

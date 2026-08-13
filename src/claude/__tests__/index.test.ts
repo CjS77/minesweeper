@@ -9,7 +9,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { Config } from "../../config.js";
-import { runSubagent } from "../index.js";
+import { isApiLimitError, runSubagent, SubagentResultError } from "../index.js";
 import { ROLES } from "../roles.js";
 
 const mockedQuery = vi.mocked(query);
@@ -73,6 +73,20 @@ function resultMessage(text: string, stopReason = "end_turn"): unknown {
     permission_denials: [],
     uuid: "fake-result-uuid",
     session_id: "fake-session",
+  };
+}
+
+/**
+ * A `result` message carrying `is_error`. Mirrors a real rate-limited run
+ * captured from a transcript: `subtype: "success"` with `is_error: true`,
+ * `api_error_status: 429`, and zero usage.
+ */
+function errorResultMessage(status: number | null, text = ""): unknown {
+  return {
+    ...(resultMessage(text, "stop_sequence") as Record<string, unknown>),
+    is_error: true,
+    api_error_status: status,
+    num_turns: 1,
   };
 }
 
@@ -226,6 +240,58 @@ describe("runSubagent", () => {
     expect(result.finalText).toBe("");
     expect(result.stopReason).toBe("unknown");
     expect(result.events).toBe(1);
+  });
+
+  it("throws on an is_error result instead of reporting it as empty output", async () => {
+    mockedQuery.mockReturnValue(makeStream([errorResultMessage(429, "Claude usage limit reached")]) as never);
+
+    await expect(
+      runSubagent({
+        role: "reviewer",
+        config: FAKE_CONFIG,
+        userPrompt: "review",
+        issueNumber: 1,
+        cwd: tempCwd,
+        promptRoot,
+        emit: vi.fn(),
+      }),
+    ).rejects.toBeInstanceOf(SubagentResultError);
+  });
+
+  it("marks a 429 result as an API limit so the handler pauses rather than retrying", async () => {
+    mockedQuery.mockReturnValue(makeStream([errorResultMessage(429, "resets at 3:50pm (Europe/Lisbon)")]) as never);
+
+    const err = await runSubagent({
+      role: "executor",
+      config: FAKE_CONFIG,
+      userPrompt: "execute",
+      issueNumber: 1,
+      cwd: tempCwd,
+      promptRoot,
+      emit: vi.fn(),
+    }).catch((e: unknown) => e);
+
+    // The pause path in the child handler keys off isApiLimitError; without
+    // this the child spins on the limit instead of backing off.
+    expect(isApiLimitError(err)).toBe(true);
+    expect((err as SubagentResultError).status).toBe(429);
+  });
+
+  it("does not treat a non-limit error result as an API limit", async () => {
+    mockedQuery.mockReturnValue(makeStream([errorResultMessage(500, "internal error")]) as never);
+
+    const err = await runSubagent({
+      role: "critic",
+      config: FAKE_CONFIG,
+      userPrompt: "critique",
+      issueNumber: 1,
+      cwd: tempCwd,
+      promptRoot,
+      emit: vi.fn(),
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(SubagentResultError);
+    expect(isApiLimitError(err)).toBe(false);
   });
 
   it("closes the transcript even if the stream throws", async () => {
