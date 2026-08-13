@@ -304,8 +304,9 @@ export const defaultGit: GitOps = {
     return r.stdout;
   },
   async readBlob(cwd, ref, path) {
-    // encoding: "buffer" preserves binary file content for accurate base64 encoding
-    const r = await execa("git", ["show", `${ref}:${path}`], { cwd, encoding: "buffer" });
+    // encoding: "buffer" preserves binary file content for accurate base64 encoding; stripFinalNewline must be
+    // off or execa eats the trailing newline byte, corrupting every blob we commit through the git-data API
+    const r = await execa("git", ["show", `${ref}:${path}`], { cwd, encoding: "buffer", stripFinalNewline: false });
     return Buffer.from(r.stdout as unknown as Uint8Array).toString("base64");
   },
   async subjects(cwd, from) {
