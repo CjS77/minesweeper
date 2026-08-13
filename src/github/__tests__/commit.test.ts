@@ -116,6 +116,31 @@ describe("createCommitPublisher.createBranchRef", () => {
 
     await expect(pub.createBranchRef("feat", "bad-sha")).rejects.toBeInstanceOf(CommitPublisherError);
   });
+
+  it("surfaces GitHub's message so a 422 is diagnosable without repo forensics", async () => {
+    const { fetch } = fakeFetch({
+      "POST /repos/acme/widgets/git/refs": () => ({
+        status: 422,
+        body: { message: "Object does not exist", errors: [{ message: "sha is not a valid commit" }] },
+      }),
+    });
+    const pub = createCommitPublisher({ owner: "acme", name: "widgets", getToken: async () => "ghs_secret", fetch });
+
+    await expect(pub.createBranchRef("feat", "bad-sha")).rejects.toThrow(
+      /Object does not exist: sha is not a valid commit \(HTTP 422\)/,
+    );
+  });
+
+  it("keeps the token out of the surfaced error detail", async () => {
+    const { fetch } = fakeFetch({
+      "POST /repos/acme/widgets/git/refs": () => ({ status: 422, body: { message: "Object does not exist" } }),
+    });
+    const pub = createCommitPublisher({ owner: "acme", name: "widgets", getToken: async () => "ghs_secret", fetch });
+
+    await expect(pub.createBranchRef("feat", "bad-sha")).rejects.toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining("ghs_secret") as unknown as string }),
+    );
+  });
 });
 
 describe("createCommitPublisher.createCommitOnBranch", () => {

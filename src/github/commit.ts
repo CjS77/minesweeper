@@ -135,6 +135,28 @@ export function createCommitPublisher(opts: CreateCommitPublisherOptions): Commi
     };
   }
 
+  /**
+   * GitHub's own error text for a failed response, as ` — <message>`, or
+   * `""` if the body has none. Only the API's `message`/`errors` fields are
+   * surfaced; the request (which carries the token) is never echoed.
+   */
+  async function failureDetail(res: Response): Promise<string> {
+    const body: unknown = await res.json().catch(() => null);
+    if (typeof body !== "object" || body === null) return "";
+    const message = "message" in body && typeof body.message === "string" ? body.message : "";
+    const errors =
+      "errors" in body && Array.isArray(body.errors)
+        ? body.errors
+            .map((e: unknown) =>
+              typeof e === "object" && e !== null && "message" in e && typeof e.message === "string" ? e.message : "",
+            )
+            .filter((m) => m.length > 0)
+            .join("; ")
+        : "";
+    const detail = [message, errors].filter((part) => part.length > 0).join(": ");
+    return detail.length > 0 ? ` — ${detail}` : "";
+  }
+
   async function githubJson<T>(path: string, schema: z.ZodType<T>, init?: RequestInit): Promise<T> {
     let res: Response;
     try {
@@ -146,7 +168,7 @@ export function createCommitPublisher(opts: CreateCommitPublisherOptions): Commi
       throw new CommitPublisherError(`request to ${path} failed: ${(err as Error).message}`);
     }
     if (!res.ok) {
-      throw new CommitPublisherError(`GitHub request to ${path} was rejected`, res.status);
+      throw new CommitPublisherError(`GitHub request to ${path} was rejected${await failureDetail(res)}`, res.status);
     }
     const body: unknown = await res.json();
     const parsed = schema.safeParse(body);
@@ -173,20 +195,12 @@ export function createCommitPublisher(opts: CreateCommitPublisherOptions): Commi
       throw new CommitPublisherError(`createBranchRef network error: ${(err as Error).message}`);
     }
     if (res.ok) return;
-    if (res.status === 422) {
-      // Only swallow the "Reference already exists" 422 — other 422 bodies (e.g. invalid sha) should surface legibly
-      // so the caller gets a meaningful error rather than a confusing failure at createCommitOnBranch.
-      const body: unknown = await res.json().catch(() => null);
-      if (
-        typeof body === "object" &&
-        body !== null &&
-        "message" in body &&
-        body.message === "Reference already exists"
-      ) {
-        return;
-      }
-    }
-    throw new CommitPublisherError(`createBranchRef was rejected`, res.status);
+    // Only swallow the "Reference already exists" 422 — other 422 bodies (e.g. "Object does not exist", meaning the
+    // anchor sha was never pushed) must surface, and must carry GitHub's message: the status alone cannot tell those
+    // two apart, and the caller would otherwise fail confusingly later at createCommitOnBranch.
+    const detail = await failureDetail(res);
+    if (res.status === 422 && detail === " — Reference already exists") return;
+    throw new CommitPublisherError(`createBranchRef was rejected${detail}`, res.status);
   }
 
   async function createCommitOnBranch(input: CreateCommitInput): Promise<string> {
