@@ -22,6 +22,7 @@ export const ROLE_NAMES = [
   "refiner",
   "executor",
   "reviewer",
+  "rebaser",
   "prwriter",
   "screener",
   "issuewriter",
@@ -98,6 +99,13 @@ export const ROLES: Record<RoleName, Role> = {
     systemPromptPath: "reviewer.md",
     allowedTools: ["Read", "Grep", "Glob", "Bash"],
     permissionMode: "plan",
+  },
+  rebaser: {
+    name: "rebaser",
+    modelEnvVar: "executionAgent",
+    systemPromptPath: "rebaser.md",
+    allowedTools: ["Read", "Edit", "Write", "Bash", "Grep", "Glob"],
+    permissionMode: "acceptEdits",
   },
   prwriter: {
     name: "prwriter",

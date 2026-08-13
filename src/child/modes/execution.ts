@@ -38,15 +38,30 @@
  *
  * Finalisation:
  *
+ *   - State transitions to `status = "Publishing"` *first*. Everything
+ *     below is expensive, so a crash anywhere in it must resume here and
+ *     not at the top of the review loop. Re-entering the mode at
+ *     `Publishing` skips the executor/reviewer loop entirely.
+ *   - `git fetch origin <base>` and rebase onto `origin/<base>`. The
+ *     branch is cut from the *local* base, which may hold commits that
+ *     were never pushed; the API publish path anchors its commit on a
+ *     sha the remote must already know, so a stale local base is a hard
+ *     422 at `createBranchRef`. Conflicts are handed to the `rebaser`
+ *     subagent, resolved, and `git rebase --continue`d — repeatedly, as
+ *     each replayed commit can conflict in turn. An unresolvable
+ *     conflict aborts the rebase and fails the mode.
  *   - Best-effort `npm run check` if the worktree's package.json
  *     defines that script. Failures are logged but do not abort.
  *   - The `prwriter` subagent runs once with the issue, the approved
  *     plan, the executor's final summary, and a diff stat, and produces
- *     the PR body. Its output replaces the body verbatim.
+ *     the PR body. Its output replaces the body verbatim and is cached
+ *     to `.minesweeper/pr_body.md` so a resumed publish doesn't pay for
+ *     a second prwriter run.
  *   - Squash via `git reset --soft <merge-base>` + `git commit`. The
- *     merge-base is computed against `config.prBaseBranch`. The commit
- *     message uses the issue title and the prwriter's body so the
- *     squashed commit and the PR stay in sync.
+ *     merge-base is computed against `origin/<base>` — post-rebase that
+ *     is the fetched remote head, which the API path requires to exist
+ *     server-side. The commit message uses the issue title and the
+ *     prwriter's body so the squashed commit and the PR stay in sync.
  *   - `git push -u origin <branch>` and `gh pr create`.
  *   - State transitions to `status = "Complete"`.
  */
@@ -84,6 +99,14 @@ export const FINAL_PLAN_FILE = join(".minesweeper", "final_plan.md");
  * findings are passed back to the executor.
  */
 export const REVIEW_COMMENTS_FILE = join(".minesweeper", "review_comments.md");
+
+/**
+ * Path (worktree-relative) where the prwriter's PR body is persisted once
+ * written. Read back when execution resumes at `status = "Publishing"` so
+ * a failure downstream of the prwriter (rebase, API commit, PR creation)
+ * does not pay for a second prwriter run.
+ */
+export const PR_BODY_FILE = join(".minesweeper", "pr_body.md");
 
 /** Signals the executor's first invocation in this mode (no prior review). */
 const FIRST_ROUND = Symbol("first round");
@@ -147,6 +170,21 @@ export interface GitOps {
    * is aborted and the error propagates so the caller can bail.
    */
   pushBranch(cwd: string, branch: string): Promise<void>;
+  /** `git fetch <remote> <branch>`. Refreshes the remote-tracking ref before a rebase. */
+  fetch(cwd: string, remote: string, branch: string): Promise<void>;
+  /**
+   * `git rebase <upstream>`. Resolves to `[]` when the rebase completed,
+   * or the list of conflicted paths when it stopped mid-way. Throws if
+   * the rebase failed for any reason other than conflicts.
+   */
+  rebase(cwd: string, upstream: string): Promise<string[]>;
+  /**
+   * Stage everything and `git rebase --continue`. Same return contract as
+   * {@link GitOps.rebase} — later commits in the series can conflict too.
+   */
+  rebaseContinue(cwd: string): Promise<string[]>;
+  /** `git rebase --abort`. Best-effort: never throws. */
+  rebaseAbort(cwd: string): Promise<void>;
   /** `git diff --name-status --find-renames from..to`. Stdout returned verbatim. */
   diffNameStatus(cwd: string, from: string, to: string): Promise<string>;
   /** Read a file at `ref:path` and return its content as a base64 string. */
@@ -167,6 +205,25 @@ const PUSH_NEEDS_FETCH_RE = /\[rejected\][^\n]*\((?:fetch first|non-fast-forward
 /** Exported for tests: true if the stderr indicates a non-fast-forward push rejection. */
 export function isNonFastForwardRejection(stderr: string): boolean {
   return PUSH_NEEDS_FETCH_RE.test(stderr);
+}
+
+/** Paths git has left with conflict markers (`git diff --diff-filter=U`). */
+async function conflictedPaths(cwd: string): Promise<string[]> {
+  const r = await execa("git", ["diff", "--name-only", "--diff-filter=U"], { cwd });
+  return r.stdout.split("\n").filter((line) => line.length > 0);
+}
+
+/**
+ * Classify the result of a `git rebase` / `git rebase --continue`: no
+ * conflicts means the series applied, conflicts mean the caller should
+ * resolve and continue, and a non-zero exit with neither means the rebase
+ * broke for an unrelated reason and must not be papered over.
+ */
+async function rebaseOutcome(cwd: string, exitCode: number | undefined, stderr: string): Promise<string[]> {
+  if (exitCode === 0) return [];
+  const conflicts = await conflictedPaths(cwd);
+  if (conflicts.length > 0) return conflicts;
+  throw new Error(`git rebase failed without conflicts: ${stderr.trim()}`);
 }
 
 /** Production implementation of {@link GitOps}, backed by `execa`. */
@@ -220,6 +277,27 @@ export const defaultGit: GitOps = {
       throw rebaseErr;
     }
     await execa("git", ["push", "-u", "origin", branch], { cwd });
+  },
+  async fetch(cwd, remote, branch) {
+    await execa("git", ["fetch", remote, branch], { cwd });
+  },
+  async rebase(cwd, upstream) {
+    const r = await execa("git", ["rebase", upstream], { cwd, reject: false });
+    return rebaseOutcome(cwd, r.exitCode, r.stderr ?? "");
+  },
+  async rebaseContinue(cwd) {
+    await execa("git", ["add", "-A"], { cwd });
+    // GIT_EDITOR=true: --continue reuses the original commit message rather
+    // than blocking on an editor that will never be attended in a daemon.
+    const r = await execa("git", ["rebase", "--continue"], {
+      cwd,
+      reject: false,
+      env: { GIT_EDITOR: "true" },
+    });
+    return rebaseOutcome(cwd, r.exitCode, r.stderr ?? "");
+  },
+  async rebaseAbort(cwd) {
+    await execa("git", ["rebase", "--abort"], { cwd, reject: false });
   },
   async diffNameStatus(cwd, from, to) {
     const r = await execa("git", ["diff", "--name-status", "--find-renames", `${from}..${to}`], { cwd });
@@ -305,7 +383,16 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
   let lastVerdict: ReviewerVerdict | null = null;
   let lastExecutorSummary = "";
 
-  while (state.iterations < state.maxIterations) {
+  // Resuming at `Publishing` means the loop already ran to a verdict on a
+  // previous invocation; replaying it would re-run the executor and
+  // reviewer for a change set that is already settled.
+  const resumingPublish = state.status === "Publishing";
+  if (resumingPublish) {
+    approved = true;
+    emit("executor", "INFO", issueNumber, "resuming at the publish step; skipping the executor/reviewer loop");
+  }
+
+  while (!resumingPublish && state.iterations < state.maxIterations) {
     if (state.status === "Writing" || state.status === "FixingReviewComments") {
       const reviewComments = state.status === "Writing" ? FIRST_ROUND : await readReviewComments(cwd);
       const userPrompt = executorPromptFor(finalPlan, reviewComments);
@@ -377,28 +464,44 @@ export async function runExecution(deps: ExecutionDeps): Promise<State> {
     );
   }
 
+  // Checkpoint before anything in the finalise path runs. Everything from
+  // here to PR creation is expensive and non-idempotent-ish (a prwriter
+  // run, a rebase, an API commit); persisting first means a failure
+  // resumes here rather than at the top of the review loop.
+  state = await writeState(cwd, { ...state, status: "Publishing" });
+
+  // Rebase onto the *remote* base before publishing. The branch is cut
+  // from the local base, which may hold commits that were never pushed —
+  // and the API publish path anchors its commit on a sha the remote has
+  // to already know, so a stale local base is a hard 422 at
+  // `createBranchRef`. Rebasing also keeps the PR mergeable.
+  const remoteBase = `origin/${baseBranch}`;
+  await rebaseOntoRemoteBase({ git, cwd, baseBranch, remoteBase, runSubagent, config, issueNumber, emit });
+
   await runCheckHookSafely(runCheckHook, cwd, issueNumber, emit);
 
-  const ahead = await git.commitsAhead(cwd, baseBranch);
+  const ahead = await git.commitsAhead(cwd, remoteBase);
   if (ahead === 0) {
-    throw new Error(`execution: cannot finalise — branch ${branch} has no commits ahead of ${baseBranch}`);
+    throw new Error(`execution: cannot finalise — branch ${branch} has no commits ahead of ${remoteBase}`);
   }
 
-  const mergeBaseSha = await git.mergeBase(cwd, baseBranch);
-  const log = await git.log(cwd, baseBranch);
-  const stat = await git.diffStat(cwd, baseBranch);
-  const prBody = await runPrWriter({
-    runSubagent,
-    config,
-    item,
-    plan: finalPlan,
-    executorSummary: lastExecutorSummary,
-    log,
-    diffStat: stat,
-    cwd,
-    issueNumber,
-    iteration: state.iterations + 1,
-  });
+  const mergeBaseSha = await git.mergeBase(cwd, remoteBase);
+  const log = await git.log(cwd, remoteBase);
+  const stat = await git.diffStat(cwd, remoteBase);
+  const prBody = await readOrWritePrBody(cwd, resumingPublish, () =>
+    runPrWriter({
+      runSubagent,
+      config,
+      item,
+      plan: finalPlan,
+      executorSummary: lastExecutorSummary,
+      log,
+      diffStat: stat,
+      cwd,
+      issueNumber,
+      iteration: state.iterations + 1,
+    }),
+  );
   const title = workItemTitle(item).trim();
 
   let pr: { number: number; url: string };
@@ -453,6 +556,113 @@ async function writeReviewComments(cwd: string, content: string): Promise<void> 
   await fs.mkdir(dirname(path), { recursive: true });
   const payload = content.endsWith("\n") ? content : `${content}\n`;
   await fs.writeFile(path, payload, "utf8");
+}
+
+/**
+ * Return the cached PR body when resuming a publish that already got past
+ * the prwriter, otherwise generate one and cache it. `resuming` gates the
+ * read so a fresh execution never picks up a body left behind by an
+ * earlier run against a since-changed diff.
+ */
+async function readOrWritePrBody(cwd: string, resuming: boolean, generate: () => Promise<string>): Promise<string> {
+  const path = join(cwd, PR_BODY_FILE);
+  if (resuming) {
+    try {
+      const cached = await fs.readFile(path, "utf8");
+      if (cached.trim().length > 0) return cached;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+    }
+  }
+  const body = await generate();
+  await fs.mkdir(dirname(path), { recursive: true });
+  await fs.writeFile(path, body.endsWith("\n") ? body : `${body}\n`, "utf8");
+  return body;
+}
+
+/** Bounds the resolve → continue cycle; each round is one stopped commit in the series. */
+const MAX_REBASE_CONFLICT_ROUNDS = 10;
+
+/** Matches the rebaser's bail-out line, same anchoring rules as the reviewer verdict. */
+const UNRESOLVABLE_RE = /^[ \t]*verdict[ \t]*:[ \t]*unresolvable[ \t]*$/im;
+
+interface RebaseOptions {
+  git: GitOps;
+  cwd: string;
+  baseBranch: string;
+  remoteBase: string;
+  runSubagent: RunSubagentFn;
+  config: Config;
+  issueNumber: number;
+  emit: Logger["event"];
+}
+
+/**
+ * Fetch and rebase the work branch onto `remoteBase`, driving the rebaser
+ * subagent through any conflicts. Returns once the series has applied.
+ *
+ * On an unresolvable conflict — or if the series is still conflicting
+ * after {@link MAX_REBASE_CONFLICT_ROUNDS} — the rebase is aborted so the
+ * worktree is left clean, and the error propagates for the supervisor to
+ * label the issue as failed. A half-finished rebase must never reach the
+ * publish step: it would ship a branch that is mid-replay.
+ */
+async function rebaseOntoRemoteBase(opts: RebaseOptions): Promise<void> {
+  const { git, cwd, baseBranch, remoteBase, issueNumber, emit } = opts;
+
+  await git.fetch(cwd, "origin", baseBranch);
+  let conflicts = await git.rebase(cwd, remoteBase);
+  if (conflicts.length === 0) {
+    emit("rebaser", "OK", issueNumber, `rebased onto ${remoteBase} cleanly`);
+    return;
+  }
+
+  for (let round = 1; round <= MAX_REBASE_CONFLICT_ROUNDS; round += 1) {
+    emit("rebaser", "WORK", issueNumber, `resolving rebase conflicts (round ${round}): ${conflicts.join(", ")}`);
+    const result = await opts.runSubagent({
+      role: "rebaser",
+      config: opts.config,
+      userPrompt: rebaserPromptFor(remoteBase, conflicts),
+      issueNumber,
+      iteration: round,
+      cwd,
+    });
+
+    if (UNRESOLVABLE_RE.test(result.finalText)) {
+      await git.rebaseAbort(cwd);
+      throw new Error(
+        `execution: rebase onto ${remoteBase} declined by the rebaser — ${result.finalText.trim().slice(0, 500)}`,
+      );
+    }
+
+    conflicts = await git.rebaseContinue(cwd);
+    if (conflicts.length === 0) {
+      emit("rebaser", "OK", issueNumber, `rebased onto ${remoteBase} after ${round} conflict round(s)`);
+      return;
+    }
+  }
+
+  await git.rebaseAbort(cwd);
+  throw new Error(
+    `execution: rebase onto ${remoteBase} still conflicting after ${MAX_REBASE_CONFLICT_ROUNDS} rounds; aborted`,
+  );
+}
+
+function rebaserPromptFor(remoteBase: string, conflicts: readonly string[]): string {
+  return [
+    `# Rebase target`,
+    "",
+    `The work branch is being rebased onto \`${remoteBase}\`.`,
+    "",
+    `# Conflicted paths`,
+    "",
+    conflicts.map((path) => `- ${path}`).join("\n"),
+    "",
+    `# Task`,
+    "",
+    "Resolve the conflicts in these files. Inspect `REBASE_HEAD` to see the commit being replayed.",
+    "Do not stage, commit, or run `git rebase --continue` / `--abort`.",
+  ].join("\n");
 }
 
 async function runCheckHookSafely(

@@ -680,7 +680,13 @@ function requiredChildScript(): string {
  * own `canResumeAt` schedule.
  */
 function isWorkingStatus(status: State["status"]): boolean {
-  return status === "InProgress" || status === "Writing" || status === "Reviewing" || status === "FixingReviewComments";
+  return (
+    status === "InProgress" ||
+    status === "Writing" ||
+    status === "Reviewing" ||
+    status === "FixingReviewComments" ||
+    status === "Publishing"
+  );
 }
 
 /**

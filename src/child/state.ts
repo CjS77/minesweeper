@@ -53,6 +53,10 @@
  *
  * Migrations run on read; v1 through v7 state files are upgraded
  * transparently. The migration chain is v1 → v2 → … → v7 → v8.
+ *
+ * Adding a `Status` value is not a schema bump: every state file written
+ * by an older build still parses, and the new value only ever appears in
+ * files written by a build that understands it.
  */
 
 import { promises as fs } from "node:fs";
@@ -76,6 +80,13 @@ export const Status = z.enum([
   "Writing",
   "Reviewing",
   "FixingReviewComments",
+  /**
+   * Execution has left the executor ↔ reviewer loop and is finalising:
+   * rebasing onto the remote base, writing the PR body, and publishing.
+   * Persisted so a crash between approval and PR creation resumes at the
+   * publish step instead of replaying the whole review loop.
+   */
+  "Publishing",
   "Complete",
   "Failed",
   "Paused",

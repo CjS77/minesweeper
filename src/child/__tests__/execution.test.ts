@@ -15,6 +15,7 @@ import type { Issue } from "../../github/index.js";
 import { initState, readState, type State } from "../state.js";
 import {
   FINAL_PLAN_FILE,
+  PR_BODY_FILE,
   REVIEW_COMMENTS_FILE,
   defaultGit,
   isNonFastForwardRejection,
@@ -81,7 +82,7 @@ function fakeResult(text: string): SubagentResult {
   };
 }
 
-type ScriptedRole = "executor" | "reviewer" | "prwriter";
+type ScriptedRole = "executor" | "reviewer" | "prwriter" | "rebaser";
 
 interface ScriptedCall {
   role: ScriptedRole;
@@ -106,7 +107,12 @@ interface PrWriterScript {
   text: string;
 }
 
-type Script = ExecutorScript | ReviewerScript | PrWriterScript;
+interface RebaserScript {
+  role: "rebaser";
+  text: string;
+}
+
+type Script = ExecutorScript | ReviewerScript | PrWriterScript | RebaserScript;
 
 const DEFAULT_PRWRITER_RESPONSE: PrWriterScript = {
   role: "prwriter",
@@ -149,8 +155,18 @@ interface StubGit extends GitOps {
   readonly currentHead: () => string;
 }
 
-function makeStubGit(initial: { headSha: string; mergeBaseSha: string }): StubGit {
+function makeStubGit(initial: {
+  headSha: string;
+  mergeBaseSha: string;
+  /**
+   * Conflicted paths returned by successive rebase steps. `rebase` takes
+   * the first entry, each `rebaseContinue` the next; exhausted means the
+   * series applied. Default `[]` — a clean rebase.
+   */
+  rebaseConflicts?: readonly string[][];
+}): StubGit {
   let head = initial.headSha;
+  const rebaseSteps: string[][] = (initial.rebaseConflicts ?? []).map((step) => [...step]);
   const invocations: Array<{ method: string; args: readonly unknown[] }> = [];
   // commitsAhead is computed against the merge-base sha — anything beyond
   // it counts as one commit, mirroring `git rev-list --count base..HEAD`.
@@ -179,6 +195,10 @@ function makeStubGit(initial: { headSha: string; mergeBaseSha: string }): StubGi
     resetSoft: recorder("resetSoft", async (_cwd: string, _ref: string) => undefined),
     commit: recorder("commit", async (_cwd: string, _msg: string) => undefined),
     pushBranch: recorder("pushBranch", async (_cwd: string, _branch: string) => undefined),
+    fetch: recorder("fetch", async (_cwd: string, _remote: string, _branch: string) => undefined),
+    rebase: recorder("rebase", async (_cwd: string, _upstream: string) => rebaseSteps.shift() ?? []),
+    rebaseContinue: recorder("rebaseContinue", async (_cwd: string) => rebaseSteps.shift() ?? []),
+    rebaseAbort: recorder("rebaseAbort", async (_cwd: string) => undefined),
     diffNameStatus: recorder("diffNameStatus", async (_cwd: string, _from: string, _to: string) =>
       head === mergeBaseSha ? "" : "A\tsrc/util.ts\n",
     ),
@@ -232,6 +252,8 @@ interface RunArgs {
   state?: Partial<Pick<State, "iterations" | "maxIterations" | "status">>;
   prCreate?: ReturnType<typeof vi.fn>;
   commitPublisher?: CommitPublisher;
+  /** Conflicted paths per rebase step — see {@link makeStubGit}. */
+  rebaseConflicts?: readonly string[][];
 }
 
 async function run(args: RunArgs): Promise<{
@@ -253,7 +275,11 @@ async function run(args: RunArgs): Promise<{
       number: 101,
       url: "https://github.com/example/repo/pull/101",
     }));
-  const git = makeStubGit({ headSha: "BASE_SHA", mergeBaseSha: "BASE_SHA" });
+  const git = makeStubGit({
+    headSha: "BASE_SHA",
+    mergeBaseSha: "BASE_SHA",
+    rebaseConflicts: args.rebaseConflicts,
+  });
   const { fn: runSubagent, calls } = scriptedRunner(args.responses, git);
   const emit = vi.fn();
   const runCheckHook = vi.fn(async () => undefined);
@@ -516,6 +542,69 @@ describe("runExecution — resumption", () => {
     expect(createPr).toHaveBeenCalledTimes(1);
   });
 
+  it("checkpoints status=Publishing before the finalise path runs", async () => {
+    // The prwriter throws, standing in for any failure downstream of the
+    // review loop. The checkpoint must already be on disk.
+    const persisted = await readState(tmp);
+    const git = makeStubGit({ headSha: "AFTER_SHA", mergeBaseSha: "BASE_SHA" });
+    const runSubagent: RunSubagentFn = async (opts) => {
+      if (opts.role === "reviewer") return fakeResult("Verdict: Approved\n");
+      throw new Error("prwriter exploded");
+    };
+
+    await expect(
+      runExecution({
+        config: FAKE_CONFIG,
+        cwd: tmp,
+        state: { ...persisted, status: "Reviewing", iterations: 0 },
+        github: { getIssue: vi.fn(async () => makeIssue(42)), createPr: vi.fn() },
+        runSubagent,
+        git,
+        runCheckHook: vi.fn(async () => undefined),
+        emit: vi.fn(),
+      }),
+    ).rejects.toThrow(/prwriter exploded/);
+
+    expect((await readState(tmp)).status).toBe("Publishing");
+  });
+
+  it("resuming at status=Publishing skips the loop and reuses the cached PR body", async () => {
+    await writeFile(join(tmp, PR_BODY_FILE), "cached body\n\nFixes #42\n", "utf8");
+    const persisted = await readState(tmp);
+    const git = makeStubGit({ headSha: "AFTER_CRASH_SHA", mergeBaseSha: "BASE_SHA" });
+    const createPr = vi.fn(async () => ({ number: 101, url: "https://github.com/example/repo/pull/101" }));
+    // No scripted responses at all: any subagent call is a failure.
+    const { fn: runSubagent, calls } = scriptedRunner([], git);
+
+    const result = await runExecution({
+      config: FAKE_CONFIG,
+      cwd: tmp,
+      state: { ...persisted, status: "Publishing", iterations: 1 },
+      github: { getIssue: vi.fn(async () => makeIssue(42)), createPr },
+      runSubagent,
+      git,
+      runCheckHook: vi.fn(async () => undefined),
+      emit: vi.fn(),
+    });
+
+    expect(calls).toEqual([]);
+    expect(result.status).toBe("Complete");
+    expect(createPr.mock.calls[0]?.[0]).toMatchObject({ body: "cached body\n\nFixes #42\n" });
+  });
+
+  it("does not reuse a stale cached PR body on a fresh (non-resumed) run", async () => {
+    await writeFile(join(tmp, PR_BODY_FILE), "stale body from a previous issue\n", "utf8");
+    const { createPr } = await run({
+      responses: [
+        { role: "executor", text: "x", newHeadSha: "S1" },
+        { role: "reviewer", text: "Verdict: Approved\n" },
+        DEFAULT_PRWRITER_RESPONSE,
+      ],
+    });
+
+    expect(createPr.mock.calls[0]?.[0]?.body).not.toContain("stale body");
+  });
+
   it("treats an unparseable reviewer response as Changes requested with a warning", async () => {
     const { calls, emit } = await run({
       state: { maxIterations: 2 },
@@ -677,6 +766,132 @@ describe("defaultGit.pushBranch", () => {
 
     await expect(defaultGit.pushBranch("/repo", "feat")).rejects.toBe(networkErr);
     expect(mockExeca).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runExecution — rebase onto the remote base before publishing", () => {
+  // The rebase sits between the review loop and the prwriter, so scripted
+  // rebaser responses go between them too.
+  const LOOP: readonly Script[] = [
+    { role: "executor", text: "done", newHeadSha: "AFTER_SHA" },
+    { role: "reviewer", text: "Verdict: Approved\n" },
+  ];
+
+  it("fetches and rebases onto origin/<base> before pushing, and anchors the PR there", async () => {
+    const { git } = await run({ responses: [...LOOP, DEFAULT_PRWRITER_RESPONSE] });
+
+    const methods = git.invocations.map((i) => i.method);
+    expect(methods).toContain("fetch");
+    expect(methods.indexOf("rebase")).toBeLessThan(methods.indexOf("pushBranch"));
+    expect(git.invocations.find((i) => i.method === "fetch")?.args).toEqual([tmp, "origin", "main"]);
+    expect(git.invocations.find((i) => i.method === "rebase")?.args).toEqual([tmp, "origin/main"]);
+    // The publish anchor must be the remote-tracking ref, not the local base:
+    // a local base that is ahead of the remote is what 422s `createBranchRef`.
+    expect(git.invocations.find((i) => i.method === "mergeBase")?.args).toEqual([tmp, "origin/main"]);
+    expect(git.invocations.find((i) => i.method === "commitsAhead")?.args).toEqual([tmp, "origin/main"]);
+  });
+
+  it("hands conflicts to the rebaser and continues the rebase", async () => {
+    const { calls, git } = await run({
+      responses: [...LOOP, { role: "rebaser", text: "README.md: kept both sections\n" }, DEFAULT_PRWRITER_RESPONSE],
+      rebaseConflicts: [["README.md"]],
+    });
+
+    expect(calls.map((c) => c.role)).toContain("rebaser");
+    const rebaserPrompt = calls.find((c) => c.role === "rebaser")?.userPrompt ?? "";
+    expect(rebaserPrompt).toContain("origin/main");
+    expect(rebaserPrompt).toContain("README.md");
+
+    const methods = git.invocations.map((i) => i.method);
+    expect(methods).toContain("rebaseContinue");
+    expect(methods).not.toContain("rebaseAbort");
+  });
+
+  it("drives the rebaser once per conflicting commit in the series", async () => {
+    const { calls, git } = await run({
+      responses: [
+        ...LOOP,
+        { role: "rebaser", text: "resolved src/a.ts\n" },
+        { role: "rebaser", text: "resolved src/b.ts\n" },
+        DEFAULT_PRWRITER_RESPONSE,
+      ],
+      rebaseConflicts: [["src/a.ts"], ["src/b.ts"]],
+    });
+
+    expect(calls.filter((c) => c.role === "rebaser")).toHaveLength(2);
+    expect(git.invocations.filter((i) => i.method === "rebaseContinue")).toHaveLength(2);
+  });
+
+  it("aborts the rebase and fails when the rebaser declines to resolve", async () => {
+    const persisted = await readState(tmp);
+    const git = makeStubGit({
+      headSha: "AFTER_SHA",
+      mergeBaseSha: "BASE_SHA",
+      rebaseConflicts: [["src/core.ts"]],
+    });
+    const runSubagent: RunSubagentFn = async (opts) => {
+      if (opts.role === "reviewer") return fakeResult("Verdict: Approved\n");
+      return fakeResult("Verdict: Unresolvable\n\nBoth sides rewrite the same dispatch table.\n");
+    };
+
+    await expect(
+      runExecution({
+        config: FAKE_CONFIG,
+        cwd: tmp,
+        state: { ...persisted, status: "Reviewing", iterations: 0 },
+        github: { getIssue: vi.fn(async () => makeIssue(42)), createPr: vi.fn() },
+        runSubagent,
+        git,
+        runCheckHook: vi.fn(async () => undefined),
+        emit: vi.fn(),
+      }),
+    ).rejects.toThrow(/declined by the rebaser/);
+
+    expect(git.invocations.filter((i) => i.method === "rebaseAbort")).toHaveLength(1);
+    // Never publish from a half-replayed worktree.
+    expect(git.invocations.map((i) => i.method)).not.toContain("pushBranch");
+  });
+});
+
+describe("defaultGit rebase helpers", () => {
+  beforeEach(() => {
+    mockExeca.mockReset();
+  });
+
+  it("returns [] when the rebase applies cleanly", async () => {
+    mockExeca.mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+    await expect(defaultGit.rebase("/repo", "origin/main")).resolves.toEqual([]);
+  });
+
+  it("returns the conflicted paths when the rebase stops", async () => {
+    mockExeca
+      .mockResolvedValueOnce({ stdout: "", stderr: "CONFLICT", exitCode: 1 } as never)
+      .mockResolvedValueOnce({ stdout: "src/a.ts\nsrc/b.ts\n", stderr: "", exitCode: 0 } as never);
+
+    await expect(defaultGit.rebase("/repo", "origin/main")).resolves.toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  it("throws when the rebase fails with no conflicted paths", async () => {
+    mockExeca
+      .mockResolvedValueOnce({ stdout: "", stderr: "fatal: invalid upstream", exitCode: 128 } as never)
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never);
+
+    await expect(defaultGit.rebase("/repo", "origin/nope")).rejects.toThrow(/failed without conflicts/);
+  });
+
+  it("stages everything and continues with a non-interactive editor", async () => {
+    mockExeca
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never) // git add -A
+      .mockResolvedValueOnce({ stdout: "", stderr: "", exitCode: 0 } as never); // git rebase --continue
+
+    await expect(defaultGit.rebaseContinue("/repo")).resolves.toEqual([]);
+
+    expect(mockExeca).toHaveBeenNthCalledWith(1, "git", ["add", "-A"], { cwd: "/repo" });
+    expect(mockExeca).toHaveBeenNthCalledWith(2, "git", ["rebase", "--continue"], {
+      cwd: "/repo",
+      reject: false,
+      env: { GIT_EDITOR: "true" },
+    });
   });
 });
 

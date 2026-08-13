@@ -130,7 +130,7 @@ issue**:
   runs a closed-issue sweep — for every worktree whose issue is now `CLOSED` (PR merged, manually closed, or "not
   planned"), it archives `.minesweeper/` under `archive/<issue>-<timestamp>/` and removes the worktree.
 * **Stalled worktrees** — the same tick re-dispatches any worktree left in a working status (`InProgress`, `Writing`,
-  `Reviewing`, `FixingReviewComments`) with no child running and no `state.json` write for
+  `Reviewing`, `FixingReviewComments`, `Publishing`) with no child running and no `state.json` write for
   `$MINESWEEPER_STALE_WORKTREE_MINUTES` (default 60). Without it, a child killed without writing a terminal status
   (OOM, `SIGKILL`, daemon restart) strands its worktree until the next daemon start: the sweep only reaps *closed*
   work, and a fresh dispatch is refused because the worktree already exists.
@@ -278,8 +278,17 @@ local `.claude/` settings, including default permissions.
         * The plan is background; the review comments are the focus.
         * Once execution is complete, increment `state.iterations`.
         * Commit changes with a detailed git message of what was done.
+* Set `state.status` to `Publishing`. Everything below is a checkpointed unit: a crash anywhere in it resumes here,
+  not at the top of the review loop, so an interrupted publish never re-runs the executor or reviewer.
+* Fetch and rebase the branch onto `origin/$MINESWEEPER_PR_BASE_BRANCH`. The branch is cut from the *local* base,
+  which may hold commits that were never pushed; the API publish path anchors its commit on a sha the remote must
+  already know, so a stale local base is a hard 422 when the branch ref is created. On conflict, a `rebaser`
+  sub-agent resolves the conflicted files and the rebase continues — once per conflicting commit in the series. A
+  conflict the rebaser declines to resolve aborts the rebase and fails the issue for a human to pick up.
 * Run final checks (formatting, tests). If tests fail at this point we **do not** loop back — CI will pick this up
   and the code owner decides what to do.
+* Write the PR body with the `prwriter` sub-agent, caching it to `.minesweeper/pr_body.md` so a resumed publish does
+  not pay for a second run.
 * Squash commits into a single commit message.
 * Push a new PR to GitHub against `$MINESWEEPER_PR_BASE_BRANCH`, referencing this issue.
 
